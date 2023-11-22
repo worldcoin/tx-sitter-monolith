@@ -1,11 +1,8 @@
 use std::time::Duration;
 
-use common::setup_db;
 use service::server::data::{CreateRelayerRequest, CreateRelayerResponse};
 
-use crate::common::{
-    setup_double_anvil, setup_service, DEFAULT_ANVIL_CHAIN_ID,
-};
+use crate::common::*;
 
 mod common;
 
@@ -13,6 +10,8 @@ const ESCALATION_INTERVAL: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn create_relayer() -> eyre::Result<()> {
+    setup_tracing();
+
     let (db_url, _db_container) = setup_db().await?;
     let double_anvil = setup_double_anvil().await?;
 

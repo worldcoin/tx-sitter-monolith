@@ -8,4 +8,8 @@
 6. [ ] Metrics
 7. [ ] Tracing (add telemetry-batteries)
 8. [ ] Automated testing
-9. [ ] Parallelization in a few places
+   1. [x] Basic
+   2. [ ] Basic with contracts
+   3. [ ] Escalation testing
+   4. [ ] Reorg testing (how?!?)
+9.  [ ] Parallelization in a few places

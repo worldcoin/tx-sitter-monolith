@@ -14,7 +14,7 @@ use crate::common::*;
 const ESCALATION_INTERVAL: Duration = Duration::from_secs(30);
 
 #[tokio::test]
-async fn send_tx() -> eyre::Result<()> {
+async fn send_many_txs() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
@@ -44,7 +44,7 @@ async fn send_tx() -> eyre::Result<()> {
     )
     .await?;
 
-    let amount: U256 = parse_units("100", "ether")?.into();
+    let amount: U256 = parse_units("1000", "ether")?.into();
 
     middleware
         .send_transaction(
@@ -64,30 +64,38 @@ async fn send_tx() -> eyre::Result<()> {
     assert_eq!(current_balance, amount);
 
     // Send a transaction
-    let value: U256 = parse_units("1", "ether")?.into();
-    let response = reqwest::Client::new()
-        .post(&format!("http://{}/1/tx/send", addr))
-        .json(&SendTxRequest {
-            relayer_id: response.relayer_id,
-            to: ARBITRARY_ADDRESS,
-            value,
-            gas_limit: U256::from(21_000),
-            ..Default::default()
-        })
-        .send()
-        .await?;
+    let value: U256 = parse_units("10", "ether")?.into();
+    let num_transfers = 10;
+    let relayer_id = response.relayer_id;
 
-    let _response: SendTxResponse = response.json().await?;
+    for _ in 0..num_transfers {
+        let response = reqwest::Client::new()
+            .post(&format!("http://{}/1/tx/send", addr))
+            .json(&SendTxRequest {
+                relayer_id: relayer_id.clone(),
+                to: ARBITRARY_ADDRESS,
+                value,
+                gas_limit: U256::from(21_000),
+                ..Default::default()
+            })
+            .send()
+            .await?;
 
-    for _ in 0..10 {
+        let _response: SendTxResponse = response.json().await?;
+    }
+
+    let expected_balance = value * num_transfers;
+    for _ in 0..50 {
         let balance = provider.get_balance(ARBITRARY_ADDRESS, None).await?;
 
-        if balance == value {
+        tracing::info!(?balance, ?expected_balance, "Checking balance");
+
+        if balance == expected_balance {
             return Ok(());
         } else {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 
-    panic!("Transaction was not sent")
+    panic!("Transactions were not sent")
 }

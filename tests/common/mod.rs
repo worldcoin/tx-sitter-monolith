@@ -18,6 +18,10 @@ use service::config::{
 };
 use service::service::Service;
 use tokio::task::JoinHandle;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 pub type AppMiddleware = SignerMiddleware<Arc<Provider<Http>>, LocalWallet>;
 
@@ -45,6 +49,18 @@ impl DoubleAnvilHandle {
     pub fn local_addr(&self) -> String {
         self.local_addr.to_string()
     }
+}
+
+pub fn setup_tracing() {
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().pretty().compact())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                // Logging from fake_rpc can get very messy so we set it to warn only
+                .parse_lossy("info,fake_rpc=warn"),
+        )
+        .init();
 }
 
 pub async fn setup_db() -> eyre::Result<(String, DockerContainerGuard)> {

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::types::{Block, BlockNumber, H256, U256};
@@ -76,6 +77,8 @@ pub async fn index_blocks(app: Arc<App>) -> eyre::Result<()> {
                         )
                         .await?;
                 }
+            } else {
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
 
