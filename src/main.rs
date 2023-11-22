@@ -1,12 +1,9 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::Parser;
 use config::FileFormat;
-use service::app::App;
 use service::config::Config;
-use service::task_backoff::TaskRunner;
-use service::tasks;
+use service::service::Service;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -53,14 +50,8 @@ async fn main() -> eyre::Result<()> {
 
     let config = settings.try_deserialize::<Config>()?;
 
-    let app = Arc::new(App::new(config).await?);
-
-    let task_runner = TaskRunner::new(app.clone());
-    task_runner.add_task("Broadcast transactions", tasks::broadcast_txs);
-    task_runner.add_task("Index transactions", tasks::index_blocks);
-    task_runner.add_task("Escalate transactions", tasks::escalate_txs);
-
-    service::server::serve(app).await?;
+    let service = Service::new(config).await?;
+    service.wait().await?;
 
     Ok(())
 }

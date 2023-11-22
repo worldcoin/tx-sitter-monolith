@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::BlockTxStatus;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendTxRequest {
     pub relayer_id: String,

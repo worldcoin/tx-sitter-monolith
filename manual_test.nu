@@ -6,8 +6,8 @@ http post -t application/json http://127.0.0.1:3000/1/relayer/create { "name": "
 
 # Send a transaction
 http post -t application/json http://127.0.0.1:3000/1/tx/send {
-    "relayerId": "a2d426a9-5b55-4048-812a-ef9e9f2b3a53",
-    "to": "0x14bf69c64d27e5a5b07188b2e19f7501baa79209",
+    "relayerId": "2c1c949e-22f5-4c9a-adb7-f2a7b17111e1",
+    "to": "0xe46e8850051fba970ce6108601df51abb460326f",
     "value": "10",
     "data": ""
     "gasLimit": "150000"

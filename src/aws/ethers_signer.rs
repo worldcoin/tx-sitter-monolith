@@ -330,9 +330,7 @@ mod tests {
             .load()
             .await;
 
-        let kms_client = aws_sdk_kms::Client::new(&config);
-
-        kms_client
+        aws_sdk_kms::Client::new(&config)
     }
 
     #[allow(dead_code)]
@@ -342,9 +340,7 @@ mod tests {
             .load()
             .await;
 
-        let kms_client = aws_sdk_kms::Client::new(&config);
-
-        kms_client
+        aws_sdk_kms::Client::new(&config)
     }
 
     #[tokio::test]

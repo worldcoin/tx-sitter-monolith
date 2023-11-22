@@ -1,23 +1,11 @@
 [package]
-name = "service"
+name = "fake-rpc"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-members = ["crates/*"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Third Party
-## AWS
-aws-config = { version = "0.57.2" }
-aws-sdk-kms = "0.36.0"
-aws-smithy-types = "0.57.2"
-aws-types = "0.57.2"
-aws-credential-types = { version = "0.57.2", features = [
-    "hardcoded-credentials",
-] }
-
-## Other
 serde = "1.0.136"
 axum = { version = "0.6.20", features = ["headers"] }
 thiserror = "1.0.50"
@@ -62,15 +50,3 @@ sqlx = { version = "0.7.2", features = [
 ] }
 spki = "0.7.2"
 async-trait = "0.1.74"
-
-# Internal
-postgres-docker-utils = { path = "crates/postgres-docker-utils" }
-
-[dev-dependencies]
-test-case = "3.1.0"
-indoc = "2.0.3"
-fake-rpc = { path = "crates/fake-rpc" }
-
-[[bin]]
-name = "bootstrap"
-path = "src/main.rs"

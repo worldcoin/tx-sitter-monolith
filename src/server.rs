@@ -3,10 +3,11 @@ use std::sync::Arc;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, IntoMakeService};
 use axum::{Router, TypedHeader};
 use ethers_signers::Signer;
 use eyre::Result;
+use hyper::server::conn::AddrIncoming;
 use middleware::AuthorizedRelayer;
 use thiserror::Error;
 
@@ -16,7 +17,7 @@ use self::data::{
 };
 use crate::app::App;
 
-mod data;
+pub mod data;
 mod middleware;
 
 #[derive(Debug, Error)]
@@ -137,7 +138,19 @@ async fn get_relayer(
     "Hello, World!"
 }
 
-pub async fn serve(app: Arc<App>) -> Result<(), hyper::Error> {
+pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
+    let server = spawn_server(app).await?;
+
+    tracing::info!("Listening on {}", server.local_addr());
+
+    server.await?;
+
+    Ok(())
+}
+
+pub async fn spawn_server(
+    app: Arc<App>,
+) -> eyre::Result<axum::Server<AddrIncoming, IntoMakeService<Router>>> {
     let tx_routes = Router::new()
         .route("/send", post(send_tx))
         .route("/:tx_id", get(get_tx))
@@ -164,9 +177,5 @@ pub async fn serve(app: Arc<App>) -> Result<(), hyper::Error> {
     let server = axum::Server::bind(&app.config.server.host)
         .serve(router.into_make_service());
 
-    tracing::info!("Listening on {}", server.local_addr());
-
-    server.await?;
-
-    Ok(())
+    Ok(server)
 }
