@@ -255,7 +255,7 @@ impl Database {
         block_number: u64,
         chain_id: u64,
         txs: &[H256],
-        fee_estimates: &FeesEstimate,
+        fee_estimates: Option<&FeesEstimate>,
         status: BlockTxStatus,
     ) -> eyre::Result<()> {
         let mut db_tx = self.pool.begin().await?;
@@ -271,7 +271,7 @@ impl Database {
         )
         .bind(block_number as i64)
         .bind(chain_id as i64)
-        .bind(sqlx::types::Json(fee_estimates))
+        .bind(fee_estimates.map(sqlx::types::Json))
         .bind(status)
         .fetch_one(db_tx.as_mut())
         .await?;

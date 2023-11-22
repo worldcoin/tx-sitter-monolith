@@ -114,7 +114,7 @@ async fn seed_initial_blocks(
                 block.number.context("Missing block number")?.as_u64(),
                 chain_id.as_u64(),
                 &block.transactions,
-                &fee_estimates,
+                Some(&fee_estimates),
                 BlockTxStatus::Mined,
             )
             .await?;

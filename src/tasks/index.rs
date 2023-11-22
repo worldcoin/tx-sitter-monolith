@@ -35,7 +35,7 @@ pub async fn index_blocks(app: Arc<App>) -> eyre::Result<()> {
                         block_number,
                         chain_id.as_u64(),
                         &block.transactions,
-                        &fee_estimates,
+                        Some(&fee_estimates),
                         BlockTxStatus::Mined,
                     )
                     .await?;
@@ -59,20 +59,17 @@ pub async fn index_blocks(app: Arc<App>) -> eyre::Result<()> {
                 }
 
                 if block_number > TRAILING_BLOCK_OFFSET {
-                    let (block, fee_estimates) =
-                        fetch_block_with_fee_estimates(
-                            rpc,
-                            block_number - TRAILING_BLOCK_OFFSET,
-                        )
-                        .await?
-                        .context("Missing trailing block")?;
+                    let block =
+                        fetch_block(rpc, block_number - TRAILING_BLOCK_OFFSET)
+                            .await?
+                            .context("Missing trailing block")?;
 
                     app.db
                         .save_block(
                             block_number,
                             chain_id.as_u64(),
                             &block.transactions,
-                            &fee_estimates,
+                            None,
                             BlockTxStatus::Finalized,
                         )
                         .await?;
@@ -111,7 +108,7 @@ pub async fn fetch_block_with_fee_estimates(
 pub async fn fetch_block(
     rpc: &Provider<Http>,
     block_id: impl Into<BlockNumber>,
-) -> eyre::Result<Option<(Block<H256>, FeesEstimate)>> {
+) -> eyre::Result<Option<Block<H256>>> {
     let block_id = block_id.into();
 
     let block = rpc.get_block(block_id).await?;
@@ -120,11 +117,5 @@ pub async fn fetch_block(
         return Ok(None);
     };
 
-    let fee_history = rpc
-        .fee_history(BLOCK_FEE_HISTORY_SIZE, block_id, &FEE_PERCENTILES)
-        .await?;
-
-    let fee_estimates = estimate_percentile_fees(&fee_history)?;
-
-    Ok(Some((block, fee_estimates)))
+    Ok(Some(block))
 }
