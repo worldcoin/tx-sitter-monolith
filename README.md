@@ -2,8 +2,40 @@
 
 A monolithized version of the [tx-sitter](https://github.com/worldcoin/tx-sitter-aws/).
 
-## Testing locally
+## Configuration
+The Tx Sitter can be configured in 2 ways:
+1. Using the config file, refer to `config.rs` and `config.toml` for more info
+2. Using env vars. Every field in the config can also be set via an env var.
+   For example the following config
+   ```toml
+    [service]
+    escalation_interval = "1m"
 
+    [server]
+    host = "127.0.0.1:3000"
+    disable_auth = true
+
+    [rpc]
+    rpcs = ["http://127.0.0.1:8545"]
+
+    [database]
+    connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"
+
+    [keys]
+    kind = "local"
+    ```
+
+    Can also be expressed with env vars
+    ```
+    TX_SITTER__SERVICE__ESCALATION_INTERVAL="1m"
+    TX_SITTER__SERVER__HOST="127.0.0.1:3000"
+    TX_SITTER__SERVER__DISABLE_AUTH="true"
+    TX_SITTER_EXT__RPC__RPCS="http://127.0.0.1:8545"
+    TX_SITTER__DATABASE__CONNECTION_STRING="postgres://postgres:postgres@127.0.0.1:5432/database"
+    TX_SITTER__KEYS__KIND="local"
+    ```
+
+## Testing locally
 Copy `.env.example` to `.env` or set `RUST_LOG=info,service=debug` to have logging.
 
 1. Spin up the database `docker run --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres`
