@@ -1,9 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::NaiveDateTime;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::types::{Block, BlockNumber, H256, U256};
 use eyre::ContextCompat;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 
 use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
@@ -19,21 +22,32 @@ pub async fn index_blocks(app: Arc<App>) -> eyre::Result<()> {
     loop {
         let next_block_numbers = app.db.get_next_block_numbers().await?;
 
-        // TODO: Parallelize
-        for (block_number, chain_id) in next_block_numbers {
-            let chain_id = U256::from(chain_id);
+        for next_block in next_block_numbers {
+            let chain_id = U256::from(next_block.chain_id);
             let rpc = app
                 .rpcs
                 .get(&chain_id)
                 .context("Missing RPC for chain id")?;
 
             if let Some((block, fee_estimates)) =
-                fetch_block_with_fee_estimates(rpc, block_number).await?
+                fetch_block_with_fee_estimates(
+                    rpc,
+                    next_block.next_block_number,
+                )
+                .await?
             {
+                let block_timestamp_seconds = block.timestamp.as_u64();
+                let block_timestamp = NaiveDateTime::from_timestamp_opt(
+                    block_timestamp_seconds as i64,
+                    0,
+                )
+                .context("Invalid timestamp")?;
+
                 app.db
                     .save_block(
-                        block_number,
+                        next_block.next_block_number,
                         chain_id.as_u64(),
+                        block_timestamp,
                         &block.transactions,
                         Some(&fee_estimates),
                         BlockTxStatus::Mined,
@@ -43,45 +57,77 @@ pub async fn index_blocks(app: Arc<App>) -> eyre::Result<()> {
                 let relayer_addresses =
                     app.db.fetch_relayer_addresses(chain_id.as_u64()).await?;
 
-                // TODO: Parallelize
-                for relayer_address in relayer_addresses {
-                    let tx_count = rpc
-                        .get_transaction_count(relayer_address, None)
-                        .await?;
+                update_relayer_nonces(relayer_addresses, &app, rpc, chain_id)
+                    .await?;
 
-                    app.db
-                        .update_relayer_nonce(
-                            chain_id.as_u64(),
-                            relayer_address,
-                            tx_count.as_u64(),
-                        )
-                        .await?;
-                }
+                if next_block.next_block_number > TRAILING_BLOCK_OFFSET {
+                    let block = fetch_block(
+                        rpc,
+                        next_block.next_block_number - TRAILING_BLOCK_OFFSET,
+                    )
+                    .await?
+                    .context("Missing trailing block")?;
 
-                if block_number > TRAILING_BLOCK_OFFSET {
-                    let block =
-                        fetch_block(rpc, block_number - TRAILING_BLOCK_OFFSET)
-                            .await?
-                            .context("Missing trailing block")?;
+                    let block_timestamp_seconds = block.timestamp.as_u64();
+                    let block_timestamp = NaiveDateTime::from_timestamp_opt(
+                        block_timestamp_seconds as i64,
+                        0,
+                    )
+                    .context("Invalid timestamp")?;
 
                     app.db
                         .save_block(
-                            block_number,
+                            next_block.next_block_number,
                             chain_id.as_u64(),
+                            block_timestamp,
                             &block.transactions,
                             None,
                             BlockTxStatus::Finalized,
                         )
                         .await?;
                 }
-            } else {
-                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
 
         app.db.update_transactions(BlockTxStatus::Mined).await?;
         app.db.update_transactions(BlockTxStatus::Finalized).await?;
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn update_relayer_nonces(
+    relayer_addresses: Vec<ethers::types::H160>,
+    app: &Arc<App>,
+    rpc: &Provider<Http>,
+    chain_id: U256,
+) -> Result<(), eyre::Error> {
+    let mut futures = FuturesUnordered::new();
+
+    for relayer_address in relayer_addresses {
+        let app = app.clone();
+
+        futures.push(async move {
+            let tx_count =
+                rpc.get_transaction_count(relayer_address, None).await?;
+
+            app.db
+                .update_relayer_nonce(
+                    chain_id.as_u64(),
+                    relayer_address,
+                    tx_count.as_u64(),
+                )
+                .await?;
+
+            Result::<(), eyre::Report>::Ok(())
+        })
+    }
+
+    while let Some(result) = futures.next().await {
+        result?;
+    }
+
+    Ok(())
 }
 
 pub async fn fetch_block_with_fee_estimates(

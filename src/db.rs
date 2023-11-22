@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use chrono::NaiveDateTime;
 use ethers::types::{Address, H256, U256};
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::{Pool, Postgres, Row};
@@ -9,7 +10,7 @@ use crate::config::DatabaseConfig;
 
 pub mod data;
 
-use self::data::{AddressWrapper, ReadTxData};
+use self::data::{AddressWrapper, H256Wrapper, NextBlock, ReadTxData};
 pub use self::data::{BlockTxStatus, TxForEscalation, UnsentTx};
 
 // Statically link in migration files
@@ -207,27 +208,29 @@ impl Database {
         Ok(item.map(|json_fee_estimate| json_fee_estimate.0))
     }
 
-    pub async fn get_next_block_numbers(
-        &self,
-    ) -> eyre::Result<Vec<(u64, u64)>> {
-        let rows: Vec<(i64, i64)> = sqlx::query_as(
+    pub async fn get_next_block_numbers(&self) -> eyre::Result<Vec<NextBlock>> {
+        Ok(sqlx::query_as(
             r#"
-            SELECT   MAX(block_number) + 1, chain_id
-            FROM     blocks
-            WHERE    status = $1
-            GROUP BY chain_id
+            WITH LatestBlocks AS (
+                SELECT
+                    block_number,
+                    chain_id,
+                    timestamp,
+                    ROW_NUMBER() OVER (PARTITION BY chain_id ORDER BY block_number DESC) AS rn
+                FROM blocks
+                WHERE status = $1
+            )
+            SELECT
+                block_number + 1 AS next_block_number,
+                chain_id,
+                timestamp as prev_block_timestamp
+            FROM LatestBlocks
+            WHERE rn = 1
             "#,
         )
         .bind(BlockTxStatus::Mined)
         .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|(block_number, chain_id)| {
-                (block_number as u64, chain_id as u64)
-            })
-            .collect())
+        .await?)
     }
 
     pub async fn has_blocks_for_chain(
@@ -254,40 +257,46 @@ impl Database {
         &self,
         block_number: u64,
         chain_id: u64,
+        timestamp: NaiveDateTime,
         txs: &[H256],
         fee_estimates: Option<&FeesEstimate>,
         status: BlockTxStatus,
     ) -> eyre::Result<()> {
         let mut db_tx = self.pool.begin().await?;
 
-        // let fee_estimates = serde_json::to_string(&fee_estimates)?;
-
         let (block_id,): (i64,) = sqlx::query_as(
             r#"
-            INSERT INTO blocks (block_number, chain_id, fee_estimate, status)
-            VALUES      ($1, $2, $3, $4)
+            INSERT INTO blocks (block_number, chain_id, timestamp, fee_estimate, status)
+            VALUES      ($1, $2, $3, $4, $5)
             RETURNING   id
             "#,
         )
         .bind(block_number as i64)
         .bind(chain_id as i64)
+        .bind(timestamp)
         .bind(fee_estimates.map(sqlx::types::Json))
         .bind(status)
         .fetch_one(db_tx.as_mut())
         .await?;
 
-        for tx_hash in txs {
-            sqlx::query(
-                r#"
-                INSERT INTO block_txs (block_id, tx_hash)
-                VALUES ($1, $2)
-                "#,
-            )
-            .bind(block_id)
-            .bind(tx_hash.as_bytes())
-            .execute(db_tx.as_mut())
-            .await?;
-        }
+        let txs: Vec<_> = txs.iter().map(|tx| H256Wrapper(*tx)).collect();
+
+        sqlx::query(
+            r#"
+            INSERT INTO block_txs (block_id, tx_hash)
+            SELECT $1, unnested.tx_hash
+            FROM UNNEST($2::BYTEA[]) AS unnested(tx_hash)
+            WHERE EXISTS (
+                SELECT 1
+                FROM tx_hashes
+                WHERE tx_hashes.tx_hash = unnested.tx_hash
+            );
+            "#,
+        )
+        .bind(block_id)
+        .bind(&txs[..])
+        .execute(db_tx.as_mut())
+        .await?;
 
         db_tx.commit().await?;
 

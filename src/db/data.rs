@@ -1,6 +1,8 @@
+use chrono::Utc;
 use ethers::types::{Address, H256, U256};
 use serde::{Deserialize, Serialize};
-use sqlx::database::HasValueRef;
+use sqlx::database::{HasArguments, HasValueRef};
+use sqlx::postgres::{PgHasArrayType, PgTypeInfo};
 use sqlx::prelude::FromRow;
 use sqlx::Database;
 
@@ -49,6 +51,15 @@ pub struct ReadTxData {
     // Sent tx data
     pub tx_hash: Option<H256Wrapper>,
     pub status: Option<BlockTxStatus>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct NextBlock {
+    #[sqlx(try_from = "i64")]
+    pub next_block_number: u64,
+    #[sqlx(try_from = "i64")]
+    pub chain_id: u64,
+    pub prev_block_timestamp: chrono::DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +141,25 @@ where
         let value = H256::from_slice(&bytes);
 
         Ok(Self(value))
+    }
+}
+
+impl<'q, DB> sqlx::Encode<'q, DB> for H256Wrapper
+where
+    DB: Database,
+    [u8; 32]: sqlx::Encode<'q, DB>,
+{
+    fn encode_by_ref(
+        &self,
+        buf: &mut <DB as HasArguments<'q>>::ArgumentBuffer,
+    ) -> sqlx::encode::IsNull {
+        <[u8; 32] as sqlx::Encode<DB>>::encode_by_ref(&self.0 .0, buf)
+    }
+}
+
+impl PgHasArrayType for H256Wrapper {
+    fn array_type_info() -> PgTypeInfo {
+        <[u8; 32] as PgHasArrayType>::array_type_info()
     }
 }
 

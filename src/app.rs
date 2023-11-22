@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use chrono::NaiveDateTime;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::types::{BlockNumber, U256};
@@ -110,9 +111,17 @@ async fn seed_initial_blocks(
                     .await?
                     .context("Missing latest block")?;
 
+            let block_timestamp_seconds = block.timestamp.as_u64();
+            let block_timestamp = NaiveDateTime::from_timestamp_opt(
+                block_timestamp_seconds as i64,
+                0,
+            )
+            .context("Invalid timestamp")?;
+
             db.save_block(
                 block.number.context("Missing block number")?.as_u64(),
                 chain_id.as_u64(),
+                block_timestamp,
                 &block.transactions,
                 Some(&fee_estimates),
                 BlockTxStatus::Mined,

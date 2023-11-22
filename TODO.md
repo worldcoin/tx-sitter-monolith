@@ -12,4 +12,9 @@
    2. [ ] Basic with contracts
    3. [ ] Escalation testing
    4. [ ] Reorg testing (how?!?)
-9.  [ ] Parallelization in a few places
+9.  [ ] Parallelization:
+    1.  [ ] Parallelize block indexing
+    2.  [x] Parallelize nonce updating
+    3.  [ ] Parallelize broadcast per chain id
+10. [x] No need to insert all block txs into DB
+11. [ ] Prune block info

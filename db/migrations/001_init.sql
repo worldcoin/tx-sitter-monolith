@@ -75,6 +75,7 @@ CREATE TABLE blocks (
     id BIGSERIAL PRIMARY KEY,
     block_number BIGINT NOT NULL,
     chain_id BIGINT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     -- mined | finalized
     status block_tx_status NOT NULL,
     fee_estimate JSON
