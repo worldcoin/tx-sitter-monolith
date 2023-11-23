@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post, IntoMakeService};
 use axum::{Router, TypedHeader};
-use ethers_signers::Signer;
+use ethers::signers::Signer;
 use eyre::Result;
 use hyper::server::conn::AddrIncoming;
 use middleware::AuthorizedRelayer;

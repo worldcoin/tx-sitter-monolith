@@ -7,14 +7,13 @@ use std::time::Duration;
 use ethers::core::k256::ecdsa::SigningKey;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
-use ethers::signers::LocalWallet;
+use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, Eip1559TransactionRequest, H160, U256};
-use ethers_signers::Signer;
 use fake_rpc::DoubleAnvil;
 use postgres_docker_utils::DockerContainerGuard;
 use service::config::{
-    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, RpcConfig,
-    ServerConfig, TxSitterConfig,
+    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, ServerConfig,
+    TxSitterConfig,
 };
 use service::service::Service;
 use tokio::task::JoinHandle;
@@ -124,9 +123,6 @@ pub async fn setup_service(
                 0,
             )),
             disable_auth: true,
-        },
-        rpc: RpcConfig {
-            rpcs: vec![format!("http://{}", rpc_url.to_string())],
         },
         database: DatabaseConfig {
             connection_string: db_connection_url.to_string(),

@@ -44,13 +44,10 @@ async fn update_block(
     next_block: NextBlock,
 ) -> eyre::Result<()> {
     let chain_id = U256::from(next_block.chain_id);
-    let rpc = app
-        .rpcs
-        .get(&chain_id)
-        .context("Missing RPC for chain id")?;
+    let rpc = app.fetch_http_provider(chain_id).await?;
 
     let block =
-        fetch_block_with_fee_estimates(rpc, next_block.next_block_number)
+        fetch_block_with_fee_estimates(&rpc, next_block.next_block_number)
             .await?;
 
     let Some((block, fee_estimates)) = block else {
@@ -76,11 +73,11 @@ async fn update_block(
     let relayer_addresses =
         app.db.fetch_relayer_addresses(chain_id.as_u64()).await?;
 
-    update_relayer_nonces(relayer_addresses, &app, rpc, chain_id).await?;
+    update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id).await?;
 
     if next_block.next_block_number > TRAILING_BLOCK_OFFSET {
         let block = fetch_block(
-            rpc,
+            &rpc,
             next_block.next_block_number - TRAILING_BLOCK_OFFSET,
         )
         .await?

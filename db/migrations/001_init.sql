@@ -4,17 +4,23 @@ CREATE TYPE block_tx_status AS ENUM (
     'finalized'
 );
 
--- create table networks (
---     id BIGSERIAL PRIMARY KEY,
---     name VARCHAR(255) NOT NULL,
---     chain_id BIGINT NOT NULL
--- );
+CREATE TYPE rpc_kind AS ENUM (
+    'http',
+    'ws'
+);
 
--- create table rpcs (
---     id BIGSERIAL PRIMARY KEY,
---     network_id BIGINT NOT NULL REFERENCES networks(id),
---     url VARCHAR(255) NOT NULL
--- );
+create table networks (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    chain_id BIGINT NOT NULL
+);
+
+create table rpcs (
+    id BIGSERIAL PRIMARY KEY,
+    network_id BIGINT NOT NULL REFERENCES networks(id),
+    url VARCHAR(255) NOT NULL,
+    kind rpc_kind NOT NULL
+);
 
 CREATE TABLE relayers (
     id VARCHAR(255) PRIMARY KEY,
