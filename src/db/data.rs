@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use ethers::types::{Address, H256, U256};
 use serde::{Deserialize, Serialize};
 use sqlx::database::{HasArguments, HasValueRef};
@@ -53,13 +53,13 @@ pub struct ReadTxData {
     pub status: Option<BlockTxStatus>,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct NextBlock {
     #[sqlx(try_from = "i64")]
     pub next_block_number: u64,
     #[sqlx(try_from = "i64")]
     pub chain_id: u64,
-    pub prev_block_timestamp: chrono::DateTime<Utc>,
+    pub prev_block_timestamp: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]

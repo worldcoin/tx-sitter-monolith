@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use chrono::NaiveDateTime;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use ethers::types::{Address, H256, U256};
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::{Pool, Postgres, Row};
@@ -257,7 +257,7 @@ impl Database {
         &self,
         block_number: u64,
         chain_id: u64,
-        timestamp: NaiveDateTime,
+        timestamp: DateTime<Utc>,
         txs: &[H256],
         fee_estimates: Option<&FeesEstimate>,
         status: BlockTxStatus,
@@ -470,10 +470,46 @@ impl Database {
 
         Ok(())
     }
+
+    pub async fn prune_blocks(
+        &self,
+        timestamp: DateTime<Utc>,
+    ) -> eyre::Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM block_txs
+            WHERE  block_id IN (
+                SELECT id
+                FROM   blocks
+                WHERE  timestamp < $1
+            )
+            "#,
+        )
+        .bind(timestamp)
+        .execute(tx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM blocks
+            WHERE  timestamp < $1
+            "#,
+        )
+        .bind(timestamp)
+        .execute(tx.as_mut())
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use chrono::NaiveDate;
     use postgres_docker_utils::DockerContainerGuard;
 
     use super::*;
@@ -497,6 +533,56 @@ mod tests {
         let (_db, _db_container) = setup_db().await?;
 
         // db.create_relayer().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn save_and_prune_blocks() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let block_timestamp = NaiveDate::from_ymd_opt(2023, 11, 23)
+            .unwrap()
+            .and_hms_opt(12, 32, 2)
+            .unwrap()
+            .and_utc();
+
+        let prune_timestamp = NaiveDate::from_ymd_opt(2023, 11, 23)
+            .unwrap()
+            .and_hms_opt(13, 32, 23)
+            .unwrap()
+            .and_utc();
+
+        let tx_hashes = vec![
+            H256::from_low_u64_be(1),
+            H256::from_low_u64_be(2),
+            H256::from_low_u64_be(3),
+        ];
+
+        db.save_block(
+            1,
+            1,
+            block_timestamp.clone(),
+            &tx_hashes,
+            None,
+            BlockTxStatus::Mined,
+        )
+        .await?;
+
+        let next_blocks = db.get_next_block_numbers().await?;
+        let expected = vec![NextBlock {
+            next_block_number: 2,
+            chain_id: 1,
+            prev_block_timestamp: block_timestamp,
+        }];
+
+        assert_eq!(next_blocks, expected, "Should return next block");
+
+        db.prune_blocks(prune_timestamp).await?;
+
+        let next_blocks = db.get_next_block_numbers().await?;
+
+        assert!(next_blocks.is_empty(), "Should return no blocks");
 
         Ok(())
     }

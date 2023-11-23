@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::NaiveDateTime;
+use chrono::{DateTime, Utc};
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::types::{Block, BlockNumber, H256, U256};
 use eyre::ContextCompat;
@@ -59,7 +59,7 @@ async fn update_block(
 
     let block_timestamp_seconds = block.timestamp.as_u64();
     let block_timestamp =
-        NaiveDateTime::from_timestamp_opt(block_timestamp_seconds as i64, 0)
+        DateTime::<Utc>::from_timestamp(block_timestamp_seconds as i64, 0)
             .context("Invalid timestamp")?;
 
     app.db
@@ -87,11 +87,9 @@ async fn update_block(
         .context("Missing trailing block")?;
 
         let block_timestamp_seconds = block.timestamp.as_u64();
-        let block_timestamp = NaiveDateTime::from_timestamp_opt(
-            block_timestamp_seconds as i64,
-            0,
-        )
-        .context("Invalid timestamp")?;
+        let block_timestamp =
+            DateTime::<Utc>::from_timestamp(block_timestamp_seconds as i64, 0)
+                .context("Invalid timestamp")?;
 
         app.db
             .save_block(

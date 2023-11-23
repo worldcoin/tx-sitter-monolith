@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::NaiveDateTime;
+use chrono::{DateTime, Utc};
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::types::{BlockNumber, U256};
@@ -112,7 +112,7 @@ async fn seed_initial_blocks(
                     .context("Missing latest block")?;
 
             let block_timestamp_seconds = block.timestamp.as_u64();
-            let block_timestamp = NaiveDateTime::from_timestamp_opt(
+            let block_timestamp = DateTime::<Utc>::from_timestamp(
                 block_timestamp_seconds as i64,
                 0,
             )

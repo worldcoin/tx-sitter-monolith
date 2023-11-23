@@ -22,6 +22,7 @@ impl Service {
         task_runner.add_task("Broadcast transactions", tasks::broadcast_txs);
         task_runner.add_task("Index transactions", tasks::index_blocks);
         task_runner.add_task("Escalate transactions", tasks::escalate_txs);
+        task_runner.add_task("Prune blocks", tasks::prune_blocks);
 
         let server = crate::server::spawn_server(app.clone()).await?;
         let local_addr = server.local_addr();
