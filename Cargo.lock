@@ -3828,6 +3828,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid 0.8.2",
 ]
 

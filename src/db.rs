@@ -505,6 +505,49 @@ impl Database {
 
         Ok(())
     }
+
+    pub async fn create_network(
+        &self,
+        chain_id: u64,
+        name: &str,
+        http_rpc: &str,
+        ws_rpc: &str,
+    ) -> eyre::Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO networks (chain_id, name)
+            VALUES ($1, $2)
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(name)
+        .execute(tx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO rpcs (chain_id, url, kind)
+            VALUES
+                ($1, $2, $3),
+                ($1, $4, $5)
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(http_rpc)
+        .bind("http")
+        .bind(ws_rpc)
+        .bind("ws")
+        .execute(tx.as_mut())
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    // pub async fn
 }
 
 #[cfg(test)]

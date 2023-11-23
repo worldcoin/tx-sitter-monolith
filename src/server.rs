@@ -19,6 +19,7 @@ use crate::app::App;
 
 pub mod data;
 mod middleware;
+mod routes;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
@@ -165,12 +166,16 @@ pub async fn spawn_server(
         .route("/:relayer_id", get(get_relayer))
         .with_state(app.clone());
 
-    // let network_routes = Router::new()
-    //     .route("/");
+    let network_routes = Router::new()
+        // .route("/", get(routes::network::get_networks))
+        // .route("/:chain_id", get(routes::network::get_network))
+        .route("/:chain_id", post(routes::network::create_network))
+        .with_state(app.clone());
 
     let router = Router::new()
         .nest("/1/tx", tx_routes)
         .nest("/1/relayer", relayer_routes)
+        .nest("/1/network", network_routes)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(middleware::log_response));
 

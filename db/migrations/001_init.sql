@@ -10,14 +10,13 @@ CREATE TYPE rpc_kind AS ENUM (
 );
 
 create table networks (
-    id BIGSERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    chain_id BIGINT NOT NULL
+    chain_id BIGINT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL
 );
 
 create table rpcs (
     id BIGSERIAL PRIMARY KEY,
-    network_id BIGINT NOT NULL REFERENCES networks(id),
+    chain_id BIGINT NOT NULL REFERENCES networks(chain_id),
     url VARCHAR(255) NOT NULL,
     kind rpc_kind NOT NULL
 );
