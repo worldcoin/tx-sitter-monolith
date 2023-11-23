@@ -3,23 +3,26 @@ use std::time::{Duration, Instant};
 
 use futures::Future;
 
-use crate::app::App;
-
 const FAILURE_MONITORING_PERIOD: Duration = Duration::from_secs(60);
 
-pub struct TaskRunner {
-    app: Arc<App>,
+pub struct TaskRunner<T> {
+    app: Arc<T>,
 }
 
-impl TaskRunner {
-    pub fn new(app: Arc<App>) -> Self {
+impl<T> TaskRunner<T> {
+    pub fn new(app: Arc<T>) -> Self {
         Self { app }
     }
+}
 
+impl<T> TaskRunner<T>
+where
+    T: Send + Sync + 'static,
+{
     pub fn add_task<S, C, F>(&self, label: S, task: C)
     where
         S: ToString,
-        C: Fn(Arc<App>) -> F + Send + Sync + 'static,
+        C: Fn(Arc<T>) -> F + Send + Sync + 'static,
         F: Future<Output = eyre::Result<()>> + Send + 'static,
     {
         let app = self.app.clone();

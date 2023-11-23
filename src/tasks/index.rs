@@ -12,6 +12,7 @@ use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
+use crate::db::data::NextBlock;
 use crate::db::BlockTxStatus;
 
 const BLOCK_FEE_HISTORY_SIZE: usize = 10;
@@ -23,77 +24,88 @@ pub async fn index_blocks(app: Arc<App>) -> eyre::Result<()> {
         let next_block_numbers = app.db.get_next_block_numbers().await?;
 
         for next_block in next_block_numbers {
-            let chain_id = U256::from(next_block.chain_id);
-            let rpc = app
-                .rpcs
-                .get(&chain_id)
-                .context("Missing RPC for chain id")?;
-
-            if let Some((block, fee_estimates)) =
-                fetch_block_with_fee_estimates(
-                    rpc,
-                    next_block.next_block_number,
-                )
-                .await?
-            {
-                let block_timestamp_seconds = block.timestamp.as_u64();
-                let block_timestamp = NaiveDateTime::from_timestamp_opt(
-                    block_timestamp_seconds as i64,
-                    0,
-                )
-                .context("Invalid timestamp")?;
-
-                app.db
-                    .save_block(
-                        next_block.next_block_number,
-                        chain_id.as_u64(),
-                        block_timestamp,
-                        &block.transactions,
-                        Some(&fee_estimates),
-                        BlockTxStatus::Mined,
-                    )
-                    .await?;
-
-                let relayer_addresses =
-                    app.db.fetch_relayer_addresses(chain_id.as_u64()).await?;
-
-                update_relayer_nonces(relayer_addresses, &app, rpc, chain_id)
-                    .await?;
-
-                if next_block.next_block_number > TRAILING_BLOCK_OFFSET {
-                    let block = fetch_block(
-                        rpc,
-                        next_block.next_block_number - TRAILING_BLOCK_OFFSET,
-                    )
-                    .await?
-                    .context("Missing trailing block")?;
-
-                    let block_timestamp_seconds = block.timestamp.as_u64();
-                    let block_timestamp = NaiveDateTime::from_timestamp_opt(
-                        block_timestamp_seconds as i64,
-                        0,
-                    )
-                    .context("Invalid timestamp")?;
-
-                    app.db
-                        .save_block(
-                            next_block.next_block_number,
-                            chain_id.as_u64(),
-                            block_timestamp,
-                            &block.transactions,
-                            None,
-                            BlockTxStatus::Finalized,
-                        )
-                        .await?;
-                }
-            }
+            update_block(app.clone(), next_block).await?;
         }
 
-        app.db.update_transactions(BlockTxStatus::Mined).await?;
-        app.db.update_transactions(BlockTxStatus::Finalized).await?;
+        let (update_mined, update_finalized) = tokio::join!(
+            app.db.update_transactions(BlockTxStatus::Mined),
+            app.db.update_transactions(BlockTxStatus::Finalized)
+        );
+
+        update_mined?;
+        update_finalized?;
 
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn update_block(
+    app: Arc<App>,
+    next_block: NextBlock,
+) -> eyre::Result<()> {
+    let chain_id = U256::from(next_block.chain_id);
+    let rpc = app
+        .rpcs
+        .get(&chain_id)
+        .context("Missing RPC for chain id")?;
+
+    let block =
+        fetch_block_with_fee_estimates(rpc, next_block.next_block_number)
+            .await?;
+
+    let Some((block, fee_estimates)) = block else {
+        return Ok(());
+    };
+
+    let block_timestamp_seconds = block.timestamp.as_u64();
+    let block_timestamp =
+        NaiveDateTime::from_timestamp_opt(block_timestamp_seconds as i64, 0)
+            .context("Invalid timestamp")?;
+
+    app.db
+        .save_block(
+            next_block.next_block_number,
+            chain_id.as_u64(),
+            block_timestamp,
+            &block.transactions,
+            Some(&fee_estimates),
+            BlockTxStatus::Mined,
+        )
+        .await?;
+
+    let relayer_addresses =
+        app.db.fetch_relayer_addresses(chain_id.as_u64()).await?;
+
+    update_relayer_nonces(relayer_addresses, &app, rpc, chain_id).await?;
+
+    if next_block.next_block_number > TRAILING_BLOCK_OFFSET {
+        let block = fetch_block(
+            rpc,
+            next_block.next_block_number - TRAILING_BLOCK_OFFSET,
+        )
+        .await?
+        .context("Missing trailing block")?;
+
+        let block_timestamp_seconds = block.timestamp.as_u64();
+        let block_timestamp = NaiveDateTime::from_timestamp_opt(
+            block_timestamp_seconds as i64,
+            0,
+        )
+        .context("Invalid timestamp")?;
+
+        app.db
+            .save_block(
+                next_block.next_block_number,
+                chain_id.as_u64(),
+                block_timestamp,
+                &block.transactions,
+                None,
+                BlockTxStatus::Finalized,
+            )
+            .await?;
+    }
+
+    Ok(())
 }
 
 async fn update_relayer_nonces(

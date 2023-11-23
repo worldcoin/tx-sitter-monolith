@@ -5,7 +5,7 @@ use tokio::task::JoinHandle;
 
 use crate::app::App;
 use crate::config::Config;
-use crate::task_backoff::TaskRunner;
+use crate::task_runner::TaskRunner;
 use crate::tasks;
 
 pub struct Service {
