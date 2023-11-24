@@ -49,7 +49,6 @@ impl App {
     ) -> eyre::Result<Provider<Ws>> {
         let url = self.db.get_network_rpc(chain_id, RpcKind::Ws).await?;
 
-        println!("url = {}", url);
         let ws = Ws::connect(url.as_str()).await?;
         let provider = Provider::new(ws);
 

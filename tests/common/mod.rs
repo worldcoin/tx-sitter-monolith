@@ -142,10 +142,8 @@ pub async fn setup_service(
 
     let service = Service::new(config).await?;
 
-    let client = TxSitterClient::new(format!(
-        "http://{}",
-        service.local_addr().to_string()
-    ));
+    let client =
+        TxSitterClient::new(format!("http://{}", service.local_addr()));
 
     client
         .create_network(

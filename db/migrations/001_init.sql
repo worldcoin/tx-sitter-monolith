@@ -46,7 +46,7 @@ CREATE TABLE transactions (
 -- Sent transaction attempts
 CREATE TABLE tx_hashes (
     tx_hash BYTEA PRIMARY KEY,
-    tx_id VARCHAR(255) NOT NULL REFERENCES transactions(id),
+    tx_id VARCHAR(255) NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     max_fee_per_gas BYTEA NOT NULL,
     max_priority_fee_per_gas BYTEA NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE tx_hashes (
 
 -- Dynamic tx data & data used for escalations
 CREATE TABLE sent_transactions (
-    tx_id                            VARCHAR(255) PRIMARY KEY REFERENCES transactions(id),
+    tx_id                            VARCHAR(255) PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
     initial_max_fee_per_gas          BYTEA        NOT NULL,
     initial_max_priority_fee_per_gas BYTEA        NOT NULL,
     created_at                       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -83,6 +83,6 @@ CREATE TABLE block_txs (
     chain_id BIGINT NOT NULL,
     tx_hash BYTEA NOT NULL,
     PRIMARY KEY (block_number, chain_id, tx_hash),
-    FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id),
+    FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id) ON DELETE CASCADE,
     FOREIGN KEY (tx_hash) REFERENCES tx_hashes (tx_hash)
 );

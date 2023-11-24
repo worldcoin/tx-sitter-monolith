@@ -2,8 +2,7 @@ use ethers::core::k256::ecdsa::SigningKey;
 use ethers::core::types::transaction::eip2718::TypedTransaction;
 use ethers::core::types::transaction::eip712::Eip712;
 use ethers::core::types::{Address, Signature as EthSig};
-use ethers::signers::Signer;
-use ethers::signers::{Wallet, WalletError};
+use ethers::signers::{Signer, Wallet, WalletError};
 use thiserror::Error;
 
 use crate::aws::ethers_signer::AwsSigner;

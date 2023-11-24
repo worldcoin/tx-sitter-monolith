@@ -312,8 +312,6 @@ impl Database {
         .fetch_all(tx.as_mut())
         .await?;
 
-        println!("soft reorg items: {:?}", items);
-
         let (tx_ids, tx_hashes): (Vec<_>, Vec<_>) = items.into_iter().unzip();
 
         sqlx::query(
@@ -361,8 +359,6 @@ impl Database {
         .fetch_all(tx.as_mut())
         .await?;
 
-        println!("hard reorg items: {:?}", items);
-
         let tx_ids: Vec<_> = items.into_iter().map(|(x,)| x).collect();
 
         // Set status to pending
@@ -377,7 +373,8 @@ impl Database {
                        WHERE  h.tx_id = s.tx_id
                        ORDER BY created_at DESC
                        LIMIT  1
-                   )
+                   ),
+                   mined_at = NULL
             FROM   transactions t, UNNEST($2::TEXT[]) AS reorged(tx_id)
             WHERE  t.id = reorged.tx_id
             AND    t.id = s.tx_id
@@ -398,15 +395,16 @@ impl Database {
 
         // Fetch txs which are marked as pending but have an associated tx
         // present in in one of the block txs
-        let items: Vec<(String, H256Wrapper)> = sqlx::query_as(
+        let items: Vec<(String, H256Wrapper, DateTime<Utc>)> = sqlx::query_as(
             r#"
-            SELECT t.id, h.tx_hash
+            SELECT t.id, h.tx_hash, b.timestamp
             FROM   transactions t
             JOIN   sent_transactions s ON t.id = s.tx_id
             JOIN   tx_hashes h ON t.id = h.tx_id
             JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
+            JOIN   blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
             WHERE  s.status = $1
-            AND    bt.chain_id = $2
+            AND    b.chain_id = $2
             "#,
         )
         .bind(TxStatus::Pending)
@@ -414,17 +412,24 @@ impl Database {
         .fetch_all(tx.as_mut())
         .await?;
 
-        println!("mine items: {:?}", items);
+        let mut tx_ids = Vec::new();
+        let mut tx_hashes = Vec::new();
+        let mut timestamps = Vec::new();
 
-        let (tx_ids, tx_hashes): (Vec<_>, Vec<_>) = items.into_iter().unzip();
+        for (tx_id, tx_hash, timestamp) in items {
+            tx_ids.push(tx_id);
+            tx_hashes.push(tx_hash);
+            timestamps.push(timestamp);
+        }
 
         sqlx::query(
             r#"
             UPDATE sent_transactions s
             SET    status = $1,
-                   valid_tx_hash = mined.tx_hash
+                   valid_tx_hash = mined.tx_hash,
+                   mined_at = mined.timestamp
             FROM   transactions t,
-                   UNNEST($2::TEXT[], $3::BYTEA[]) AS mined(tx_id, tx_hash)
+                   UNNEST($2::TEXT[], $3::BYTEA[], $4::TIMESTAMPTZ[]) AS mined(tx_id, tx_hash, timestamp)
             WHERE  t.id = mined.tx_id
             AND    t.id = s.tx_id
             "#,
@@ -432,6 +437,7 @@ impl Database {
         .bind(TxStatus::Mined)
         .bind(&tx_ids)
         .bind(&tx_hashes)
+        .bind(&timestamps)
         .execute(tx.as_mut())
         .await?;
 
@@ -464,8 +470,6 @@ impl Database {
         .fetch_all(tx.as_mut())
         .await?;
 
-        println!("finalize items: {:?}", items);
-
         let tx_ids: Vec<_> = items.into_iter().map(|(x,)| x).collect();
 
         // Set status to finalized
@@ -480,146 +484,6 @@ impl Database {
         )
         .bind(TxStatus::Finalized)
         .bind(&tx_ids)
-        .execute(tx.as_mut())
-        .await?;
-
-        tx.commit().await?;
-
-        Ok(())
-    }
-
-    pub async fn update_transactions(
-        &self,
-        chain_id: u64,
-        finalized_timestamp: DateTime<Utc>,
-    ) -> eyre::Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        // We fetch all transactions
-        // And for each transaction we also fetch all tx hashes
-        // And all blocks that these hashes are present in
-        let mined_txs: Vec<(String, H256Wrapper, Option<H256Wrapper>, Option<DateTime<Utc>>)> = sqlx::query_as(
-            r#"
-            SELECT    t.id, s.valid_tx_hash, h.tx_hash, b.timestamp
-            FROM      transactions t
-            LEFT JOIN sent_transactions s ON t.id = s.tx_id
-            LEFT JOIN tx_hashes h ON t.id = h.tx_id
-            LEFT JOIN block_txs bt ON h.tx_hash = bt.tx_hash
-            LEFT JOIN blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
-            WHERE     (b.chain_id IS NULL OR b.chain_id = $1)
-            AND       s.status <> $2
-            "#
-        )
-        .bind(chain_id as i64)
-        .bind(TxStatus::Finalized)
-        .fetch_all(tx.as_mut()).await?;
-
-        let txs_to_reorg = mined_txs
-            .iter()
-            .filter(|(_, _, _, block_timestamp)| block_timestamp.is_none())
-            .map(|(tx_id, _, _, _)| tx_id.as_str())
-            .collect::<Vec<_>>();
-
-        // Reorg txs
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    status = $1,
-                   valid_tx_hash = (
-                       SELECT tx_hash
-                       FROM   tx_hashes h
-                       WHERE  h.tx_id = s.tx_id
-                       ORDER BY created_at DESC
-                       LIMIT  1
-                   )
-            FROM   transactions t, UNNEST($2::TEXT[]) AS reorged(tx_id)
-            WHERE  t.id = reorged.tx_id
-            AND    t.id = s.tx_id
-            "#,
-        )
-        .bind(TxStatus::Pending)
-        .bind(&txs_to_reorg)
-        .execute(tx.as_mut())
-        .await?;
-
-        let txs_to_mine = mined_txs
-            .iter()
-            .filter(|(_, valid_tx_hash, tx_hash, block_ts)| {
-                block_ts.is_some()
-                    && tx_hash.is_some()
-                    && *valid_tx_hash != tx_hash.clone().unwrap()
-            })
-            .map(|(tx_id, _, tx_hash, _)| {
-                (tx_id.as_str(), tx_hash.clone().unwrap().0)
-            })
-            .collect::<Vec<_>>();
-
-        let tx_ids_to_mine = txs_to_mine
-            .iter()
-            .map(|(tx_id, _)| *tx_id)
-            .collect::<Vec<_>>();
-        let tx_hashes_to_mine = txs_to_mine
-            .iter()
-            .map(|(_, tx_hash)| *tx_hash)
-            .map(|tx_hash| tx_hash.to_fixed_bytes())
-            .collect::<Vec<_>>();
-
-        // Mark mined txs as mined
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    status = $1,
-                   valid_tx_hash = mined.tx_hash
-            FROM   transactions t,
-                   UNNEST($2::TEXT[], $3::BYTEA[]) AS mined(tx_id, tx_hash)
-            WHERE  t.id = mined.tx_id
-            AND    t.id = s.tx_id
-            "#,
-        )
-        .bind(TxStatus::Mined)
-        .bind(&tx_ids_to_mine)
-        .bind(&tx_hashes_to_mine)
-        .execute(tx.as_mut())
-        .await?;
-
-        let txs_to_finalize = mined_txs
-            .iter()
-            .filter(|(_, _, tx_hash, block_ts)| {
-                tx_hash.is_some()
-                    && block_ts.is_some()
-                    && block_ts.unwrap() > finalized_timestamp
-            })
-            .map(|(tx_id, _, tx_hash, _)| {
-                (tx_id.as_str(), tx_hash.clone().unwrap().0)
-            })
-            .collect::<Vec<_>>();
-
-        let tx_ids_to_finalize = txs_to_finalize
-            .iter()
-            .map(|(tx_id, _)| *tx_id)
-            .collect::<Vec<_>>();
-
-        let tx_hashes_to_finalize = txs_to_finalize
-            .iter()
-            .map(|(_, tx_hash)| *tx_hash)
-            .map(|tx_hash| tx_hash.to_fixed_bytes())
-            .collect::<Vec<_>>();
-
-        // Mark mined txs as finalized
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    status = $1,
-                   valid_tx_hash = finalized.tx_hash
-            FROM   transactions t,
-                   UNNEST($2::TEXT[], $3::BYTEA[]) AS finalized(tx_id, tx_hash)
-            WHERE  t.id = finalized.tx_id
-            AND    t.id = s.tx_id
-            "#,
-        )
-        .bind(TxStatus::Finalized)
-        .bind(&tx_ids_to_finalize)
-        .bind(&tx_hashes_to_finalize)
         .execute(tx.as_mut())
         .await?;
 
@@ -775,22 +639,6 @@ impl Database {
         &self,
         timestamp: DateTime<Utc>,
     ) -> eyre::Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        sqlx::query(
-            r#"
-            DELETE FROM block_txs
-            WHERE  (block_number, chain_id) IN (
-                SELECT block_number, chain_id
-                FROM   blocks
-                WHERE  timestamp < $1
-            )
-            "#,
-        )
-        .bind(timestamp)
-        .execute(tx.as_mut())
-        .await?;
-
         sqlx::query(
             r#"
             DELETE FROM blocks
@@ -798,10 +646,30 @@ impl Database {
             "#,
         )
         .bind(timestamp)
-        .execute(tx.as_mut())
+        .execute(&self.pool)
         .await?;
 
-        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn prune_txs(
+        &self,
+        timestamp: DateTime<Utc>,
+    ) -> eyre::Result<()> {
+        sqlx::query(
+            r#"
+            DELETE
+            FROM  transactions t
+            USING sent_transactions s
+            WHERE t.id = s.tx_id
+            AND   s.mined_at < $1
+            AND   s.status = $2
+            "#,
+        )
+        .bind(timestamp)
+        .bind(TxStatus::Finalized)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -941,7 +809,7 @@ mod tests {
             H256::from_low_u64_be(3),
         ];
 
-        db.save_block(1, 1, block_timestamp.clone(), &tx_hashes, None)
+        db.save_block(1, 1, block_timestamp, &tx_hashes, None)
             .await?;
 
         assert!(db.has_blocks_for_chain(1).await?, "Should have blocks");

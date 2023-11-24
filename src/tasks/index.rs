@@ -51,18 +51,14 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
                 )
                 .await?;
 
-            // TODO: This should be a per network setting
-            let finalization_timestamp =
-                Utc::now() - chrono::Duration::seconds(60 * 60 * 24 * 7);
+            app.db.mine_txs(chain_id).await?;
 
-            app.db
-                .update_transactions(chain_id, finalization_timestamp)
+            let relayer_addresses =
+                app.db.fetch_relayer_addresses(chain_id).await?;
+
+            update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id)
                 .await?;
         }
-        let relayer_addresses =
-            app.db.fetch_relayer_addresses(chain_id).await?;
-
-        update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id).await?;
     }
 }
 
@@ -80,6 +76,12 @@ async fn update_relayer_nonces(
         futures.push(async move {
             let tx_count =
                 rpc.get_transaction_count(relayer_address, None).await?;
+
+            // tracing::info!(
+            //     nonce = ?tx_count,
+            //     ?relayer_address,
+            //     "Updating relayer nonce"
+            // );
 
             app.db
                 .update_relayer_nonce(
