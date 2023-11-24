@@ -51,6 +51,10 @@ impl DoubleAnvil {
         self.auto_advance
             .store(auto_advance, std::sync::atomic::Ordering::SeqCst);
     }
+
+    pub async fn ws_endpoint(&self) -> String {
+        self.main_anvil.lock().await.ws_endpoint()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

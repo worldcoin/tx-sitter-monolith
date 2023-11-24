@@ -1,20 +1,15 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use chrono::{DateTime, Utc};
 use ethers::middleware::SignerMiddleware;
-use ethers::providers::{Http, Middleware, Provider, Ws};
+use ethers::providers::{Http, Provider, Ws};
 use ethers::signers::Signer;
-use ethers::types::{BlockNumber, U256};
-use eyre::{Context, ContextCompat};
+use eyre::Context;
 
 use crate::config::{Config, KeysConfig};
-use crate::db::{BlockTxStatus, Database};
+use crate::db::data::RpcKind;
+use crate::db::Database;
 use crate::keys::{KeysSource, KmsKeys, LocalKeys, UniversalSigner};
-use crate::tasks::index::fetch_block_with_fee_estimates;
 
 pub type AppGenericMiddleware<T> =
-    SignerMiddleware<Arc<Provider<T>>, UniversalSigner>;
+    SignerMiddleware<Provider<T>, UniversalSigner>;
 pub type AppMiddleware = AppGenericMiddleware<Http>;
 
 pub struct App {
@@ -39,43 +34,46 @@ impl App {
 
     pub async fn fetch_http_provider(
         &self,
-        chain_id: impl Into<U256>,
+        chain_id: u64,
     ) -> eyre::Result<Provider<Http>> {
-        todo!()
+        let url = self.db.get_network_rpc(chain_id, RpcKind::Http).await?;
+
+        let provider = Provider::<Http>::try_from(url.as_str())?;
+
+        Ok(provider)
     }
 
     pub async fn fetch_ws_provider(
         &self,
-        chain_id: impl Into<U256>,
+        chain_id: u64,
     ) -> eyre::Result<Provider<Ws>> {
-        todo!()
+        let url = self.db.get_network_rpc(chain_id, RpcKind::Ws).await?;
+
+        println!("url = {}", url);
+        let ws = Ws::connect(url.as_str()).await?;
+        let provider = Provider::new(ws);
+
+        Ok(provider)
     }
 
     pub async fn fetch_signer_middleware(
         &self,
-        _chain_id: impl Into<U256>,
-        _key_id: String,
+        chain_id: u64,
+        key_id: String,
     ) -> eyre::Result<AppMiddleware> {
-        // let chain_id: U256 = chain_id.into();
+        let rpc = self.fetch_http_provider(chain_id).await?;
 
-        // let rpc = self
-        //     .rpcs
-        //     .get(&chain_id)
-        //     .context("Missing RPC for chain id")?
-        //     .clone();
+        let wallet = self
+            .keys_source
+            .load_signer(key_id.clone())
+            .await
+            .context("Missing signer")?;
 
-        // let wallet = self
-        //     .keys_source
-        //     .load_signer(key_id.clone())
-        //     .await
-        //     .context("Missing signer")?;
+        let wallet = wallet.with_chain_id(chain_id);
 
-        // let wallet = wallet.with_chain_id(chain_id.as_u64());
+        let middlware = SignerMiddleware::new(rpc, wallet);
 
-        // let middlware = SignerMiddleware::new(rpc, wallet);
-
-        // Ok(middlware)
-        todo!()
+        Ok(middlware)
     }
 }
 
@@ -92,39 +90,4 @@ async fn init_keys_source(
     };
 
     Ok(keys_source)
-}
-
-async fn seed_initial_blocks(
-    rpcs: &HashMap<U256, Arc<Provider<Http>>>,
-    db: &Database,
-) -> eyre::Result<()> {
-    for (chain_id, rpc) in rpcs {
-        tracing::info!("Seeding block for chain id {chain_id}");
-
-        if !db.has_blocks_for_chain(chain_id.as_u64()).await? {
-            let (block, fee_estimates) =
-                fetch_block_with_fee_estimates(rpc, BlockNumber::Latest)
-                    .await?
-                    .context("Missing latest block")?;
-
-            let block_timestamp_seconds = block.timestamp.as_u64();
-            let block_timestamp = DateTime::<Utc>::from_timestamp(
-                block_timestamp_seconds as i64,
-                0,
-            )
-            .context("Invalid timestamp")?;
-
-            db.save_block(
-                block.number.context("Missing block number")?.as_u64(),
-                chain_id.as_u64(),
-                block_timestamp,
-                &block.transactions,
-                Some(&fee_estimates),
-                BlockTxStatus::Mined,
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
 }

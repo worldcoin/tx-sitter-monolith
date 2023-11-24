@@ -19,6 +19,7 @@ const fn days(seconds: i64) -> i64 {
     hours(seconds) * 24
 }
 
+// TODO: This should be a per network setting
 const BLOCK_PRUNE_AGE_SECONDS: i64 = days(7);
 
 pub async fn prune_blocks(app: Arc<App>) -> eyre::Result<()> {

@@ -11,10 +11,12 @@ use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, Eip1559TransactionRequest, H160, U256};
 use fake_rpc::DoubleAnvil;
 use postgres_docker_utils::DockerContainerGuard;
+use service::client::TxSitterClient;
 use service::config::{
     Config, DatabaseConfig, KeysConfig, LocalKeysConfig, ServerConfig,
     TxSitterConfig,
 };
+use service::server::routes::network::NewNetworkInfo;
 use service::service::Service;
 use tokio::task::JoinHandle;
 use tracing::level_filters::LevelFilter;
@@ -40,6 +42,7 @@ pub const DEFAULT_ANVIL_CHAIN_ID: u64 = 31337;
 
 pub struct DoubleAnvilHandle {
     pub double_anvil: Arc<DoubleAnvil>,
+    ws_addr: String,
     local_addr: SocketAddr,
     server_handle: JoinHandle<eyre::Result<()>>,
 }
@@ -47,6 +50,10 @@ pub struct DoubleAnvilHandle {
 impl DoubleAnvilHandle {
     pub fn local_addr(&self) -> String {
         self.local_addr.to_string()
+    }
+
+    pub fn ws_addr(&self) -> String {
+        self.ws_addr.clone()
     }
 }
 
@@ -99,19 +106,22 @@ pub async fn setup_double_anvil() -> eyre::Result<DoubleAnvilHandle> {
         .await?
         .await?;
 
+    let ws_addr = double_anvil.ws_endpoint().await;
+
     Ok(DoubleAnvilHandle {
         double_anvil,
+        ws_addr,
         local_addr,
         server_handle,
     })
 }
 
 pub async fn setup_service(
-    rpc_url: &str,
+    anvil_handle: &DoubleAnvilHandle,
     db_connection_url: &str,
     escalation_interval: Duration,
-) -> eyre::Result<Service> {
-    println!("rpc_url.to_string() = {}", rpc_url);
+) -> eyre::Result<(Service, TxSitterClient)> {
+    let rpc_url = anvil_handle.local_addr();
 
     let config = Config {
         service: TxSitterConfig {
@@ -132,7 +142,23 @@ pub async fn setup_service(
 
     let service = Service::new(config).await?;
 
-    Ok(service)
+    let client = TxSitterClient::new(format!(
+        "http://{}",
+        service.local_addr().to_string()
+    ));
+
+    client
+        .create_network(
+            DEFAULT_ANVIL_CHAIN_ID,
+            &NewNetworkInfo {
+                name: "Anvil".to_string(),
+                http_rpc: format!("http://{}", rpc_url),
+                ws_rpc: anvil_handle.ws_addr(),
+            },
+        )
+        .await?;
+
+    Ok((service, client))
 }
 
 pub async fn setup_middleware(

@@ -19,7 +19,7 @@ use crate::app::App;
 
 pub mod data;
 mod middleware;
-mod routes;
+pub mod routes;
 
 #[derive(Debug, Error)]
 pub enum ApiError {

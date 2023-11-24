@@ -1,7 +1,7 @@
 use ethers::types::{Address, Bytes, H256, U256};
 use serde::{Deserialize, Serialize};
 
-use crate::db::BlockTxStatus;
+use crate::db::TxStatus;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +41,7 @@ pub struct GetTxResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<H256>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<BlockTxStatus>,
+    pub status: Option<TxStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

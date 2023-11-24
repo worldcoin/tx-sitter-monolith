@@ -7,6 +7,7 @@ use url::Url;
 
 use crate::app::App;
 use crate::server::ApiError;
+use crate::task_runner::TaskRunner;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +49,12 @@ pub async fn create_network(
             ws_url.as_str(),
         )
         .await?;
+
+    let task_runner = TaskRunner::new(app.clone());
+
+    task_runner.add_task(format!("index_block_{}", chain_id), move |app| {
+        crate::tasks::index::index_chain(app, chain_id)
+    });
 
     Ok(())
 }
