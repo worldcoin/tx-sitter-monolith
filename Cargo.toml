@@ -27,8 +27,7 @@ humantime-serde = "1.1.1"
 hyper = "0.14.27"
 dotenv = "0.15.0"
 clap = { version = "4.3.0", features = ["env", "derive"] }
-ethers = { version = "2.0.11" }
-ethers-signers = { version = "2.0.11" }
+ethers = { version = "2.0.11", features = ["ws"] }
 eyre = "0.6.5"
 hex = "0.4.3"
 hex-literal = "0.4.1"
@@ -54,6 +53,7 @@ rand = "0.8.5"
 sha3 = "0.10.8"
 config = "0.13.3"
 toml = "0.8.8"
+url = "2.4.1"
 sqlx = { version = "0.7.2", features = [
     "time",
     "chrono",

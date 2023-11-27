@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use ethers::types::{Address, H256, U256};
 use serde::{Deserialize, Serialize};
 use sqlx::database::{HasArguments, HasValueRef};
@@ -50,24 +49,15 @@ pub struct ReadTxData {
 
     // Sent tx data
     pub tx_hash: Option<H256Wrapper>,
-    pub status: Option<BlockTxStatus>,
+    pub status: Option<TxStatus>,
 }
 
-#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
-pub struct NextBlock {
-    #[sqlx(try_from = "i64")]
-    pub next_block_number: u64,
-    #[sqlx(try_from = "i64")]
-    pub chain_id: u64,
-    pub prev_block_timestamp: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressWrapper(pub Address);
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct U256Wrapper(pub U256);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct H256Wrapper(pub H256);
 
 impl<'r, DB> sqlx::Decode<'r, DB> for AddressWrapper
@@ -180,15 +170,15 @@ where
     Debug, Clone, Serialize, Deserialize, Copy, PartialEq, Eq, sqlx::Type,
 )]
 #[sqlx(rename_all = "camelCase")]
-#[sqlx(type_name = "block_tx_status")]
+#[sqlx(type_name = "tx_status")]
 #[serde(rename_all = "camelCase")]
-pub enum BlockTxStatus {
-    Pending = 0,
-    Mined = 1,
-    Finalized = 2,
+pub enum TxStatus {
+    Pending,
+    Mined,
+    Finalized,
 }
 
-impl BlockTxStatus {
+impl TxStatus {
     pub fn previous(self) -> Self {
         match self {
             Self::Pending => Self::Pending,
@@ -196,4 +186,15 @@ impl BlockTxStatus {
             Self::Finalized => Self::Mined,
         }
     }
+}
+
+#[derive(
+    Debug, Clone, Serialize, Deserialize, Copy, PartialEq, Eq, sqlx::Type,
+)]
+#[sqlx(rename_all = "camelCase")]
+#[sqlx(type_name = "rpc_kind")]
+#[serde(rename_all = "camelCase")]
+pub enum RpcKind {
+    Http,
+    Ws,
 }

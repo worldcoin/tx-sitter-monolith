@@ -1,10 +1,9 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ethers::providers::{Http, Middleware, Provider};
-use ethers::types::{Block, BlockNumber, H256, U256};
-use eyre::ContextCompat;
+use ethers::types::BlockNumber;
+use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
@@ -12,105 +11,62 @@ use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
-use crate::db::data::NextBlock;
-use crate::db::BlockTxStatus;
 
 const BLOCK_FEE_HISTORY_SIZE: usize = 10;
-const TRAILING_BLOCK_OFFSET: u64 = 5;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];
 
-pub async fn index_blocks(app: Arc<App>) -> eyre::Result<()> {
+pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
-        let next_block_numbers = app.db.get_next_block_numbers().await?;
+        let ws_rpc = app.fetch_ws_provider(chain_id).await?;
+        let rpc = app.fetch_http_provider(chain_id).await?;
 
-        for next_block in next_block_numbers {
-            update_block(app.clone(), next_block).await?;
-        }
+        let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
 
-        let (update_mined, update_finalized) = tokio::join!(
-            app.db.update_transactions(BlockTxStatus::Mined),
-            app.db.update_transactions(BlockTxStatus::Finalized)
-        );
+        while let Some(block) = blocks_stream.next().await {
+            let block_number =
+                block.number.context("Missing block number")?.as_u64();
 
-        update_mined?;
-        update_finalized?;
+            tracing::info!(block_number, "Indexing block");
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-}
-
-async fn update_block(
-    app: Arc<App>,
-    next_block: NextBlock,
-) -> eyre::Result<()> {
-    let chain_id = U256::from(next_block.chain_id);
-    let rpc = app
-        .rpcs
-        .get(&chain_id)
-        .context("Missing RPC for chain id")?;
-
-    let block =
-        fetch_block_with_fee_estimates(rpc, next_block.next_block_number)
-            .await?;
-
-    let Some((block, fee_estimates)) = block else {
-        return Ok(());
-    };
-
-    let block_timestamp_seconds = block.timestamp.as_u64();
-    let block_timestamp =
-        DateTime::<Utc>::from_timestamp(block_timestamp_seconds as i64, 0)
+            let block_timestamp_seconds = block.timestamp.as_u64();
+            let block_timestamp = DateTime::<Utc>::from_timestamp(
+                block_timestamp_seconds as i64,
+                0,
+            )
             .context("Invalid timestamp")?;
 
-    app.db
-        .save_block(
-            next_block.next_block_number,
-            chain_id.as_u64(),
-            block_timestamp,
-            &block.transactions,
-            Some(&fee_estimates),
-            BlockTxStatus::Mined,
-        )
-        .await?;
+            // TODO: We don't need to do this for every block for a given chain
+            //       Add a separate task to do this periodically for the latest block
+            let fee_estimates = fetch_block_fee_estimates(&rpc, block_number)
+                .await
+                .context("Failed to fetch fee estimates")?;
 
-    let relayer_addresses =
-        app.db.fetch_relayer_addresses(chain_id.as_u64()).await?;
+            app.db
+                .save_block(
+                    block.number.unwrap().as_u64(),
+                    chain_id,
+                    block_timestamp,
+                    &block.transactions,
+                    Some(&fee_estimates),
+                )
+                .await?;
 
-    update_relayer_nonces(relayer_addresses, &app, rpc, chain_id).await?;
+            app.db.mine_txs(chain_id).await?;
 
-    if next_block.next_block_number > TRAILING_BLOCK_OFFSET {
-        let block = fetch_block(
-            rpc,
-            next_block.next_block_number - TRAILING_BLOCK_OFFSET,
-        )
-        .await?
-        .context("Missing trailing block")?;
+            let relayer_addresses =
+                app.db.fetch_relayer_addresses(chain_id).await?;
 
-        let block_timestamp_seconds = block.timestamp.as_u64();
-        let block_timestamp =
-            DateTime::<Utc>::from_timestamp(block_timestamp_seconds as i64, 0)
-                .context("Invalid timestamp")?;
-
-        app.db
-            .save_block(
-                next_block.next_block_number,
-                chain_id.as_u64(),
-                block_timestamp,
-                &block.transactions,
-                None,
-                BlockTxStatus::Finalized,
-            )
-            .await?;
+            update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id)
+                .await?;
+        }
     }
-
-    Ok(())
 }
 
 async fn update_relayer_nonces(
     relayer_addresses: Vec<ethers::types::H160>,
     app: &Arc<App>,
     rpc: &Provider<Http>,
-    chain_id: U256,
+    chain_id: u64,
 ) -> Result<(), eyre::Error> {
     let mut futures = FuturesUnordered::new();
 
@@ -121,9 +77,15 @@ async fn update_relayer_nonces(
             let tx_count =
                 rpc.get_transaction_count(relayer_address, None).await?;
 
+            // tracing::info!(
+            //     nonce = ?tx_count,
+            //     ?relayer_address,
+            //     "Updating relayer nonce"
+            // );
+
             app.db
                 .update_relayer_nonce(
-                    chain_id.as_u64(),
+                    chain_id,
                     relayer_address,
                     tx_count.as_u64(),
                 )
@@ -140,17 +102,11 @@ async fn update_relayer_nonces(
     Ok(())
 }
 
-pub async fn fetch_block_with_fee_estimates(
+pub async fn fetch_block_fee_estimates(
     rpc: &Provider<Http>,
     block_id: impl Into<BlockNumber>,
-) -> eyre::Result<Option<(Block<H256>, FeesEstimate)>> {
+) -> eyre::Result<FeesEstimate> {
     let block_id = block_id.into();
-
-    let block = rpc.get_block(block_id).await?;
-
-    let Some(block) = block else {
-        return Ok(None);
-    };
 
     let fee_history = rpc
         .fee_history(BLOCK_FEE_HISTORY_SIZE, block_id, &FEE_PERCENTILES)
@@ -158,20 +114,5 @@ pub async fn fetch_block_with_fee_estimates(
 
     let fee_estimates = estimate_percentile_fees(&fee_history)?;
 
-    Ok(Some((block, fee_estimates)))
-}
-
-pub async fn fetch_block(
-    rpc: &Provider<Http>,
-    block_id: impl Into<BlockNumber>,
-) -> eyre::Result<Option<Block<H256>>> {
-    let block_id = block_id.into();
-
-    let block = rpc.get_block(block_id).await?;
-
-    let Some(block) = block else {
-        return Ok(None);
-    };
-
-    Ok(Some(block))
+    Ok(fee_estimates)
 }

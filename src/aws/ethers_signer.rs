@@ -34,7 +34,7 @@ use utils::{apply_eip155, verifying_key_to_address};
 /// use rusoto_core::Client;
 /// use rusoto_kms::{Kms, KmsClient};
 ///
-/// user ethers_signers::Signer;
+/// user ethers::signers::Signer;
 ///
 /// let client = Client::new_with(
 ///     EnvironmentProvider::default(),

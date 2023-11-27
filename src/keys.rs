@@ -1,7 +1,7 @@
 use aws_sdk_kms::types::{KeySpec, KeyUsageType};
 use aws_types::region::Region;
 use ethers::core::k256::ecdsa::SigningKey;
-use ethers_signers::Wallet;
+use ethers::signers::Wallet;
 use eyre::{Context, ContextCompat};
 pub use universal_signer::UniversalSigner;
 
@@ -110,7 +110,7 @@ impl KeysSource for LocalKeys {
 
 #[cfg(test)]
 mod tests {
-    use ethers_signers::Signer;
+    use ethers::signers::Signer;
 
     use super::*;
 

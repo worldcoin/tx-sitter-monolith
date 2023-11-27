@@ -79,6 +79,6 @@ pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
                 .await?;
         }
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }

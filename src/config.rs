@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub service: TxSitterConfig,
     pub server: ServerConfig,
-    pub rpc: RpcConfig,
     pub database: DatabaseConfig,
     pub keys: KeysConfig,
 }
@@ -27,13 +26,6 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub disable_auth: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct RpcConfig {
-    #[serde(default)]
-    pub rpcs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +53,24 @@ pub struct LocalKeysConfig {}
 
 #[cfg(test)]
 mod tests {
+    use indoc::indoc;
+
     use super::*;
+
+    const SAMPLE: &str = indoc! {r#"
+        [service]
+        escalation_interval = "1h"
+
+        [server]
+        host = "127.0.0.1:3000"
+        disable_auth = false
+
+        [database]
+        connection_string = "postgres://postgres:postgres@127.0.0.1:52804/database"
+
+        [keys]
+        kind = "local"
+    "#};
 
     #[test]
     fn sample() {
@@ -73,9 +82,6 @@ mod tests {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
                 disable_auth: false,
             },
-            rpc: RpcConfig {
-                rpcs: vec!["hello".to_string()],
-            },
             database: DatabaseConfig {
                 connection_string:
                     "postgres://postgres:postgres@127.0.0.1:52804/database"
@@ -86,6 +92,6 @@ mod tests {
 
         let toml = toml::to_string_pretty(&config).unwrap();
 
-        println!("{}", toml);
+        assert_eq!(toml, SAMPLE);
     }
 }
