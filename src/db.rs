@@ -12,7 +12,7 @@ use crate::types::{RelayerInfo, RelayerUpdate};
 
 pub mod data;
 
-use self::data::{AddressWrapper, H256Wrapper, ReadTxData, RpcKind};
+use self::data::{AddressWrapper, BlockFees, H256Wrapper, ReadTxData, RpcKind};
 pub use self::data::{TxForEscalation, TxStatus, UnsentTx};
 
 // Statically link in migration files
@@ -187,7 +187,7 @@ impl Database {
     pub async fn get_unsent_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT     t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce, r.key_id, r.chain_id
+            SELECT     r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce, r.key_id, r.chain_id
             FROM       transactions t
             LEFT JOIN  sent_transactions s ON (t.id = s.tx_id)
             INNER JOIN relayers r ON (t.relayer_id = r.id)
@@ -269,10 +269,10 @@ impl Database {
     pub async fn get_latest_block_fees_by_chain_id(
         &self,
         chain_id: u64,
-    ) -> eyre::Result<Option<FeesEstimate>> {
-        let row: Option<(Json<FeesEstimate>,)> = sqlx::query_as(
+    ) -> eyre::Result<Option<BlockFees>> {
+        let row: Option<(Json<FeesEstimate>, BigDecimal)> = sqlx::query_as(
             r#"
-            SELECT   bf.fee_estimate
+            SELECT   bf.fee_estimate, bf.gas_price
             FROM     blocks b
             JOIN     block_fees bf ON (b.block_number = bf.block_number AND b.chain_id = bf.chain_id)
             WHERE    b.chain_id = $1
@@ -284,35 +284,19 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(json_fee_estimate,)| json_fee_estimate.0))
-    }
+        let Some((fees, gas_price)) = row else {
+            return Ok(None);
+        };
 
-    pub async fn get_latest_gas_price_by_chain_id(
-        &self,
-        chain_id: u64,
-    ) -> eyre::Result<Option<U256>> {
-        let row: Option<(BigDecimal,)> = sqlx::query_as(
-            r#"
-            SELECT   bf.gas_price
-            FROM     blocks b
-            JOIN     block_fees bf ON (b.block_number = bf.block_number AND b.chain_id = bf.chain_id)
-            WHERE    b.chain_id = $1
-            ORDER BY b.block_number DESC
-            LIMIT    1
-            "#,
-        )
-        .bind(chain_id as i64)
-        .fetch_optional(&self.pool)
-        .await?;
+        let fee_estimates = fees.0;
 
-        let gas_price = row
-            .map(|(gas_price,)| {
-                let gas_price_str = gas_price.to_string();
-                U256::from_dec_str(&gas_price_str)
-            })
-            .transpose()?;
+        let gas_price_str = gas_price.to_string();
+        let gas_price = U256::from_dec_str(&gas_price_str)?;
 
-        Ok(gas_price)
+        Ok(Some(BlockFees {
+            fee_estimates,
+            gas_price,
+        }))
     }
 
     pub async fn has_blocks_for_chain(
@@ -406,6 +390,14 @@ impl Database {
     ) -> eyre::Result<()> {
         // TODO: Figure out how to do this without parsing
         let gas_price: BigDecimal = gas_price.to_string().parse()?;
+
+        tracing::info!(
+            block_number,
+            chain_id,
+            ?fee_estimates,
+            ?gas_price,
+            "Saving block fees"
+        );
 
         sqlx::query(
             r#"
@@ -621,13 +613,13 @@ impl Database {
         Ok(())
     }
 
-    pub async fn fetch_txs_for_escalation(
+    pub async fn get_txs_for_escalation(
         &self,
         escalation_interval: Duration,
     ) -> eyre::Result<Vec<TxForEscalation>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce,
+            SELECT r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce,
                    r.key_id, r.chain_id,
                    s.initial_max_fee_per_gas, s.initial_max_priority_fee_per_gas, s.escalation_count
             FROM   transactions t
@@ -722,7 +714,7 @@ impl Database {
         .await?)
     }
 
-    pub async fn fetch_relayer_addresses(
+    pub async fn get_relayer_addresses(
         &self,
         chain_id: u64,
     ) -> eyre::Result<Vec<Address>> {
@@ -1019,7 +1011,7 @@ mod tests {
                 max_inflight_txs: Some(10),
                 gas_limits: Some(vec![RelayerGasLimit {
                     chain_id: 1,
-                    value: U256Wrapper(U256::from(10_000u64)),
+                    value: U256Wrapper(U256::from(10_123u64)),
                 }]),
             },
         )
@@ -1039,7 +1031,7 @@ mod tests {
             relayer.gas_limits.0,
             vec![RelayerGasLimit {
                 chain_id: 1,
-                value: U256Wrapper(U256::from(10_000u64)),
+                value: U256Wrapper(U256::from(10_123u64)),
             }]
         );
 
@@ -1214,28 +1206,27 @@ mod tests {
 
         let fee_estimates = FeesEstimate {
             base_fee_per_gas: U256::from(13_132),
-            percentile_fees: vec![U256::from(516)],
+            percentile_fees: vec![U256::from(0)],
         };
 
-        let gas_price = U256::from(12_352);
+        let gas_price = U256::from(1_000_000_007);
 
         db.save_block_fees(block_number, chain_id, &fee_estimates, gas_price)
             .await?;
 
-        let latest_fees =
-            db.get_latest_block_fees_by_chain_id(chain_id).await?;
-        let latest_gas_price =
-            db.get_latest_gas_price_by_chain_id(chain_id).await?;
+        let block_fees = db.get_latest_block_fees_by_chain_id(chain_id).await?;
 
-        let latest_fees = latest_fees.context("Missing fees")?;
-        let latest_gas_price = latest_gas_price.context("Missing gas price")?;
+        let block_fees = block_fees.context("Missing fees")?;
 
         assert_eq!(
-            latest_fees.base_fee_per_gas,
+            block_fees.fee_estimates.base_fee_per_gas,
             fee_estimates.base_fee_per_gas
         );
-        assert_eq!(latest_fees.percentile_fees, fee_estimates.percentile_fees);
-        assert_eq!(latest_gas_price, gas_price);
+        assert_eq!(
+            block_fees.fee_estimates.percentile_fees,
+            fee_estimates.percentile_fees
+        );
+        assert_eq!(block_fees.gas_price, gas_price);
 
         Ok(())
     }
@@ -1257,5 +1248,14 @@ mod tests {
 
     fn uuid() -> String {
         uuid::Uuid::new_v4().to_string()
+    }
+
+    #[test]
+    fn bignum_conversion() {
+        let bd = BigDecimal::from(123u32);
+        let un = U256::from_dec_str("123").unwrap();
+
+        println!("bd = {bd}");
+        println!("un = {un}");
     }
 }

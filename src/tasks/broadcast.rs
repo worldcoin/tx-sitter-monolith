@@ -10,6 +10,7 @@ use eyre::ContextCompat;
 use crate::app::App;
 use crate::broadcast_utils::{
     calculate_gas_fees_from_estimates, calculate_max_base_fee_per_gas,
+    should_send_transaction,
 };
 
 pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
@@ -20,22 +21,27 @@ pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
         for tx in txs {
             tracing::info!(tx.id, "Sending tx");
 
+            if !should_send_transaction(&app, &tx.relayer_id).await? {
+                tracing::warn!(id = tx.id, "Skipping transaction broadcast");
+                continue;
+            }
+
             let middleware = app
-                .fetch_signer_middleware(tx.chain_id, tx.key_id.clone())
+                .signer_middleware(tx.chain_id, tx.key_id.clone())
                 .await?;
 
-            let estimates = app
+            let fees = app
                 .db
                 .get_latest_block_fees_by_chain_id(tx.chain_id)
                 .await?
                 .context("Missing block")?;
 
             let max_base_fee_per_gas =
-                calculate_max_base_fee_per_gas(&estimates)?;
+                calculate_max_base_fee_per_gas(&fees.fee_estimates)?;
 
             let (max_fee_per_gas, max_priority_fee_per_gas) =
                 calculate_gas_fees_from_estimates(
-                    &estimates,
+                    &fees.fee_estimates,
                     2, // Priority - 50th percentile
                     max_base_fee_per_gas,
                 )?;

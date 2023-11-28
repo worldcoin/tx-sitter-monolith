@@ -32,7 +32,7 @@ impl App {
         })
     }
 
-    pub async fn fetch_http_provider(
+    pub async fn http_provider(
         &self,
         chain_id: u64,
     ) -> eyre::Result<Provider<Http>> {
@@ -43,7 +43,7 @@ impl App {
         Ok(provider)
     }
 
-    pub async fn fetch_ws_provider(
+    pub async fn ws_provider(
         &self,
         chain_id: u64,
     ) -> eyre::Result<Provider<Ws>> {
@@ -55,12 +55,12 @@ impl App {
         Ok(provider)
     }
 
-    pub async fn fetch_signer_middleware(
+    pub async fn signer_middleware(
         &self,
         chain_id: u64,
         key_id: String,
     ) -> eyre::Result<AppMiddleware> {
-        let rpc = self.fetch_http_provider(chain_id).await?;
+        let rpc = self.http_provider(chain_id).await?;
 
         let wallet = self
             .keys_source

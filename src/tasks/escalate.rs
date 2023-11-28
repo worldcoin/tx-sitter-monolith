@@ -7,24 +7,30 @@ use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress, U256};
 use eyre::ContextCompat;
 
 use crate::app::App;
+use crate::broadcast_utils::should_send_transaction;
 
 pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
     loop {
         let txs_for_escalation = app
             .db
-            .fetch_txs_for_escalation(app.config.service.escalation_interval)
+            .get_txs_for_escalation(app.config.service.escalation_interval)
             .await?;
 
         for tx in txs_for_escalation {
             tracing::info!(tx.id, "Escalating tx");
 
-            let middleware = app
-                .fetch_signer_middleware(tx.chain_id, tx.key_id.clone())
-                .await?;
+            if !should_send_transaction(&app, &tx.relayer_id).await? {
+                tracing::warn!(id = tx.id, "Skipping transaction broadcast");
+                continue;
+            }
 
             let escalation = tx.escalation_count + 1;
 
-            let estimates = app
+            let middleware = app
+                .signer_middleware(tx.chain_id, tx.key_id.clone())
+                .await?;
+
+            let fees = app
                 .db
                 .get_latest_block_fees_by_chain_id(tx.chain_id)
                 .await?
@@ -47,7 +53,7 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
                     + max_priority_fee_per_gas_increase;
 
             let max_fee_per_gas =
-                estimates.base_fee_per_gas + max_priority_fee_per_gas;
+                fees.fee_estimates.base_fee_per_gas + max_priority_fee_per_gas;
 
             let eip1559_tx = Eip1559TransactionRequest {
                 from: None,

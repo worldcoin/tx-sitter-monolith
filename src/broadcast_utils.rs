@@ -1,6 +1,8 @@
 use ethers::types::{Eip1559TransactionRequest, U256};
+use eyre::ContextCompat;
 
 use self::gas_estimation::FeesEstimate;
+use crate::app::App;
 
 pub mod gas_estimation;
 
@@ -74,4 +76,34 @@ pub fn escalate_priority_fee(
 
     tx.max_fee_per_gas = Some(new_max_fee_per_gas);
     tx.max_priority_fee_per_gas = Some(new_max_priority_fee_per_gas);
+}
+
+pub async fn should_send_transaction(
+    app: &App,
+    relayer_id: &str,
+) -> eyre::Result<bool> {
+    let relayer = app.db.get_relayer(relayer_id).await?;
+
+    for gas_limit in &relayer.gas_limits.0 {
+        let chain_fees = app
+            .db
+            .get_latest_block_fees_by_chain_id(relayer.chain_id)
+            .await?
+            .context("Missing block")?;
+
+        tracing::info!(?chain_fees, gas_limit = ?gas_limit.value.0, "Checking gas price",);
+
+        if chain_fees.gas_price > gas_limit.value.0 {
+            tracing::warn!(
+                chain_id = relayer.chain_id,
+                gas_price = ?chain_fees.gas_price,
+                gas_limit = ?gas_limit.value.0,
+                "Gas price is too high for relayer"
+            );
+
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
 }

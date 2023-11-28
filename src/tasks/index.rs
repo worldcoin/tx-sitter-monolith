@@ -19,8 +19,8 @@ const TIME_BETWEEN_FEE_ESTIMATION_SECONDS: u64 = 30;
 
 pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
-        let ws_rpc = app.fetch_ws_provider(chain_id).await?;
-        let rpc = app.fetch_http_provider(chain_id).await?;
+        let ws_rpc = app.ws_provider(chain_id).await?;
+        let rpc = app.http_provider(chain_id).await?;
 
         let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
 
@@ -49,7 +49,7 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             app.db.mine_txs(chain_id).await?;
 
             let relayer_addresses =
-                app.db.fetch_relayer_addresses(chain_id).await?;
+                app.db.get_relayer_addresses(chain_id).await?;
 
             update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id)
                 .await?;
@@ -58,7 +58,7 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 }
 
 pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
-    let rpc = app.fetch_http_provider(chain_id).await?;
+    let rpc = app.http_provider(chain_id).await?;
 
     loop {
         let latest_block_number =
@@ -66,10 +66,9 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 
         tracing::info!(block_number = latest_block_number, "Estimating fees");
 
-        let fee_estimates =
-            fetch_block_fee_estimates(&rpc, latest_block_number)
-                .await
-                .context("Failed to fetch fee estimates")?;
+        let fee_estimates = get_block_fee_estimates(&rpc, latest_block_number)
+            .await
+            .context("Failed to fetch fee estimates")?;
 
         let gas_price = rpc.get_gas_price().await?;
 
@@ -129,7 +128,7 @@ async fn update_relayer_nonces(
     Ok(())
 }
 
-pub async fn fetch_block_fee_estimates(
+pub async fn get_block_fee_estimates(
     rpc: &Provider<Http>,
     block_id: impl Into<BlockNumber>,
 ) -> eyre::Result<FeesEstimate> {

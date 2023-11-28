@@ -5,8 +5,11 @@ use sqlx::postgres::{PgHasArrayType, PgTypeInfo};
 use sqlx::prelude::FromRow;
 use sqlx::Database;
 
+use crate::broadcast_utils::gas_estimation::FeesEstimate;
+
 #[derive(Debug, Clone, FromRow)]
 pub struct UnsentTx {
+    pub relayer_id: String,
     pub id: String,
     pub tx_to: AddressWrapper,
     pub data: Vec<u8>,
@@ -21,6 +24,7 @@ pub struct UnsentTx {
 
 #[derive(Debug, Clone, FromRow)]
 pub struct TxForEscalation {
+    pub relayer_id: String,
     pub id: String,
     pub tx_to: AddressWrapper,
     pub data: Vec<u8>,
@@ -50,6 +54,12 @@ pub struct ReadTxData {
     // Sent tx data
     pub tx_hash: Option<H256Wrapper>,
     pub status: Option<TxStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockFees {
+    pub fee_estimates: FeesEstimate,
+    pub gas_price: U256,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
