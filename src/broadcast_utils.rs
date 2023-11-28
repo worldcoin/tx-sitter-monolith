@@ -91,8 +91,6 @@ pub async fn should_send_transaction(
             .await?
             .context("Missing block")?;
 
-        tracing::info!(?chain_fees, gas_limit = ?gas_limit.value.0, "Checking gas price",);
-
         if chain_fees.gas_price > gas_limit.value.0 {
             tracing::warn!(
                 chain_id = relayer.chain_id,

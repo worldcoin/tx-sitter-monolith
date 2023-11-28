@@ -391,14 +391,6 @@ impl Database {
         // TODO: Figure out how to do this without parsing
         let gas_price: BigDecimal = gas_price.to_string().parse()?;
 
-        tracing::info!(
-            block_number,
-            chain_id,
-            ?fee_estimates,
-            ?gas_price,
-            "Saving block fees"
-        );
-
         sqlx::query(
             r#"
             INSERT INTO block_fees (block_number, chain_id, fee_estimate, gas_price)
@@ -876,10 +868,6 @@ mod tests {
     use chrono::NaiveDate;
     use eyre::ContextCompat;
     use postgres_docker_utils::DockerContainerGuard;
-    use tracing::level_filters::LevelFilter;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::EnvFilter;
 
     use super::*;
     use crate::db::data::U256Wrapper;
@@ -956,16 +944,6 @@ mod tests {
 
     #[tokio::test]
     async fn relayer_methods() -> eyre::Result<()> {
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().pretty().compact())
-            .with(
-                EnvFilter::builder()
-                    .with_default_directive(LevelFilter::INFO.into())
-                    // Logging from fake_rpc can get very messy so we set it to warn only
-                    .parse_lossy("info"),
-            )
-            .init();
-
         let (db, _db_container) = setup_db().await?;
 
         let chain_id = 123;
@@ -1248,14 +1226,5 @@ mod tests {
 
     fn uuid() -> String {
         uuid::Uuid::new_v4().to_string()
-    }
-
-    #[test]
-    fn bignum_conversion() {
-        let bd = BigDecimal::from(123u32);
-        let un = U256::from_dec_str("123").unwrap();
-
-        println!("bd = {bd}");
-        println!("un = {un}");
     }
 }
