@@ -7,6 +7,7 @@ use url::Url;
 
 use crate::app::App;
 use crate::server::ApiError;
+use crate::service::Service;
 use crate::task_runner::TaskRunner;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -51,10 +52,7 @@ pub async fn create_network(
         .await?;
 
     let task_runner = TaskRunner::new(app.clone());
-
-    task_runner.add_task(format!("index_block_{}", chain_id), move |app| {
-        crate::tasks::index::index_chain(app, chain_id)
-    });
+    Service::index_chain_for_id(&task_runner, chain_id);
 
     Ok(())
 }

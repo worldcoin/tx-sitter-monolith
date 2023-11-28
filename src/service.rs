@@ -18,6 +18,8 @@ impl Service {
     pub async fn new(config: Config) -> eyre::Result<Self> {
         let app = Arc::new(App::new(config).await?);
 
+        let chain_ids = app.db.get_network_chain_ids().await?;
+
         let task_runner = TaskRunner::new(app.clone());
         task_runner.add_task("Broadcast transactions", tasks::broadcast_txs);
         task_runner.add_task("Escalate transactions", tasks::escalate_txs);
@@ -26,6 +28,10 @@ impl Service {
         task_runner.add_task("Finalize transactions", tasks::finalize_txs);
         task_runner.add_task("Handle soft reorgs", tasks::handle_soft_reorgs);
         task_runner.add_task("Handle hard reorgs", tasks::handle_hard_reorgs);
+
+        for chain_id in chain_ids {
+            Self::index_chain_for_id(&task_runner, chain_id);
+        }
 
         let server = crate::server::spawn_server(app.clone()).await?;
         let local_addr = server.local_addr();
@@ -39,6 +45,17 @@ impl Service {
             local_addr,
             server_handle,
         })
+    }
+
+    pub fn index_chain_for_id(
+        task_runner: &TaskRunner<App>,
+        chain_id: u64,
+    ) -> eyre::Result<()> {
+        task_runner.add_task(format!("index_block_{}", chain_id), move |app| {
+            crate::tasks::index::index_chain(app, chain_id)
+        });
+
+        Ok(())
     }
 
     pub fn local_addr(&self) -> SocketAddr {
