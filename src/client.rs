@@ -22,7 +22,7 @@ impl TxSitterClient {
     ) -> eyre::Result<CreateRelayerResponse> {
         let response = self
             .client
-            .post(&format!("{}/1/relayer/create", self.url))
+            .post(&format!("{}/1/relayer", self.url))
             .json(req)
             .send()
             .await?;

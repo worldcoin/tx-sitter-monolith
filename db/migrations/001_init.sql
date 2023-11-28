@@ -77,7 +77,6 @@ CREATE TABLE blocks (
     block_number BIGINT NOT NULL,
     chain_id BIGINT NOT NULL,
     timestamp TIMESTAMPTZ NOT NULL,
-    fee_estimate JSON,
     PRIMARY KEY (block_number, chain_id)
 );
 
@@ -88,4 +87,13 @@ CREATE TABLE block_txs (
     PRIMARY KEY (block_number, chain_id, tx_hash),
     FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id) ON DELETE CASCADE,
     FOREIGN KEY (tx_hash) REFERENCES tx_hashes (tx_hash)
+);
+
+CREATE TABLE block_fees (
+    block_number BIGINT NOT NULL,
+    chain_id BIGINT NOT NULL,
+    gas_price NUMERIC(78, 0) NOT NULL,
+    fee_estimate JSON NOT NULL,
+    PRIMARY KEY (block_number, chain_id),
+    FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id) ON DELETE CASCADE
 );

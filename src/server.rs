@@ -186,10 +186,13 @@ pub async fn spawn_server(
         .route("/:chain_id", post(routes::network::create_network))
         .with_state(app.clone());
 
+    let v1_routes = Router::new()
+        .nest("/tx", tx_routes)
+        .nest("/relayer", relayer_routes)
+        .nest("/network", network_routes);
+
     let router = Router::new()
-        .nest("/1/tx", tx_routes)
-        .nest("/1/relayer", relayer_routes)
-        .nest("/1/network", network_routes)
+        .nest("/1", v1_routes)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(middleware::log_response));
 

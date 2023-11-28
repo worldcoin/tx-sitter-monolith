@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ethers::providers::{Http, Middleware, Provider};
@@ -14,6 +15,7 @@ use crate::broadcast_utils::gas_estimation::{
 
 const BLOCK_FEE_HISTORY_SIZE: usize = 10;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];
+const TIME_BETWEEN_FEE_ESTIMATION_SECONDS: u64 = 30;
 
 pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
@@ -35,19 +37,12 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             )
             .context("Invalid timestamp")?;
 
-            // TODO: We don't need to do this for every block for a given chain
-            //       Add a separate task to do this periodically for the latest block
-            let fee_estimates = fetch_block_fee_estimates(&rpc, block_number)
-                .await
-                .context("Failed to fetch fee estimates")?;
-
             app.db
                 .save_block(
                     block.number.unwrap().as_u64(),
                     chain_id,
                     block_timestamp,
                     &block.transactions,
-                    Some(&fee_estimates),
                 )
                 .await?;
 
@@ -59,6 +54,38 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id)
                 .await?;
         }
+    }
+}
+
+pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
+    let rpc = app.fetch_http_provider(chain_id).await?;
+
+    loop {
+        let latest_block_number =
+            app.db.get_latest_block_number(chain_id).await?;
+
+        tracing::info!(block_number = latest_block_number, "Estimating fees");
+
+        let fee_estimates =
+            fetch_block_fee_estimates(&rpc, latest_block_number)
+                .await
+                .context("Failed to fetch fee estimates")?;
+
+        let gas_price = rpc.get_gas_price().await?;
+
+        app.db
+            .save_block_fees(
+                latest_block_number,
+                chain_id,
+                &fee_estimates,
+                gas_price,
+            )
+            .await?;
+
+        tokio::time::sleep(Duration::from_secs(
+            TIME_BETWEEN_FEE_ESTIMATION_SECONDS,
+        ))
+        .await;
     }
 }
 

@@ -52,7 +52,7 @@ pub async fn create_network(
         .await?;
 
     let task_runner = TaskRunner::new(app.clone());
-    Service::index_chain_for_id(&task_runner, chain_id);
+    Service::spawn_chain_tasks(&task_runner, chain_id)?;
 
     Ok(())
 }

@@ -30,7 +30,7 @@ impl Service {
         task_runner.add_task("Handle hard reorgs", tasks::handle_hard_reorgs);
 
         for chain_id in chain_ids {
-            Self::index_chain_for_id(&task_runner, chain_id);
+            Self::spawn_chain_tasks(&task_runner, chain_id)?;
         }
 
         let server = crate::server::spawn_server(app.clone()).await?;
@@ -47,13 +47,19 @@ impl Service {
         })
     }
 
-    pub fn index_chain_for_id(
+    pub fn spawn_chain_tasks(
         task_runner: &TaskRunner<App>,
         chain_id: u64,
     ) -> eyre::Result<()> {
-        task_runner.add_task(format!("index_block_{}", chain_id), move |app| {
-            crate::tasks::index::index_chain(app, chain_id)
-        });
+        task_runner.add_task(
+            format!("Index blocks (chain id: {})", chain_id),
+            move |app| crate::tasks::index::index_chain(app, chain_id),
+        );
+
+        task_runner.add_task(
+            format!("Estimate fees (chain id: {})", chain_id),
+            move |app| crate::tasks::index::estimate_gas(app, chain_id),
+        );
 
         Ok(())
     }

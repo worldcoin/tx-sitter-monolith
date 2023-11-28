@@ -3,7 +3,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use ethers::types::{Address, H256, U256};
 use sqlx::migrate::{MigrateDatabase, Migrator};
-use sqlx::types::Json;
+use sqlx::types::{BigDecimal, Json};
 use sqlx::{Pool, Postgres, Row};
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
@@ -246,17 +246,37 @@ impl Database {
         Ok(())
     }
 
+    pub async fn get_latest_block_number(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<u64> {
+        let (block_number,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT block_number
+            FROM   blocks
+            WHERE  chain_id = $1
+            ORDER BY block_number DESC
+            LIMIT  1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(block_number as u64)
+    }
+
     pub async fn get_latest_block_fees_by_chain_id(
         &self,
         chain_id: u64,
     ) -> eyre::Result<Option<FeesEstimate>> {
-        let row = sqlx::query(
+        let row: Option<(Json<FeesEstimate>,)> = sqlx::query_as(
             r#"
-            SELECT   fee_estimate
-            FROM     blocks
-            WHERE    chain_id = $1
-            AND      fee_estimate IS NOT NULL
-            ORDER BY block_number DESC
+            SELECT   bf.fee_estimate
+            FROM     blocks b
+            JOIN     block_fees bf ON (b.block_number = bf.block_number AND b.chain_id = bf.chain_id)
+            WHERE    b.chain_id = $1
+            ORDER BY b.block_number DESC
             LIMIT    1
             "#,
         )
@@ -264,11 +284,35 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        let item = row
-            .map(|row| row.try_get::<Json<FeesEstimate>, _>(0))
+        Ok(row.map(|(json_fee_estimate,)| json_fee_estimate.0))
+    }
+
+    pub async fn get_latest_gas_price_by_chain_id(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<U256>> {
+        let row: Option<(BigDecimal,)> = sqlx::query_as(
+            r#"
+            SELECT   bf.gas_price
+            FROM     blocks b
+            JOIN     block_fees bf ON (b.block_number = bf.block_number AND b.chain_id = bf.chain_id)
+            WHERE    b.chain_id = $1
+            ORDER BY b.block_number DESC
+            LIMIT    1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let gas_price = row
+            .map(|(gas_price,)| {
+                let gas_price_str = gas_price.to_string();
+                U256::from_dec_str(&gas_price_str)
+            })
             .transpose()?;
 
-        Ok(item.map(|json_fee_estimate| json_fee_estimate.0))
+        Ok(gas_price)
     }
 
     pub async fn has_blocks_for_chain(
@@ -297,17 +341,16 @@ impl Database {
         chain_id: u64,
         timestamp: DateTime<Utc>,
         txs: &[H256],
-        fee_estimates: Option<&FeesEstimate>,
     ) -> eyre::Result<()> {
         let mut db_tx = self.pool.begin().await?;
 
-        // Prune block txs
+        // Prune previously inserted block
         sqlx::query(
             r#"
             DELETE
-            FROM  block_txs
-            WHERE block_number = $1
-            AND   chain_id = $2
+            FROM    blocks
+            WHERE   block_number = $1
+            AND     chain_id = $2
             "#,
         )
         .bind(block_number as i64)
@@ -315,20 +358,17 @@ impl Database {
         .execute(db_tx.as_mut())
         .await?;
 
-        // Insert new block or update
+        // Insert new block
+        // There can be no conflict since we remove the previous one
         sqlx::query(
             r#"
-            INSERT INTO blocks (block_number, chain_id, timestamp, fee_estimate)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (block_number, chain_id) DO UPDATE
-            SET    timestamp = $3,
-                   fee_estimate = $4
+            INSERT INTO blocks (block_number, chain_id, timestamp)
+            VALUES ($1, $2, $3)
             "#,
         )
         .bind(block_number as i64)
         .bind(chain_id as i64)
         .bind(timestamp)
-        .bind(fee_estimates.map(Json))
         .execute(db_tx.as_mut())
         .await?;
 
@@ -354,6 +394,31 @@ impl Database {
 
         db_tx.commit().await?;
 
+        Ok(())
+    }
+
+    pub async fn save_block_fees(
+        &self,
+        block_number: u64,
+        chain_id: u64,
+        fee_estimates: &FeesEstimate,
+        gas_price: U256,
+    ) -> eyre::Result<()> {
+        // TODO: Figure out how to do this without parsing
+        let gas_price: BigDecimal = gas_price.to_string().parse()?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO block_fees (block_number, chain_id, fee_estimate, gas_price)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(block_number as i64)
+        .bind(chain_id as i64)
+        .bind(Json(fee_estimates))
+        .bind(gas_price)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -799,6 +864,19 @@ impl Database {
 
         Ok(row.0)
     }
+
+    pub async fn get_network_chain_ids(&self) -> eyre::Result<Vec<u64>> {
+        let items: Vec<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT chain_id
+            FROM   networks
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(items.into_iter().map(|(x,)| x as u64).collect())
+    }
 }
 
 #[cfg(test)]
@@ -845,10 +923,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn basic() -> eyre::Result<()> {
+    async fn migration() -> eyre::Result<()> {
         let (_db, _db_container) = setup_db().await?;
-
-        // db.create_relayer().await?;
 
         Ok(())
     }
@@ -875,8 +951,7 @@ mod tests {
             H256::from_low_u64_be(3),
         ];
 
-        db.save_block(1, 1, block_timestamp, &tx_hashes, None)
-            .await?;
+        db.save_block(1, 1, block_timestamp, &tx_hashes).await?;
 
         assert!(db.has_blocks_for_chain(1).await?, "Should have blocks");
 
@@ -1068,7 +1143,7 @@ mod tests {
         let timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
         let txs = &[tx_hash_1];
 
-        db.save_block(block_number, chain_id, timestamp, txs, None)
+        db.save_block(block_number, chain_id, timestamp, txs)
             .await?;
 
         full_update(&db, chain_id, finalized_timestamp).await?;
@@ -1081,7 +1156,7 @@ mod tests {
         // Reorg
         let txs = &[tx_hash_2];
 
-        db.save_block(block_number, chain_id, timestamp, txs, None)
+        db.save_block(block_number, chain_id, timestamp, txs)
             .await?;
 
         full_update(&db, chain_id, finalized_timestamp).await?;
@@ -1094,7 +1169,7 @@ mod tests {
         // Destructive reorg
         let txs = &[];
 
-        db.save_block(block_number, chain_id, timestamp, txs, None)
+        db.save_block(block_number, chain_id, timestamp, txs)
             .await?;
 
         full_update(&db, chain_id, finalized_timestamp).await?;
@@ -1107,7 +1182,7 @@ mod tests {
         // Finalization
         let txs = &[tx_hash_2];
 
-        db.save_block(block_number, chain_id, timestamp, txs, None)
+        db.save_block(block_number, chain_id, timestamp, txs)
             .await?;
 
         let finalized_timestamp = ymd_hms(2023, 11, 23, 22, 0, 0);
@@ -1117,6 +1192,50 @@ mod tests {
 
         assert_eq!(tx.tx_hash.unwrap().0, tx_hash_2);
         assert_eq!(tx.status, Some(TxStatus::Finalized));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blocks() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let block_number = 1;
+        let chain_id = 1;
+        let timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
+        let txs = &[
+            H256::from_low_u64_be(1),
+            H256::from_low_u64_be(2),
+            H256::from_low_u64_be(3),
+        ];
+
+        db.save_block(block_number, chain_id, timestamp, txs)
+            .await?;
+
+        let fee_estimates = FeesEstimate {
+            base_fee_per_gas: U256::from(13_132),
+            percentile_fees: vec![U256::from(516)],
+        };
+
+        let gas_price = U256::from(12_352);
+
+        db.save_block_fees(block_number, chain_id, &fee_estimates, gas_price)
+            .await?;
+
+        let latest_fees =
+            db.get_latest_block_fees_by_chain_id(chain_id).await?;
+        let latest_gas_price =
+            db.get_latest_gas_price_by_chain_id(chain_id).await?;
+
+        let latest_fees = latest_fees.context("Missing fees")?;
+        let latest_gas_price = latest_gas_price.context("Missing gas price")?;
+
+        assert_eq!(
+            latest_fees.base_fee_per_gas,
+            fee_estimates.base_fee_per_gas
+        );
+        assert_eq!(latest_fees.percentile_fees, fee_estimates.percentile_fees);
+        assert_eq!(latest_gas_price, gas_price);
 
         Ok(())
     }
