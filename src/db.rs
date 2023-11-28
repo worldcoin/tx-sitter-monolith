@@ -3,10 +3,12 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use ethers::types::{Address, H256, U256};
 use sqlx::migrate::{MigrateDatabase, Migrator};
+use sqlx::types::Json;
 use sqlx::{Pool, Postgres, Row};
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
+use crate::types::{RelayerInfo, RelayerUpdate};
 
 pub mod data;
 
@@ -53,8 +55,8 @@ impl Database {
     ) -> eyre::Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO relayers (id, name, chain_id, key_id, address, nonce, current_nonce)
-            VALUES ($1, $2, $3, $4, $5, 0, 0)
+            INSERT INTO relayers (id, name, chain_id, key_id, address)
+            VALUES ($1, $2, $3, $4, $5)
         "#,
         )
         .bind(id)
@@ -66,6 +68,72 @@ impl Database {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn update_relayer(
+        &self,
+        id: &str,
+        update: &RelayerUpdate,
+    ) -> eyre::Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        if let Some(name) = &update.relayer_name {
+            sqlx::query(
+                r#"
+                UPDATE relayers
+                SET    name = $2
+                WHERE  id = $1
+                "#,
+            )
+            .bind(id)
+            .bind(name)
+            .execute(tx.as_mut())
+            .await?;
+        }
+
+        if let Some(max_inflight_txs) = update.max_inflight_txs {
+            sqlx::query(
+                r#"
+                UPDATE relayers
+                SET    max_inflight_txs = $2
+                WHERE  id = $1
+                "#,
+            )
+            .bind(id)
+            .bind(max_inflight_txs as i64)
+            .execute(tx.as_mut())
+            .await?;
+        }
+
+        if let Some(gas_limits) = &update.gas_limits {
+            sqlx::query(
+                r#"
+                UPDATE relayers
+                SET    gas_limits = $2
+                WHERE  id = $1
+                "#,
+            )
+            .bind(id)
+            .bind(Json(gas_limits))
+            .execute(tx.as_mut())
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    pub async fn get_relayer(&self, id: &str) -> eyre::Result<RelayerInfo> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT id, name, chain_id, key_id, address, nonce, current_nonce, max_inflight_txs, gas_limits
+            FROM relayers
+            WHERE id = $1
+            "#)
+            .bind(id)
+            .fetch_one(&self.pool).await?
+        )
     }
 
     pub async fn create_transaction(
@@ -116,10 +184,7 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_unsent_txs(
-        &self,
-        max_inflight_txs: usize,
-    ) -> eyre::Result<Vec<UnsentTx>> {
+    pub async fn get_unsent_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
         Ok(sqlx::query_as(
             r#"
             SELECT     t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce, r.key_id, r.chain_id
@@ -127,10 +192,9 @@ impl Database {
             LEFT JOIN  sent_transactions s ON (t.id = s.tx_id)
             INNER JOIN relayers r ON (t.relayer_id = r.id)
             WHERE      s.tx_id IS NULL
-            AND        (t.nonce - r.current_nonce < $1);
+            AND        (t.nonce - r.current_nonce < r.max_inflight_txs);
             "#,
         )
-        .bind(max_inflight_txs as i64)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -201,7 +265,7 @@ impl Database {
         .await?;
 
         let item = row
-            .map(|row| row.try_get::<sqlx::types::Json<FeesEstimate>, _>(0))
+            .map(|row| row.try_get::<Json<FeesEstimate>, _>(0))
             .transpose()?;
 
         Ok(item.map(|json_fee_estimate| json_fee_estimate.0))
@@ -264,7 +328,7 @@ impl Database {
         .bind(block_number as i64)
         .bind(chain_id as i64)
         .bind(timestamp)
-        .bind(fee_estimates.map(sqlx::types::Json))
+        .bind(fee_estimates.map(Json))
         .execute(db_tx.as_mut())
         .await?;
 
@@ -748,6 +812,8 @@ mod tests {
     use tracing_subscriber::EnvFilter;
 
     use super::*;
+    use crate::db::data::U256Wrapper;
+    use crate::types::RelayerGasLimit;
 
     async fn setup_db() -> eyre::Result<(Database, DockerContainerGuard)> {
         let db_container = postgres_docker_utils::setup().await?;
@@ -822,7 +888,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tx_lifecycle() -> eyre::Result<()> {
+    async fn relayer_methods() -> eyre::Result<()> {
         tracing_subscriber::registry()
             .with(tracing_subscriber::fmt::layer().pretty().compact())
             .with(
@@ -843,7 +909,83 @@ mod tests {
         db.create_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
-        let relayer_id = "relayer_id";
+        let relayer_id = uuid();
+        let relayer_id = relayer_id.as_str();
+
+        let relayer_name = "relayer_name";
+        let key_id = "key_id";
+        let relayer_address = Address::from_low_u64_be(1);
+
+        db.create_relayer(
+            relayer_id,
+            relayer_name,
+            chain_id,
+            key_id,
+            relayer_address,
+        )
+        .await?;
+
+        let relayer = db.get_relayer(relayer_id).await?;
+
+        assert_eq!(relayer.id, relayer_id);
+        assert_eq!(relayer.name, relayer_name);
+        assert_eq!(relayer.chain_id, chain_id);
+        assert_eq!(relayer.key_id, key_id);
+        assert_eq!(relayer.address.0, relayer_address);
+        assert_eq!(relayer.nonce, 0);
+        assert_eq!(relayer.current_nonce, 0);
+        assert_eq!(relayer.max_inflight_txs, 5);
+        assert_eq!(relayer.gas_limits.0, vec![]);
+
+        db.update_relayer(
+            relayer_id,
+            &RelayerUpdate {
+                relayer_name: None,
+                max_inflight_txs: Some(10),
+                gas_limits: Some(vec![RelayerGasLimit {
+                    chain_id: 1,
+                    value: U256Wrapper(U256::from(10_000u64)),
+                }]),
+            },
+        )
+        .await?;
+
+        let relayer = db.get_relayer(relayer_id).await?;
+
+        assert_eq!(relayer.id, relayer_id);
+        assert_eq!(relayer.name, relayer_name);
+        assert_eq!(relayer.chain_id, chain_id);
+        assert_eq!(relayer.key_id, key_id);
+        assert_eq!(relayer.address.0, relayer_address);
+        assert_eq!(relayer.nonce, 0);
+        assert_eq!(relayer.current_nonce, 0);
+        assert_eq!(relayer.max_inflight_txs, 10);
+        assert_eq!(
+            relayer.gas_limits.0,
+            vec![RelayerGasLimit {
+                chain_id: 1,
+                value: U256Wrapper(U256::from(10_000u64)),
+            }]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tx_lifecycle() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let chain_id = 123;
+        let network_name = "network_name";
+        let http_rpc = "http_rpc";
+        let ws_rpc = "ws_rpc";
+
+        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+            .await?;
+
+        let relayer_id = uuid();
+        let relayer_id = relayer_id.as_str();
+
         let relayer_name = "relayer_name";
         let key_id = "key_id";
         let relayer_address = Address::from_low_u64_be(1);
@@ -992,5 +1134,9 @@ mod tests {
             .and_hms_opt(hour, minute, second)
             .unwrap()
             .and_utc()
+    }
+
+    fn uuid() -> String {
+        uuid::Uuid::new_v4().to_string()
     }
 }

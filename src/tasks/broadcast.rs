@@ -12,11 +12,9 @@ use crate::broadcast_utils::{
     calculate_gas_fees_from_estimates, calculate_max_base_fee_per_gas,
 };
 
-const MAX_IN_FLIGHT_TXS: usize = 5;
-
 pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
     loop {
-        let txs = app.db.get_unsent_txs(MAX_IN_FLIGHT_TXS).await?;
+        let txs = app.db.get_unsent_txs().await?;
 
         // TODO: Parallelize per chain id?
         for tx in txs {

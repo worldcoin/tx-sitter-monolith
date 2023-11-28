@@ -16,6 +16,7 @@ use self::data::{
     SendTxResponse,
 };
 use crate::app::App;
+use crate::types::{RelayerInfo, RelayerUpdate};
 
 pub mod data;
 mod middleware;
@@ -132,11 +133,23 @@ async fn create_relayer(
     }))
 }
 
+async fn update_relayer(
+    State(app): State<Arc<App>>,
+    Path(relayer_id): Path<String>,
+    Json(req): Json<RelayerUpdate>,
+) -> Result<(), ApiError> {
+    app.db.update_relayer(&relayer_id, &req).await?;
+
+    Ok(())
+}
+
 async fn get_relayer(
-    State(_app): State<Arc<App>>,
-    Path(_relayer_id): Path<String>,
-) -> &'static str {
-    "Hello, World!"
+    State(app): State<Arc<App>>,
+    Path(relayer_id): Path<String>,
+) -> Result<Json<RelayerInfo>, ApiError> {
+    let relayer_info = app.db.get_relayer(&relayer_id).await?;
+
+    Ok(Json(relayer_info))
 }
 
 pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
@@ -162,7 +175,8 @@ pub async fn spawn_server(
         .with_state(app.clone());
 
     let relayer_routes = Router::new()
-        .route("/create", post(create_relayer))
+        .route("/", post(create_relayer))
+        .route("/:relayer_id", post(update_relayer))
         .route("/:relayer_id", get(get_relayer))
         .with_state(app.clone());
 

@@ -52,9 +52,12 @@ pub struct ReadTxData {
     pub status: Option<TxStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct AddressWrapper(pub Address);
-#[derive(Debug, Clone, PartialEq, Eq)]
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct U256Wrapper(pub U256);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +118,22 @@ where
 
     fn compatible(ty: &DB::TypeInfo) -> bool {
         *ty == Self::type_info()
+    }
+}
+
+impl<'q, DB> sqlx::Encode<'q, DB> for U256Wrapper
+where
+    DB: Database,
+    [u8; 32]: sqlx::Encode<'q, DB>,
+{
+    fn encode_by_ref(
+        &self,
+        buf: &mut <DB as HasArguments<'q>>::ArgumentBuffer,
+    ) -> sqlx::encode::IsNull {
+        let mut bytes = [0u8; 32];
+        self.0.to_big_endian(&mut bytes);
+
+        <[u8; 32] as sqlx::Encode<DB>>::encode_by_ref(&bytes, buf)
     }
 }
 

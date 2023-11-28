@@ -2,12 +2,12 @@ CREATE TYPE tx_status AS ENUM ('pending', 'mined', 'finalized');
 
 CREATE TYPE rpc_kind AS ENUM ('http', 'ws');
 
-create table networks (
+CREATE TABLE networks (
     chain_id BIGINT PRIMARY KEY,
     name VARCHAR(255) NOT NULL
 );
 
-create table rpcs (
+CREATE TABLE rpcs (
     id BIGSERIAL PRIMARY KEY,
     chain_id BIGINT NOT NULL REFERENCES networks(chain_id),
     url VARCHAR(255) NOT NULL,
@@ -15,32 +15,35 @@ create table rpcs (
 );
 
 CREATE TABLE relayers (
-    id VARCHAR(255) PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    chain_id BIGINT NOT NULL,
-    key_id VARCHAR(255) NOT NULL,
-    address BYTEA NOT NULL,
+    -- The relayer's ID is UUID v4 - always 36 characters (including 4 dashes)
+    id               CHAR(36) PRIMARY KEY,
+    name             VARCHAR(255) NOT NULL,
+    chain_id         BIGINT NOT NULL,
+    key_id           VARCHAR(255) NOT NULL,
+    address          BYTEA NOT NULL,
     -- The local nonce value
-    nonce BIGINT NOT NULL,
+    nonce            BIGINT NOT NULL DEFAULT 0,
     -- The confirmed nonce value
-    current_nonce BIGINT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+    current_nonce    BIGINT NOT NULL DEFAULT 0,
 
--- CREATE TABLE relayer_deps (
---     relayer_id VARCHAR(255) NOT NULL REFERENCES relayers(id),
--- );
+    -- Settings
+    max_inflight_txs BIGINT NOT NULL DEFAULT 5,
+    gas_limits       JSON NOT NULL DEFAULT '[]',
+
+    -- Time keeping fields
+    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Constant tx data - once a tx is created, this data should never change
 CREATE TABLE transactions (
-    id VARCHAR(255) PRIMARY KEY,
-    tx_to BYTEA NOT NULL,
-    data BYTEA NOT NULL,
-    value BYTEA NOT NULL,
-    gas_limit BYTEA NOT NULL,
-    nonce BIGINT NOT NULL,
-    relayer_id VARCHAR(255) NOT NULL REFERENCES relayers(id)
+    id         VARCHAR(255) PRIMARY KEY,
+    tx_to      BYTEA NOT NULL,
+    data       BYTEA NOT NULL,
+    value      BYTEA NOT NULL,
+    gas_limit  BYTEA NOT NULL,
+    nonce      BIGINT NOT NULL,
+    relayer_id CHAR(36) NOT NULL REFERENCES relayers(id)
 );
 
 -- Sent transaction attempts
