@@ -55,6 +55,7 @@ pub struct GetTxResponse {
     pub status: Option<TxStatus>,
 }
 
+#[tracing::instrument(skip(app))]
 pub async fn send_tx(
     State(app): State<Arc<App>>,
     TypedHeader(authorized_relayer): TypedHeader<AuthorizedRelayer>,
@@ -85,6 +86,7 @@ pub async fn send_tx(
     Ok(Json(SendTxResponse { tx_id }))
 }
 
+#[tracing::instrument(skip(app))]
 pub async fn get_tx(
     State(app): State<Arc<App>>,
     Path(tx_id): Path<String>,

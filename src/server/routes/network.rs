@@ -27,6 +27,7 @@ pub struct NetworkInfo {
     pub ws_rpc: String,
 }
 
+#[tracing::instrument(skip(app))]
 pub async fn create_network(
     State(app): State<Arc<App>>,
     Path(chain_id): Path<u64>,
@@ -57,6 +58,7 @@ pub async fn create_network(
     Ok(())
 }
 
+#[tracing::instrument(skip(_app))]
 pub async fn _get_network(
     State(_app): State<Arc<App>>,
     Path(_chain_id): Path<u64>,
@@ -64,6 +66,7 @@ pub async fn _get_network(
     "Hello, World!"
 }
 
+#[tracing::instrument(skip(_app))]
 pub async fn _get_networks(
     State(_app): State<Arc<App>>,
     Path(_chain_id): Path<u64>,

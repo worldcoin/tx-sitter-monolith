@@ -4,7 +4,7 @@
 2. [ ] Per network settings (max blocks age/number - for pruning)
 3. [x] Per relayer settings (i.e. max inflight txs, max gas price)
 4. [ ] Multiple RPCs support
-5. IN PROGRESS [ ] RPC Access
+5. [x] RPC Access
 6. [x] Cross-network dependencies (i.e. Optimism depends on L1 gas cost)
 7. [x] Transaction priority
 8. [ ] Metrics

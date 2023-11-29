@@ -63,7 +63,7 @@ struct JsonRpcReq {
     pub jsonrpc: String,
     pub method: String,
     #[serde(default)]
-    pub params: Vec<Value>,
+    pub params: Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

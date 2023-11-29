@@ -7,7 +7,9 @@ use axum::Router;
 use hyper::server::conn::AddrIncoming;
 use thiserror::Error;
 
-use self::routes::relayer::{create_relayer, get_relayer, update_relayer};
+use self::routes::relayer::{
+    create_relayer, get_relayer, relayer_rpc, update_relayer,
+};
 use self::routes::transaction::{get_tx, send_tx};
 use crate::app::App;
 
@@ -75,8 +77,8 @@ pub async fn spawn_server(
 
     let relayer_routes = Router::new()
         .route("/", post(create_relayer))
-        .route("/:relayer_id", post(update_relayer))
-        .route("/:relayer_id", get(get_relayer))
+        .route("/:relayer_id", post(update_relayer).get(get_relayer))
+        .route("/:relayer_id/rpc", post(relayer_rpc))
         .with_state(app.clone());
 
     let network_routes = Router::new()
