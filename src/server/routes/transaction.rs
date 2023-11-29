@@ -51,8 +51,22 @@ pub struct GetTxResponse {
     // Sent tx data
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<H256>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<TxStatus>,
+    pub status: GetTxResponseStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+#[serde(rename_all = "camelCase")]
+pub enum GetTxResponseStatus {
+    TxStatus(TxStatus),
+    Unsent(UnsentStatus),
+}
+
+// We need this status as a separate enum to avoid manual serialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnsentStatus {
+    Unsent,
 }
 
 #[tracing::instrument(skip(app))]
@@ -105,8 +119,30 @@ pub async fn get_tx(
         gas_limit: tx.gas_limit.0,
         nonce: tx.nonce,
         tx_hash: tx.tx_hash.map(|h| h.0),
-        status: tx.status,
+        status: tx
+            .status
+            .map(GetTxResponseStatus::TxStatus)
+            .unwrap_or(GetTxResponseStatus::Unsent(UnsentStatus::Unsent)),
     };
 
     Ok(Json(get_tx_response))
+}
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::*;
+
+    #[test_case(GetTxResponseStatus::TxStatus(TxStatus::Pending) => "pending")]
+    #[test_case(GetTxResponseStatus::Unsent(UnsentStatus::Unsent) => "unsent")]
+    fn get_tx_response_status_serialization(
+        status: GetTxResponseStatus,
+    ) -> &'static str {
+        let json = serde_json::to_string(&status).unwrap();
+
+        let s = json.trim_start_matches("\"").trim_end_matches("\"");
+
+        Box::leak(s.to_owned().into_boxed_str())
+    }
 }
