@@ -6,6 +6,7 @@ use sqlx::prelude::FromRow;
 use sqlx::Database;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
+use crate::types::TransactionPriority;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct UnsentTx {
@@ -15,6 +16,7 @@ pub struct UnsentTx {
     pub data: Vec<u8>,
     pub value: U256Wrapper,
     pub gas_limit: U256Wrapper,
+    pub priority: TransactionPriority,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
     pub key_id: String,

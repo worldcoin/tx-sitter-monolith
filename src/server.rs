@@ -81,6 +81,7 @@ async fn send_tx(
             req.data.as_ref().map(|d| &d[..]).unwrap_or(&[]),
             req.value,
             req.gas_limit,
+            req.priority,
             &req.relayer_id,
         )
         .await?;

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -8,7 +10,7 @@ use sqlx::{Pool, Postgres, Row};
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
-use crate::types::{RelayerInfo, RelayerUpdate};
+use crate::types::{RelayerInfo, RelayerUpdate, TransactionPriority};
 
 pub mod data;
 
@@ -143,6 +145,7 @@ impl Database {
         data: &[u8],
         value: U256,
         gas_limit: U256,
+        priority: TransactionPriority,
         relayer_id: &str,
     ) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
@@ -154,8 +157,8 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO transactions (id, tx_to, data, value, gas_limit, relayer_id, nonce)
-            VALUES ($1, $2, $3, $4, $5, $6, (SELECT nonce FROM relayers WHERE id = $6))
+            INSERT INTO transactions (id, tx_to, data, value, gas_limit, priority, relayer_id, nonce)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT nonce FROM relayers WHERE id = $7))
         "#,
         )
         .bind(tx_id)
@@ -163,6 +166,7 @@ impl Database {
         .bind(data)
         .bind(value_bytes)
         .bind(gas_limit_bytes)
+        .bind(priority)
         .bind(relayer_id)
         .execute(tx.as_mut())
         .await?;
@@ -187,7 +191,7 @@ impl Database {
     pub async fn get_unsent_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT     r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce, r.key_id, r.chain_id
+            SELECT     r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.priority, t.nonce, r.key_id, r.chain_id
             FROM       transactions t
             LEFT JOIN  sent_transactions s ON (t.id = s.tx_id)
             INNER JOIN relayers r ON (t.relayer_id = r.id)
@@ -1049,12 +1053,15 @@ mod tests {
         let data: &[u8] = &[];
         let value = U256::from(0);
         let gas_limit = U256::from(0);
+        let priority = TransactionPriority::Regular;
 
         let tx = db.read_tx(tx_id).await?;
         assert!(tx.is_none(), "Tx has not been sent yet");
 
-        db.create_transaction(tx_id, to, data, value, gas_limit, relayer_id)
-            .await?;
+        db.create_transaction(
+            tx_id, to, data, value, gas_limit, priority, relayer_id,
+        )
+        .await?;
 
         let tx = db.read_tx(tx_id).await?.context("Missing tx")?;
 

@@ -42,7 +42,7 @@ pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
             let (max_fee_per_gas, max_priority_fee_per_gas) =
                 calculate_gas_fees_from_estimates(
                     &fees.fee_estimates,
-                    2, // Priority - 50th percentile
+                    tx.priority.to_percentile_index(),
                     max_base_fee_per_gas,
                 )?;
 

@@ -2,6 +2,8 @@ CREATE TYPE tx_status AS ENUM ('pending', 'mined', 'finalized');
 
 CREATE TYPE rpc_kind AS ENUM ('http', 'ws');
 
+CREATE TYPE transaction_priority AS ENUM ('slowest', 'slow', 'regular', 'fast', 'fastest');
+
 CREATE TABLE networks (
     chain_id BIGINT PRIMARY KEY,
     name VARCHAR(255) NOT NULL
@@ -43,6 +45,7 @@ CREATE TABLE transactions (
     value      BYTEA NOT NULL,
     gas_limit  BYTEA NOT NULL,
     nonce      BIGINT NOT NULL,
+    priority   transaction_priority NOT NULL,
     relayer_id CHAR(36) NOT NULL REFERENCES relayers(id)
 );
 

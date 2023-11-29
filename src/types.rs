@@ -9,16 +9,22 @@ use crate::db::data::{AddressWrapper, U256Wrapper};
 #[sqlx(type_name = "transaction_priority", rename_all = "camelCase")]
 pub enum TransactionPriority {
     // 5th percentile
-    Slowest,
+    Slowest = 0,
     // 25th percentile
-    Slow,
+    Slow = 1,
     // 50th percentile
     #[default]
-    Regular,
+    Regular = 2,
     // 75th percentile
-    Fast,
+    Fast = 3,
     // 95th percentile
-    Fastest,
+    Fastest = 4,
+}
+
+impl TransactionPriority {
+    pub fn to_percentile_index(self) -> usize {
+        self as usize
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, FromRow)]

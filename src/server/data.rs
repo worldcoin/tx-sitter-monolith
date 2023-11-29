@@ -2,6 +2,7 @@ use ethers::types::{Address, Bytes, H256, U256};
 use serde::{Deserialize, Serialize};
 
 use crate::db::TxStatus;
+use crate::types::TransactionPriority;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,6 +15,8 @@ pub struct SendTxRequest {
     pub data: Option<Bytes>,
     #[serde(with = "crate::serde_utils::decimal_u256")]
     pub gas_limit: U256,
+    #[serde(default)]
+    pub priority: TransactionPriority,
     #[serde(default)]
     pub tx_id: Option<String>,
 }

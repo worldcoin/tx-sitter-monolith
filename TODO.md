@@ -6,7 +6,7 @@
 4. [ ] Multiple RPCs support
 5. IN PROGRESS [ ] RPC Access
 6. [x] Cross-network dependencies (i.e. Optimism depends on L1 gas cost)
-7. [ ] Transaction priority
+7. [x] Transaction priority
 8. [ ] Metrics
 9. [ ] Tracing (add telemetry-batteries)
 10. [ ] Automated testing
