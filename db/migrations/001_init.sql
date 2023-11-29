@@ -6,14 +6,14 @@ CREATE TYPE transaction_priority AS ENUM ('slowest', 'slow', 'regular', 'fast', 
 
 CREATE TABLE networks (
     chain_id BIGINT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL
+    name     VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE rpcs (
-    id BIGSERIAL PRIMARY KEY,
+    id       BIGSERIAL PRIMARY KEY,
     chain_id BIGINT NOT NULL REFERENCES networks(chain_id),
-    url VARCHAR(255) NOT NULL,
-    kind rpc_kind NOT NULL
+    url      VARCHAR(255) NOT NULL,
+    kind     rpc_kind NOT NULL
 );
 
 CREATE TABLE relayers (
@@ -51,12 +51,12 @@ CREATE TABLE transactions (
 
 -- Sent transaction attempts
 CREATE TABLE tx_hashes (
-    tx_hash BYTEA PRIMARY KEY,
-    tx_id VARCHAR(255) NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    max_fee_per_gas BYTEA NOT NULL,
+    tx_hash                  BYTEA PRIMARY KEY,
+    tx_id                    VARCHAR(255) NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    max_fee_per_gas          BYTEA NOT NULL,
     max_priority_fee_per_gas BYTEA NOT NULL,
-    escalated BOOL NOT NULL DEFAULT FALSE
+    escalated                BOOL NOT NULL DEFAULT FALSE
 );
 
 -- Dynamic tx data & data used for escalations
@@ -78,15 +78,15 @@ CREATE TABLE sent_transactions (
 
 CREATE TABLE blocks (
     block_number BIGINT NOT NULL,
-    chain_id BIGINT NOT NULL,
-    timestamp TIMESTAMPTZ NOT NULL,
+    chain_id     BIGINT NOT NULL,
+    timestamp    TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (block_number, chain_id)
 );
 
 CREATE TABLE block_txs (
     block_number BIGINT NOT NULL,
-    chain_id BIGINT NOT NULL,
-    tx_hash BYTEA NOT NULL,
+    chain_id     BIGINT NOT NULL,
+    tx_hash      BYTEA NOT NULL,
     PRIMARY KEY (block_number, chain_id, tx_hash),
     FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id) ON DELETE CASCADE,
     FOREIGN KEY (tx_hash) REFERENCES tx_hashes (tx_hash)
@@ -94,8 +94,8 @@ CREATE TABLE block_txs (
 
 CREATE TABLE block_fees (
     block_number BIGINT NOT NULL,
-    chain_id BIGINT NOT NULL,
-    gas_price NUMERIC(78, 0) NOT NULL,
+    chain_id     BIGINT NOT NULL,
+    gas_price    NUMERIC(78, 0) NOT NULL,
     fee_estimate JSON NOT NULL,
     PRIMARY KEY (block_number, chain_id),
     FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id) ON DELETE CASCADE
