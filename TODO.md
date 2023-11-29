@@ -21,4 +21,4 @@
 12. [x] No need to insert all block txs into DB
 13. [x] Prune block info
 14. [ ] Authentication
-
+15. [ ] Plug block holes - we can periodically fetch the list of known blocks for a given chain and find and fetch any missing ones from the RPC
