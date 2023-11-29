@@ -196,7 +196,8 @@ impl Database {
             LEFT JOIN  sent_transactions s ON (t.id = s.tx_id)
             INNER JOIN relayers r ON (t.relayer_id = r.id)
             WHERE      s.tx_id IS NULL
-            AND        (t.nonce - r.current_nonce < r.max_inflight_txs);
+            AND        (t.nonce - r.current_nonce < r.max_inflight_txs)
+            ORDER BY   r.id, t.nonce ASC
             "#,
         )
         .fetch_all(&self.pool)
