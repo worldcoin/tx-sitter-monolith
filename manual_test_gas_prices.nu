@@ -1,6 +1,7 @@
 # Setup dependencies in different terminals:
 # DB
-psql postgres://postgres:postgres@127.0.0.1:5432/database
+docker run --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres
+# Can connect to using psql postgres://postgres:postgres@127.0.0.1:5432/database
 
 # Nodes
 anvil --chain-id 31337 -p 8545 --block-time 1
