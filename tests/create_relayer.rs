@@ -1,10 +1,6 @@
-use std::time::Duration;
-
-use service::server::data::{CreateRelayerRequest, CreateRelayerResponse};
-
-use crate::common::*;
-
 mod common;
+
+use crate::common::prelude::*;
 
 const ESCALATION_INTERVAL: Duration = Duration::from_secs(30);
 

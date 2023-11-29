@@ -1,15 +1,6 @@
-use std::time::Duration;
-
-use ethers::providers::Middleware;
-use ethers::types::{Eip1559TransactionRequest, U256};
-use ethers::utils::parse_units;
-use service::server::data::{
-    CreateRelayerRequest, CreateRelayerResponse, SendTxRequest,
-};
-
 mod common;
 
-use crate::common::*;
+use crate::common::prelude::*;
 
 const ESCALATION_INTERVAL: Duration = Duration::from_secs(30);
 

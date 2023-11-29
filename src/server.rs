@@ -1,24 +1,16 @@
 use std::sync::Arc;
 
-use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post, IntoMakeService};
-use axum::{Router, TypedHeader};
-use ethers::signers::Signer;
-use eyre::Result;
+use axum::Router;
 use hyper::server::conn::AddrIncoming;
-use middleware::AuthorizedRelayer;
 use thiserror::Error;
 
-use self::data::{
-    CreateRelayerRequest, CreateRelayerResponse, GetTxResponse, SendTxRequest,
-    SendTxResponse,
-};
+use self::routes::relayer::{create_relayer, get_relayer, update_relayer};
+use self::routes::transaction::{get_tx, send_tx};
 use crate::app::App;
-use crate::types::{RelayerInfo, RelayerUpdate};
 
-pub mod data;
 mod middleware;
 pub mod routes;
 
@@ -57,100 +49,6 @@ impl IntoResponse for ApiError {
 
         (status_code, message).into_response()
     }
-}
-
-async fn send_tx(
-    State(app): State<Arc<App>>,
-    TypedHeader(authorized_relayer): TypedHeader<AuthorizedRelayer>,
-    Json(req): Json<SendTxRequest>,
-) -> Result<Json<SendTxResponse>, ApiError> {
-    if !authorized_relayer.is_authorized(&req.relayer_id) {
-        return Err(ApiError::Unauthorized);
-    }
-
-    let tx_id = if let Some(id) = req.tx_id {
-        id
-    } else {
-        uuid::Uuid::new_v4().to_string()
-    };
-
-    app.db
-        .create_transaction(
-            &tx_id,
-            req.to,
-            req.data.as_ref().map(|d| &d[..]).unwrap_or(&[]),
-            req.value,
-            req.gas_limit,
-            req.priority,
-            &req.relayer_id,
-        )
-        .await?;
-
-    Ok(Json(SendTxResponse { tx_id }))
-}
-
-async fn get_tx(
-    State(app): State<Arc<App>>,
-    Path(tx_id): Path<String>,
-) -> Result<Json<GetTxResponse>, ApiError> {
-    let tx = app.db.read_tx(&tx_id).await?.ok_or(ApiError::MissingTx)?;
-
-    let get_tx_response = GetTxResponse {
-        tx_id: tx.tx_id,
-        to: tx.to.0,
-        data: if tx.data.is_empty() {
-            None
-        } else {
-            Some(tx.data.into())
-        },
-        value: tx.value.0,
-        gas_limit: tx.gas_limit.0,
-        nonce: tx.nonce,
-        tx_hash: tx.tx_hash.map(|h| h.0),
-        status: tx.status,
-    };
-
-    Ok(Json(get_tx_response))
-}
-
-async fn create_relayer(
-    State(app): State<Arc<App>>,
-    Json(req): Json<CreateRelayerRequest>,
-) -> Result<Json<CreateRelayerResponse>, ApiError> {
-    let (key_id, signer) = app.keys_source.new_signer().await?;
-
-    let address = signer.address();
-
-    let relayer_id = uuid::Uuid::new_v4();
-    let relayer_id = relayer_id.to_string();
-
-    app.db
-        .create_relayer(&relayer_id, &req.name, req.chain_id, &key_id, address)
-        .await?;
-
-    Ok(Json(CreateRelayerResponse {
-        relayer_id,
-        address,
-    }))
-}
-
-async fn update_relayer(
-    State(app): State<Arc<App>>,
-    Path(relayer_id): Path<String>,
-    Json(req): Json<RelayerUpdate>,
-) -> Result<(), ApiError> {
-    app.db.update_relayer(&relayer_id, &req).await?;
-
-    Ok(())
-}
-
-async fn get_relayer(
-    State(app): State<Arc<App>>,
-    Path(relayer_id): Path<String>,
-) -> Result<Json<RelayerInfo>, ApiError> {
-    let relayer_info = app.db.get_relayer(&relayer_id).await?;
-
-    Ok(Json(relayer_info))
 }
 
 pub async fn serve(app: Arc<App>) -> eyre::Result<()> {

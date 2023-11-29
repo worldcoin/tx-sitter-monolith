@@ -1,7 +1,8 @@
-use crate::server::data::{
-    CreateRelayerRequest, CreateRelayerResponse, SendTxRequest, SendTxResponse,
-};
 use crate::server::routes::network::NewNetworkInfo;
+use crate::server::routes::relayer::{
+    CreateRelayerRequest, CreateRelayerResponse,
+};
+use crate::server::routes::transaction::{SendTxRequest, SendTxResponse};
 
 pub struct TxSitterClient {
     client: reqwest::Client,
