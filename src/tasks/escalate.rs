@@ -47,7 +47,6 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
                     * increased_gas_price_percentage
                     / factor;
 
-            // TODO: Add limits per network
             let max_priority_fee_per_gas =
                 tx.initial_max_priority_fee_per_gas.0
                     + max_priority_fee_per_gas_increase;

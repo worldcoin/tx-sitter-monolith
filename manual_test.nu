@@ -8,7 +8,7 @@ http post -t application/json $"($txSitter)/1/network/31337" {
 }
 
 echo "Creating relayer"
-let relayer = http post -t application/json $"($txSitter)/1/relayer/create" { "name": "My Relayer", "chainId": 31337 }
+let relayer = http post -t application/json $"($txSitter)/1/relayer" { "name": "My Relayer", "chainId": 31337 }
 
 echo "Funding relayer"
 cast send --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 --value 100ether $relayer.address ''
