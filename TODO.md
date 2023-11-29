@@ -17,7 +17,7 @@
 11. [x] Parallelization:
     1.  [x] Parallelize block indexing - depends on per network settings
     2.  [x] Parallelize nonce updating
-    3.  [ ] Parallelize broadcast per chain id
+    3.  [x] Parallelize broadcast per ~chain id~ relayer id
 12. [x] No need to insert all block txs into DB
 13. [x] Prune block info
 14. [ ] Authentication
