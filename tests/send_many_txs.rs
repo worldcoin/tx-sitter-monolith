@@ -1,5 +1,7 @@
 mod common;
 
+use service::server::routes::relayer::CreateApiKeyResponse;
+
 use crate::common::prelude::*;
 
 const ESCALATION_INTERVAL: Duration = Duration::from_secs(30);
@@ -23,6 +25,9 @@ async fn send_many_txs() -> eyre::Result<()> {
             chain_id: DEFAULT_ANVIL_CHAIN_ID,
         })
         .await?;
+
+    let CreateApiKeyResponse { api_key } =
+        client.create_relayer_api_key(&relayer_id).await?;
 
     // Fund the relayer
     let middleware = setup_middleware(
@@ -56,13 +61,16 @@ async fn send_many_txs() -> eyre::Result<()> {
 
     for _ in 0..num_transfers {
         client
-            .send_tx(&SendTxRequest {
-                relayer_id: relayer_id.clone(),
-                to: ARBITRARY_ADDRESS,
-                value,
-                gas_limit: U256::from(21_000),
-                ..Default::default()
-            })
+            .send_tx(
+                &api_key,
+                &SendTxRequest {
+                    relayer_id: relayer_id.clone(),
+                    to: ARBITRARY_ADDRESS,
+                    value,
+                    gas_limit: U256::from(21_000),
+                    ..Default::default()
+                },
+            )
             .await?;
     }
 

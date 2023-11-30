@@ -1,6 +1,7 @@
 mod common;
 
 use ethers::prelude::*;
+use service::server::routes::relayer::CreateApiKeyResponse;
 use url::Url;
 
 use crate::common::prelude::*;
@@ -24,8 +25,10 @@ async fn rpc_access() -> eyre::Result<()> {
         })
         .await?;
 
-    let rpc_url =
-        format!("http://{}/1/relayer/{relayer_id}/rpc", service.local_addr());
+    let CreateApiKeyResponse { api_key } =
+        client.create_relayer_api_key(&relayer_id).await?;
+
+    let rpc_url = format!("http://{}/1/{api_key}/rpc", service.local_addr());
 
     let provider = Provider::new(Http::new(rpc_url.parse::<Url>()?));
 

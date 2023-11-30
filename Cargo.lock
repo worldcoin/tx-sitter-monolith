@@ -3830,6 +3830,7 @@ dependencies = [
  "aws-smithy-types",
  "aws-types",
  "axum",
+ "base64 0.21.5",
  "bigdecimal 0.4.2",
  "chrono",
  "clap",
