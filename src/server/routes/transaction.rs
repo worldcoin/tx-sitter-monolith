@@ -141,7 +141,7 @@ mod tests {
     ) -> &'static str {
         let json = serde_json::to_string(&status).unwrap();
 
-        let s = json.trim_start_matches("\"").trim_end_matches("\"");
+        let s = json.trim_start_matches('\"').trim_end_matches('\"');
 
         Box::leak(s.to_owned().into_boxed_str())
     }

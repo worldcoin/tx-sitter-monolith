@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::Future;
+use tokio::task::JoinHandle;
 
 const FAILURE_MONITORING_PERIOD: Duration = Duration::from_secs(60);
 
@@ -19,7 +20,7 @@ impl<T> TaskRunner<T>
 where
     T: Send + Sync + 'static,
 {
-    pub fn add_task<S, C, F>(&self, label: S, task: C)
+    pub fn add_task<S, C, F>(&self, label: S, task: C) -> JoinHandle<()>
     where
         S: ToString,
         C: Fn(Arc<T>) -> F + Send + Sync + 'static,
@@ -50,42 +51,7 @@ where
                     break;
                 }
             }
-        });
-    }
-
-    pub fn add_task_with_args<S, C, F, A>(&self, label: S, task: C, args: A)
-    where
-        A: Clone + Send + 'static,
-        S: ToString,
-        C: Fn(Arc<T>, A) -> F + Send + Sync + 'static,
-        F: Future<Output = eyre::Result<()>> + Send + 'static,
-    {
-        let app = self.app.clone();
-        let label = label.to_string();
-
-        tokio::spawn(async move {
-            let mut failures = vec![];
-
-            loop {
-                tracing::info!(label, "Running task");
-
-                let result = task(app.clone(), args.clone()).await;
-
-                if let Err(err) = result {
-                    tracing::error!(label, error = ?err, "Task failed");
-
-                    failures.push(Instant::now());
-                    let backoff = determine_backoff(&failures);
-
-                    tokio::time::sleep(backoff).await;
-
-                    prune_failures(&mut failures);
-                } else {
-                    tracing::info!(label, "Task finished");
-                    break;
-                }
-            }
-        });
+        })
     }
 }
 

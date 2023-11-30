@@ -66,13 +66,17 @@ async fn broadcast_relayer_txs(
 
     tracing::info!(relayer_id, num_txs = txs.len(), "Broadcasting relayer txs");
 
+    if !should_send_transaction(app, &relayer_id).await? {
+        tracing::warn!(
+            relayer_id = relayer_id,
+            "Skipping transaction broadcasts"
+        );
+
+        return Ok(());
+    }
+
     for tx in txs {
         tracing::info!(tx.id, "Sending tx");
-
-        if !should_send_transaction(app, &tx.relayer_id).await? {
-            tracing::warn!(id = tx.id, "Skipping transaction broadcast");
-            continue;
-        }
 
         let middleware = app
             .signer_middleware(tx.chain_id, tx.key_id.clone())

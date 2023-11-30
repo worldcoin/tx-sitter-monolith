@@ -69,7 +69,18 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
 
             let pending_tx = middleware
                 .send_transaction(TypedTransaction::Eip1559(eip1559_tx), None)
-                .await?;
+                .await;
+
+            let pending_tx = match pending_tx {
+                Ok(pending_tx) => {
+                    tracing::info!(?pending_tx, "Tx sent successfully");
+                    pending_tx
+                }
+                Err(err) => {
+                    tracing::error!(error = ?err, "Failed to send tx");
+                    continue;
+                }
+            };
 
             let tx_hash = pending_tx.tx_hash();
 
