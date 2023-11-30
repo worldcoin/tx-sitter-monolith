@@ -22,3 +22,4 @@
 13. [x] Prune block info
 14. [ ] Authentication
 15. [ ] Plug block holes - we can periodically fetch the list of known blocks for a given chain and find and fetch any missing ones from the RPC
+16. [ ] Find missing txs - sometimes a transaction can be sent but not saved in the DB. On every block we should fetch all the txs (not just hashes) and find txs coming from our relayer addresses. This way we can find missing transactions.
