@@ -15,9 +15,6 @@ The Tx Sitter can be configured in 2 ways:
     host = "127.0.0.1:3000"
     disable_auth = true
 
-    [rpc]
-    rpcs = ["http://127.0.0.1:8545"]
-
     [database]
     connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"
 
@@ -30,7 +27,6 @@ The Tx Sitter can be configured in 2 ways:
     TX_SITTER__SERVICE__ESCALATION_INTERVAL="1m"
     TX_SITTER__SERVER__HOST="127.0.0.1:3000"
     TX_SITTER__SERVER__DISABLE_AUTH="true"
-    TX_SITTER_EXT__RPC__RPCS="http://127.0.0.1:8545"
     TX_SITTER__DATABASE__CONNECTION_STRING="postgres://postgres:postgres@127.0.0.1:5432/database"
     TX_SITTER__KEYS__KIND="local"
     ```
@@ -47,6 +43,14 @@ This will use the `config.toml` configuration.
 If you have [nushell](https://www.nushell.sh/) installed, `nu manual_test.nu` can be run to execute a basic test.
 
 ## Running tests
-While you obviously can run tests with `cargo test --workspace` some tests take quite a long time (due to spinning up an anvil node, sending txs, etc.).
+While you obviously can run tests with
+```
+cargo test --workspace
+```
+some tests take quite a long time (due to spinning up an anvil node, sending txs, etc.).
 
-Therefore I recommend [cargo-nextest](https://nexte.st/) as it runs all the tests in parallel. Once installed `cargo nextest run --workspace` can be used instead.
+Therefore I recommend [cargo-nextest](https://nexte.st/) as it runs all the tests in parallel. Once installed
+```
+cargo nextest run --workspace
+```
+can be used instead.

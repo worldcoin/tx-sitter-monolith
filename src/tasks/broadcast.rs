@@ -86,7 +86,7 @@ async fn broadcast_relayer_txs(
             .db
             .get_latest_block_fees_by_chain_id(tx.chain_id)
             .await?
-            .context("Missing block")?;
+            .context("Missing block fees")?;
 
         let max_base_fee_per_gas =
             calculate_max_base_fee_per_gas(&fees.fee_estimates)?;
