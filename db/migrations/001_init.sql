@@ -101,3 +101,8 @@ CREATE TABLE block_fees (
     PRIMARY KEY (block_number, chain_id),
     FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id) ON DELETE CASCADE
 );
+
+CREATE TABLE api_keys (
+    relayer_id CHAR(36) NOT NULL REFERENCES relayers(id) ON DELETE CASCADE,
+    key_hash   BYTEA NOT NULL
+);

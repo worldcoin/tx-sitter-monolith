@@ -866,6 +866,48 @@ impl Database {
 
         Ok(items.into_iter().map(|(x,)| x as u64).collect())
     }
+
+    pub async fn save_api_key(
+        &self,
+        relayer_id: &str,
+        api_key_hash: [u8; 32],
+    ) -> eyre::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (relayer_id, key_hash)
+            VALUES ($1, $2)
+            "#,
+        )
+        .bind(relayer_id)
+        .bind(api_key_hash)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn is_api_key_valid(
+        &self,
+        relayer_id: &str,
+        api_key_hash: [u8; 32],
+    ) -> eyre::Result<bool> {
+        let (is_valid,): (bool,) = sqlx::query_as(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM api_keys
+                WHERE relayer_id = $1
+                AND   key_hash = $2
+            )
+            "#,
+        )
+        .bind(relayer_id)
+        .bind(api_key_hash)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(is_valid)
+    }
 }
 
 #[cfg(test)]
