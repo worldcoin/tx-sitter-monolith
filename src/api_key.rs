@@ -26,7 +26,7 @@ impl ApiKey {
     }
 
     pub fn api_key_hash(&self) -> [u8; 32] {
-        Sha3_256::digest(&self.api_key).into()
+        Sha3_256::digest(self.api_key).into()
     }
 }
 
@@ -78,12 +78,12 @@ impl std::fmt::Display for ApiKey {
         let mut buffer = [0u8; 48];
 
         let relayer_id = uuid::Uuid::parse_str(&self.relayer_id)
-            .map_err(|_| std::fmt::Error::default())?;
+            .map_err(|_| std::fmt::Error)?;
 
         buffer[..16].copy_from_slice(relayer_id.as_bytes());
         buffer[16..].copy_from_slice(&self.api_key);
 
-        let encoded = base64::prelude::BASE64_URL_SAFE.encode(&buffer);
+        let encoded = base64::prelude::BASE64_URL_SAFE.encode(buffer);
 
         write!(f, "{}", encoded)
     }
