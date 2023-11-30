@@ -27,4 +27,4 @@
 7. [x] Transaction priority
 8. [x] Handling reorgs
 9. [x] Per relayer settings (i.e. max inflight txs, max gas price)
-10. [ ] Authentication
+10. [x] Authentication
