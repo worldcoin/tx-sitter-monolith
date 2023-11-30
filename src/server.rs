@@ -8,7 +8,8 @@ use hyper::server::conn::AddrIncoming;
 use thiserror::Error;
 
 use self::routes::relayer::{
-    create_relayer, get_relayer, relayer_rpc, update_relayer,
+    create_relayer, create_relayer_api_key, get_relayer, relayer_rpc,
+    update_relayer,
 };
 use self::routes::transaction::{get_tx, send_tx};
 use crate::app::App;
@@ -66,19 +67,16 @@ pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
 pub async fn spawn_server(
     app: Arc<App>,
 ) -> eyre::Result<axum::Server<AddrIncoming, IntoMakeService<Router>>> {
-    let tx_routes = Router::new()
-        .route("/send", post(send_tx))
-        .route("/:tx_id", get(get_tx))
-        .layer(axum::middleware::from_fn_with_state(
-            app.clone(),
-            middleware::auth,
-        ))
+    let permissioned_routes = Router::new()
+        .route("/:api_token/tx", post(send_tx))
+        .route("/:api_token/tx/:tx_id", get(get_tx))
+        .route("/:api_token/rpc", post(relayer_rpc))
         .with_state(app.clone());
 
     let relayer_routes = Router::new()
         .route("/", post(create_relayer))
         .route("/:relayer_id", post(update_relayer).get(get_relayer))
-        .route("/:relayer_id/rpc", post(relayer_rpc))
+        .route("/:relayer_id/key", post(create_relayer_api_key))
         .with_state(app.clone());
 
     let network_routes = Router::new()
@@ -88,7 +86,7 @@ pub async fn spawn_server(
         .with_state(app.clone());
 
     let v1_routes = Router::new()
-        .nest("/tx", tx_routes)
+        .nest("/", permissioned_routes)
         .nest("/relayer", relayer_routes)
         .nest("/network", network_routes);
 

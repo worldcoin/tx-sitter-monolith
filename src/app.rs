@@ -3,6 +3,7 @@ use ethers::providers::{Http, Provider, Ws};
 use ethers::signers::Signer;
 use eyre::Context;
 
+use crate::api_key::ApiKey;
 use crate::config::{Config, KeysConfig};
 use crate::db::data::RpcKind;
 use crate::db::Database;
@@ -73,6 +74,19 @@ impl App {
         let middlware = SignerMiddleware::new(rpc, wallet);
 
         Ok(middlware)
+    }
+
+    pub async fn is_authorized(
+        &self,
+        api_token: &ApiKey,
+    ) -> eyre::Result<bool> {
+        if self.config.server.disable_auth {
+            return Ok(true);
+        }
+
+        self.db
+            .is_api_key_valid(&api_token.relayer_id, api_token.api_key_hash())
+            .await
     }
 }
 
