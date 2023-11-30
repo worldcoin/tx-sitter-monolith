@@ -459,7 +459,7 @@ impl Database {
         // but none of the associated tx hashes are present in block txs
         let items: Vec<(String,)> = sqlx::query_as(
             r#"
-            WITH fdsa AS (
+            WITH reorg_candidates AS (
                 SELECT     t.id, h.tx_hash, bt.chain_id
                 FROM       transactions t
                 JOIN       sent_transactions s ON t.id = s.tx_id
@@ -468,7 +468,7 @@ impl Database {
                 WHERE      s.status = $1
             )
             SELECT    t.id
-            FROM      fdsa t
+            FROM      reorg_candidates t
             GROUP BY  t.id
             HAVING    COUNT(t.chain_id) = 0
             "#,

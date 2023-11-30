@@ -5,9 +5,6 @@ escalation_interval = "1m"
 host = "127.0.0.1:3000"
 disable_auth = true
 
-[rpc]
-rpcs = ["http://127.0.0.1:8545"]
-
 [database]
 connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"
 

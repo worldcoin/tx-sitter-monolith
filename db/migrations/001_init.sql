@@ -30,6 +30,7 @@ CREATE TABLE relayers (
 
     -- Settings
     max_inflight_txs BIGINT NOT NULL DEFAULT 5,
+    -- e.g. [ { "chainId": 123, "value": "0x123"} ]
     gas_limits       JSON NOT NULL DEFAULT '[]',
 
     -- Time keeping fields
