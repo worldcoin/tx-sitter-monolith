@@ -3,7 +3,7 @@ escalation_interval = "1m"
 
 [server]
 host = "127.0.0.1:3000"
-disable_auth = true
+disable_auth = false
 
 [database]
 connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"

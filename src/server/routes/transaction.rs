@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
 use axum::extract::{Json, Path, State};
-use axum::TypedHeader;
 use ethers::types::{Address, Bytes, H256, U256};
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::api_key::ApiKey;
 use crate::app::App;
 use crate::db::TxStatus;
-use crate::server::middleware::AuthorizedRelayer;
 use crate::server::ApiError;
 use crate::types::TransactionPriority;
 
@@ -72,10 +71,10 @@ pub enum UnsentStatus {
 #[tracing::instrument(skip(app))]
 pub async fn send_tx(
     State(app): State<Arc<App>>,
-    TypedHeader(authorized_relayer): TypedHeader<AuthorizedRelayer>,
+    Path(api_token): Path<ApiKey>,
     Json(req): Json<SendTxRequest>,
 ) -> Result<Json<SendTxResponse>, ApiError> {
-    if !authorized_relayer.is_authorized(&req.relayer_id) {
+    if !app.is_authorized(&api_token).await? {
         return Err(ApiError::Unauthorized);
     }
 
@@ -103,8 +102,12 @@ pub async fn send_tx(
 #[tracing::instrument(skip(app))]
 pub async fn get_tx(
     State(app): State<Arc<App>>,
-    Path(tx_id): Path<String>,
+    Path((api_token, tx_id)): Path<(ApiKey, String)>,
 ) -> Result<Json<GetTxResponse>, ApiError> {
+    if !app.is_authorized(&api_token).await? {
+        return Err(ApiError::Unauthorized);
+    }
+
     let tx = app.db.read_tx(&tx_id).await?.ok_or(ApiError::MissingTx)?;
 
     let get_tx_response = GetTxResponse {

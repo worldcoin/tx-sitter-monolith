@@ -1,6 +1,9 @@
+use reqwest::Response;
+
+use crate::api_key::ApiKey;
 use crate::server::routes::network::NewNetworkInfo;
 use crate::server::routes::relayer::{
-    CreateRelayerRequest, CreateRelayerResponse,
+    CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
 };
 use crate::server::routes::transaction::{SendTxRequest, SendTxResponse};
 
@@ -17,34 +20,61 @@ impl TxSitterClient {
         }
     }
 
+    async fn post<R>(&self, url: &str) -> eyre::Result<R>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        let response = self.client.post(url).send().await?;
+
+        let response = Self::validate_response(response).await?;
+
+        Ok(response.json().await?)
+    }
+
+    async fn json_post<T, R>(&self, url: &str, body: T) -> eyre::Result<R>
+    where
+        T: serde::Serialize,
+        R: serde::de::DeserializeOwned,
+    {
+        let response = self.client.post(url).json(&body).send().await?;
+
+        let response = Self::validate_response(response).await?;
+
+        Ok(response.json().await?)
+    }
+
+    async fn validate_response(response: Response) -> eyre::Result<Response> {
+        if !response.status().is_success() {
+            let body = response.text().await?;
+
+            return Err(eyre::eyre!("{body}"));
+        }
+
+        Ok(response)
+    }
     pub async fn create_relayer(
         &self,
         req: &CreateRelayerRequest,
     ) -> eyre::Result<CreateRelayerResponse> {
-        let response = self
-            .client
-            .post(&format!("{}/1/relayer", self.url))
-            .json(req)
-            .send()
-            .await?;
+        self.json_post(&format!("{}/1/relayer", self.url), req)
+            .await
+    }
 
-        let response: CreateRelayerResponse = response.json().await?;
-
-        Ok(response)
+    pub async fn create_relayer_api_key(
+        &self,
+        relayer_id: &str,
+    ) -> eyre::Result<CreateApiKeyResponse> {
+        self.post(&format!("{}/1/relayer/{relayer_id}/key", self.url,))
+            .await
     }
 
     pub async fn send_tx(
         &self,
+        api_key: &ApiKey,
         req: &SendTxRequest,
     ) -> eyre::Result<SendTxResponse> {
-        let response = self
-            .client
-            .post(&format!("{}/1/tx/send", self.url))
-            .json(req)
-            .send()
-            .await?;
-
-        Ok(response.json().await?)
+        self.json_post(&format!("{}/1/{api_key}/tx", self.url), req)
+            .await
     }
 
     pub async fn create_network(
@@ -52,13 +82,14 @@ impl TxSitterClient {
         chain_id: u64,
         req: &NewNetworkInfo,
     ) -> eyre::Result<()> {
-        self.client
+        let response = self
+            .client
             .post(&format!("{}/1/network/{}", self.url, chain_id))
-            .json(req)
+            .json(&req)
             .send()
             .await?;
 
-        // TODO: Handle status?
+        Self::validate_response(response).await?;
 
         Ok(())
     }

@@ -7,6 +7,7 @@ use eyre::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::api_key::ApiKey;
 use crate::app::App;
 use crate::server::ApiError;
 use crate::types::{RelayerInfo, RelayerUpdate};
@@ -47,6 +48,12 @@ pub struct RpcResponse {
 pub enum JsonRpcVersion {
     #[serde(rename = "2.0")]
     V2,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApiKeyResponse {
+    pub api_key: ApiKey,
 }
 
 #[tracing::instrument(skip(app))]
@@ -95,10 +102,14 @@ pub async fn get_relayer(
 #[tracing::instrument(skip(app))]
 pub async fn relayer_rpc(
     State(app): State<Arc<App>>,
-    Path(relayer_id): Path<String>,
+    Path(api_token): Path<ApiKey>,
     Json(req): Json<RpcRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let relayer_info = app.db.get_relayer(&relayer_id).await?;
+    if !app.is_authorized(&api_token).await? {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let relayer_info = app.db.get_relayer(&api_token.relayer_id).await?;
 
     // TODO: Cache?
     let http_provider = app.http_provider(relayer_info.chain_id).await?;
@@ -118,4 +129,18 @@ pub async fn relayer_rpc(
     })?;
 
     Ok(Json(response))
+}
+
+#[tracing::instrument(skip(app))]
+pub async fn create_relayer_api_key(
+    State(app): State<Arc<App>>,
+    Path(relayer_id): Path<String>,
+) -> Result<Json<CreateApiKeyResponse>, ApiError> {
+    let api_key = ApiKey::new(&relayer_id);
+
+    app.db
+        .save_api_key(&relayer_id, api_key.api_key_hash())
+        .await?;
+
+    Ok(Json(CreateApiKeyResponse { api_key }))
 }
