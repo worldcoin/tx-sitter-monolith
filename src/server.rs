@@ -67,28 +67,25 @@ pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
 pub async fn spawn_server(
     app: Arc<App>,
 ) -> eyre::Result<axum::Server<AddrIncoming, IntoMakeService<Router>>> {
-    let permissioned_routes = Router::new()
+    let api_routes = Router::new()
         .route("/:api_token/tx", post(send_tx))
         .route("/:api_token/tx/:tx_id", get(get_tx))
         .route("/:api_token/rpc", post(relayer_rpc))
         .with_state(app.clone());
 
-    let relayer_routes = Router::new()
-        .route("/", post(create_relayer))
-        .route("/:relayer_id", post(update_relayer).get(get_relayer))
-        .route("/:relayer_id/key", post(create_relayer_api_key))
-        .with_state(app.clone());
-
-    let network_routes = Router::new()
-        // .route("/", get(routes::network::get_networks))
-        // .route("/:chain_id", get(routes::network::get_network))
-        .route("/:chain_id", post(routes::network::create_network))
+    let admin_routes = Router::new()
+        .route("/relayer", post(create_relayer))
+        .route(
+            "/relayer/:relayer_id",
+            post(update_relayer).get(get_relayer),
+        )
+        .route("/relayer/:relayer_id/key", post(create_relayer_api_key))
+        .route("/network/:chain_id", post(routes::network::create_network))
         .with_state(app.clone());
 
     let v1_routes = Router::new()
-        .nest("/", permissioned_routes)
-        .nest("/relayer", relayer_routes)
-        .nest("/network", network_routes);
+        .nest("/api", api_routes)
+        .nest("/admin", admin_routes);
 
     let router = Router::new()
         .nest("/1", v1_routes)

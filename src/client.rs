@@ -56,7 +56,7 @@ impl TxSitterClient {
         &self,
         req: &CreateRelayerRequest,
     ) -> eyre::Result<CreateRelayerResponse> {
-        self.json_post(&format!("{}/1/relayer", self.url), req)
+        self.json_post(&format!("{}/1/admin/relayer", self.url), req)
             .await
     }
 
@@ -64,7 +64,7 @@ impl TxSitterClient {
         &self,
         relayer_id: &str,
     ) -> eyre::Result<CreateApiKeyResponse> {
-        self.post(&format!("{}/1/relayer/{relayer_id}/key", self.url,))
+        self.post(&format!("{}/1/admin/relayer/{relayer_id}/key", self.url,))
             .await
     }
 
@@ -73,7 +73,7 @@ impl TxSitterClient {
         api_key: &ApiKey,
         req: &SendTxRequest,
     ) -> eyre::Result<SendTxResponse> {
-        self.json_post(&format!("{}/1/{api_key}/tx", self.url), req)
+        self.json_post(&format!("{}/1/api/{api_key}/tx", self.url), req)
             .await
     }
 
@@ -84,7 +84,7 @@ impl TxSitterClient {
     ) -> eyre::Result<()> {
         let response = self
             .client
-            .post(&format!("{}/1/network/{}", self.url, chain_id))
+            .post(&format!("{}/1/admin/network/{}", self.url, chain_id))
             .json(&req)
             .send()
             .await?;
