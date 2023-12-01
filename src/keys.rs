@@ -1,5 +1,5 @@
+use aws_config::BehaviorVersion;
 use aws_sdk_kms::types::{KeySpec, KeyUsageType};
-use aws_types::region::Region;
 use ethers::core::k256::ecdsa::SigningKey;
 use ethers::signers::Wallet;
 use eyre::{Context, ContextCompat};
@@ -24,11 +24,9 @@ pub struct KmsKeys {
 }
 
 impl KmsKeys {
-    pub async fn new(config: &KmsKeysConfig) -> eyre::Result<Self> {
-        let aws_config = aws_config::from_env()
-            .region(Region::new(config.region.clone()))
-            .load()
-            .await;
+    pub async fn new(_config: &KmsKeysConfig) -> eyre::Result<Self> {
+        let aws_config =
+            aws_config::load_defaults(BehaviorVersion::latest()).await;
 
         let kms_client = aws_sdk_kms::Client::new(&aws_config);
 

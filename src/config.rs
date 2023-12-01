@@ -43,9 +43,7 @@ pub enum KeysConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct KmsKeysConfig {
-    pub region: String,
-}
+pub struct KmsKeysConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
