@@ -1,7 +1,7 @@
 mod common;
 
 use ethers::prelude::*;
-use service::server::routes::relayer::CreateApiKeyResponse;
+use tx_sitter::server::routes::relayer::CreateApiKeyResponse;
 use url::Url;
 
 use crate::common::prelude::*;

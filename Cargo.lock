@@ -3820,56 +3820,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "service"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "aws-config",
- "aws-credential-types",
- "aws-sdk-kms",
- "aws-smithy-types",
- "aws-types",
- "axum",
- "base64 0.21.5",
- "bigdecimal 0.4.2",
- "chrono",
- "clap",
- "config",
- "dotenv",
- "ethers",
- "eyre",
- "fake-rpc",
- "futures",
- "headers",
- "hex",
- "hex-literal",
- "humantime",
- "humantime-serde",
- "hyper",
- "indoc",
- "itertools 0.12.0",
- "num-bigint",
- "postgres-docker-utils",
- "rand",
- "reqwest",
- "serde",
- "serde_json",
- "sha3",
- "spki",
- "sqlx",
- "strum",
- "test-case",
- "thiserror",
- "tokio",
- "toml 0.8.8",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid 0.8.2",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4811,6 +4761,56 @@ dependencies = [
  "thiserror",
  "url",
  "utf-8",
+]
+
+[[package]]
+name = "tx-sitter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-kms",
+ "aws-smithy-types",
+ "aws-types",
+ "axum",
+ "base64 0.21.5",
+ "bigdecimal 0.4.2",
+ "chrono",
+ "clap",
+ "config",
+ "dotenv",
+ "ethers",
+ "eyre",
+ "fake-rpc",
+ "futures",
+ "headers",
+ "hex",
+ "hex-literal",
+ "humantime",
+ "humantime-serde",
+ "hyper",
+ "indoc",
+ "itertools 0.12.0",
+ "num-bigint",
+ "postgres-docker-utils",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha3",
+ "spki",
+ "sqlx",
+ "strum",
+ "test-case",
+ "thiserror",
+ "tokio",
+ "toml 0.8.8",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid 0.8.2",
 ]
 
 [[package]]

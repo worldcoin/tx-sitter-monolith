@@ -1,5 +1,5 @@
 [package]
-name = "service"
+name = "tx-sitter"
 version = "0.1.0"
 edition = "2021"
 
@@ -77,7 +77,3 @@ postgres-docker-utils = { path = "crates/postgres-docker-utils" }
 test-case = "3.1.0"
 indoc = "2.0.3"
 fake-rpc = { path = "crates/fake-rpc" }
-
-[[bin]]
-name = "bootstrap"
-path = "src/main.rs"
