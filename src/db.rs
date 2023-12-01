@@ -368,11 +368,6 @@ impl Database {
             INSERT INTO block_txs (block_number, chain_id, tx_hash)
             SELECT $1, $2, unnested.tx_hash
             FROM UNNEST($3::BYTEA[]) AS unnested(tx_hash)
-            WHERE EXISTS (
-                SELECT 1
-                FROM tx_hashes
-                WHERE tx_hashes.tx_hash = unnested.tx_hash
-            );
             "#,
         )
         .bind(block_number as i64)

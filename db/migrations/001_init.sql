@@ -88,9 +88,7 @@ CREATE TABLE block_txs (
     block_number BIGINT NOT NULL,
     chain_id     BIGINT NOT NULL,
     tx_hash      BYTEA NOT NULL,
-    PRIMARY KEY (block_number, chain_id, tx_hash),
-    FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id) ON DELETE CASCADE,
-    FOREIGN KEY (tx_hash) REFERENCES tx_hashes (tx_hash)
+    FOREIGN KEY (block_number, chain_id) REFERENCES blocks (block_number, chain_id) ON DELETE CASCADE
 );
 
 CREATE TABLE block_fees (
