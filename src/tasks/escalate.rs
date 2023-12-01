@@ -17,7 +17,7 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
             .await?;
 
         for tx in txs_for_escalation {
-            tracing::info!(tx.id, "Escalating tx");
+            tracing::info!(tx.id, tx.escalation_count, "Escalating tx");
 
             if !should_send_transaction(&app, &tx.relayer_id).await? {
                 tracing::warn!(id = tx.id, "Skipping transaction broadcast");
