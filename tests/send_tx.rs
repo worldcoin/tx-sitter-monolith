@@ -1,6 +1,6 @@
 mod common;
 
-use service::server::routes::relayer::CreateApiKeyResponse;
+use tx_sitter::server::routes::relayer::CreateApiKeyResponse;
 
 use crate::common::prelude::*;
 

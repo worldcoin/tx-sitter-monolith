@@ -11,18 +11,18 @@ use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, Eip1559TransactionRequest, H160, U256};
 use fake_rpc::DoubleAnvil;
 use postgres_docker_utils::DockerContainerGuard;
-use service::client::TxSitterClient;
-use service::config::{
-    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, ServerConfig,
-    TxSitterConfig,
-};
-use service::server::routes::network::NewNetworkInfo;
-use service::service::Service;
 use tokio::task::JoinHandle;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use tx_sitter::client::TxSitterClient;
+use tx_sitter::config::{
+    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, ServerConfig,
+    TxSitterConfig,
+};
+use tx_sitter::server::routes::network::NewNetworkInfo;
+use tx_sitter::service::Service;
 
 pub type AppMiddleware = SignerMiddleware<Arc<Provider<Http>>, LocalWallet>;
 
@@ -33,10 +33,10 @@ pub mod prelude {
     pub use ethers::providers::Middleware;
     pub use ethers::types::{Eip1559TransactionRequest, U256};
     pub use ethers::utils::parse_units;
-    pub use service::server::routes::relayer::{
+    pub use tx_sitter::server::routes::relayer::{
         CreateRelayerRequest, CreateRelayerResponse,
     };
-    pub use service::server::routes::transaction::SendTxRequest;
+    pub use tx_sitter::server::routes::transaction::SendTxRequest;
 
     pub use super::*;
 }

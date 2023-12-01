@@ -2,17 +2,18 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use config::FileFormat;
-use service::config::Config;
-use service::service::Service;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use tx_sitter::config::Config;
+use tx_sitter::service::Service;
 
 #[derive(Parser)]
+#[command(author, version, about)]
 #[clap(rename_all = "kebab-case")]
 struct Args {
-    #[clap(short, long, default_value = "./config.toml")]
-    config: PathBuf,
+    #[clap(short, long, default_value = "config.toml")]
+    config: Vec<PathBuf>,
 
     #[clap(short, long)]
     env_file: Vec<PathBuf>,
@@ -33,10 +34,15 @@ async fn main() -> eyre::Result<()> {
         .with(EnvFilter::from_default_env())
         .init();
 
-    let settings = config::Config::builder()
-        .add_source(
-            config::File::from(args.config.as_ref()).format(FileFormat::Toml),
-        )
+    let mut settings = config::Config::builder();
+
+    for arg in &args.config {
+        settings = settings.add_source(
+            config::File::from(arg.as_ref()).format(FileFormat::Toml),
+        );
+    }
+
+    let settings = settings
         .add_source(
             config::Environment::with_prefix("TX_SITTER").separator("__"),
         )
