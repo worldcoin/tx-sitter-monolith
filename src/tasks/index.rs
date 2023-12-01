@@ -37,6 +37,11 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             )
             .context("Invalid timestamp")?;
 
+            let block = rpc
+                .get_block(block_number)
+                .await?
+                .context("Missing block")?;
+
             app.db
                 .save_block(
                     block.number.unwrap().as_u64(),
