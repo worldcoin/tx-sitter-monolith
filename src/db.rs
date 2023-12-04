@@ -26,19 +26,20 @@ pub struct Database {
 
 impl Database {
     pub async fn new(config: &DatabaseConfig) -> eyre::Result<Self> {
+        let connection_string = config.to_connection_string();
         let pool = loop {
-            if !Postgres::database_exists(&config.connection_string).await? {
-                Postgres::create_database(&config.connection_string).await?;
+            if !Postgres::database_exists(&connection_string).await? {
+                Postgres::create_database(&connection_string).await?;
             }
 
-            let pool = Pool::connect(&config.connection_string).await?;
+            let pool = Pool::connect(&connection_string).await?;
 
             if let Err(err) = MIGRATOR.run(&pool).await {
                 tracing::error!("{err:?}");
                 tracing::warn!("Migration mismatch dropping previosu db");
                 drop(pool);
                 // Drop the DB if it's out of date - ONLY FOR TESTING
-                Postgres::drop_database(&config.connection_string).await?;
+                Postgres::drop_database(&connection_string).await?;
             } else {
                 break pool;
             }
@@ -931,10 +932,7 @@ mod tests {
         let url =
             format!("postgres://postgres:postgres@{db_socket_addr}/database");
 
-        let db = Database::new(&DatabaseConfig {
-            connection_string: url,
-        })
-        .await?;
+        let db = Database::new(&DatabaseConfig::connection_string(url)).await?;
 
         Ok((db, db_container))
     }

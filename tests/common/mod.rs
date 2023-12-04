@@ -149,9 +149,7 @@ pub async fn setup_service(
             )),
             disable_auth: true,
         },
-        database: DatabaseConfig {
-            connection_string: db_connection_url.to_string(),
-        },
+        database: DatabaseConfig::connection_string(db_connection_url),
         keys: KeysConfig::Local(LocalKeysConfig {}),
     };
 

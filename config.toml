@@ -6,7 +6,16 @@ host = "127.0.0.1:3000"
 disable_auth = false
 
 [database]
+kind = "connection_string"
 connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"
+
+# [database]
+# kind = "parts"
+# host = "127.0.0.1"
+# port = "5432"
+# username = "postgres"
+# password = "postgres"
+# database = "database"
 
 [keys]
 kind = "local"
