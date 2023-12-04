@@ -310,6 +310,7 @@ impl ethers::signers::Signer for AwsSigner {
 
 #[cfg(test)]
 mod tests {
+    use aws_config::BehaviorVersion;
     use aws_credential_types::Credentials;
     use aws_sdk_kms::Client as KmsClient;
     use aws_types::region::Region;
@@ -324,7 +325,7 @@ mod tests {
 
         let credentials =
             Credentials::from_keys(access_key, secret_access_key, None);
-        let config = aws_config::from_env()
+        let config = aws_config::defaults(BehaviorVersion::latest())
             .credentials_provider(credentials)
             .region(Region::new("us-west-1"))
             .load()
@@ -335,7 +336,7 @@ mod tests {
 
     #[allow(dead_code)]
     async fn env_client() -> KmsClient {
-        let config = aws_config::from_env()
+        let config = aws_config::defaults(BehaviorVersion::latest())
             .region(Region::new("us-west-1"))
             .load()
             .await;

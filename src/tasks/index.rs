@@ -67,7 +67,18 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 
     loop {
         let latest_block_number =
-            app.db.get_latest_block_number(chain_id).await?;
+            app.db.get_latest_block_number_without_fee_estimates(chain_id).await?;
+
+        let Some(latest_block_number) = latest_block_number else {
+            tracing::info!("No blocks to estimate fees for");
+
+            tokio::time::sleep(Duration::from_secs(
+                TIME_BETWEEN_FEE_ESTIMATION_SECONDS,
+            ))
+            .await;
+
+            continue;
+        };
 
         tracing::info!(block_number = latest_block_number, "Estimating fees");
 

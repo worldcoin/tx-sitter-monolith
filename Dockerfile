@@ -26,7 +26,7 @@ RUN rustup component add cargo
 COPY . .
 
 # Build the binary
-RUN cargo build --release
+RUN cargo build --release --no-default-features
 
 # Make sure it runs
 RUN /src/target/release/tx-sitter --version

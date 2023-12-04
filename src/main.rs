@@ -12,7 +12,11 @@ use tx_sitter::service::Service;
 #[command(author, version, about)]
 #[clap(rename_all = "kebab-case")]
 struct Args {
-    #[clap(short, long, default_value = "config.toml")]
+    #[clap(short, long)]
+    #[cfg_attr(
+        feature = "default-config",
+        clap(default_value = "config.toml")
+    )]
     config: Vec<PathBuf>,
 
     #[clap(short, long)]

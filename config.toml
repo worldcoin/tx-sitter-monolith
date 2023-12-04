@@ -14,4 +14,3 @@ kind = "local"
 # Example KMS configuration
 # [keys]
 # kind = "kms"
-# region = "us-east-1"

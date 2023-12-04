@@ -251,24 +251,29 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_latest_block_number(
+    pub async fn get_latest_block_number_without_fee_estimates(
         &self,
         chain_id: u64,
-    ) -> eyre::Result<u64> {
-        let (block_number,): (i64,) = sqlx::query_as(
+    ) -> eyre::Result<Option<u64>> {
+        let block_number: Option<(i64,)> = sqlx::query_as(
             r#"
             SELECT block_number
             FROM   blocks
             WHERE  chain_id = $1
+            AND    block_number NOT IN (
+                SELECT block_number
+                FROM   block_fees
+                WHERE  chain_id = $1
+            )
             ORDER BY block_number DESC
             LIMIT  1
             "#,
         )
         .bind(chain_id as i64)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(block_number as u64)
+        Ok(block_number.map(|(n,)| n as u64))
     }
 
     pub async fn get_latest_block_fees_by_chain_id(
@@ -368,6 +373,11 @@ impl Database {
             INSERT INTO block_txs (block_number, chain_id, tx_hash)
             SELECT $1, $2, unnested.tx_hash
             FROM UNNEST($3::BYTEA[]) AS unnested(tx_hash)
+            WHERE EXISTS (
+                SELECT 1
+                FROM tx_hashes
+                WHERE tx_hashes.tx_hash = unnested.tx_hash
+            )
             "#,
         )
         .bind(block_number as i64)

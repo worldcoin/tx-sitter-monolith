@@ -76,7 +76,7 @@ async fn send_tx() -> eyre::Result<()> {
         if balance == value {
             return Ok(());
         } else {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 
