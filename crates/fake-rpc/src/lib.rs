@@ -1,6 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::routing::{post, IntoMakeService};
@@ -10,6 +11,8 @@ use hyper::server::conn::AddrIncoming;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
+
+pub const BLOCK_TIME_SECONDS: u64 = 2;
 
 pub struct DoubleAnvil {
     main_anvil: Mutex<AnvilInstance>,
@@ -90,10 +93,10 @@ async fn rpc(
                 anvil.advance().await.unwrap();
             }
 
-            anvil.main_anvil.lock().await
+            anvil.reference_anvil.lock().await
         }
         "eth_getTransactionReceipt" => anvil.main_anvil.lock().await,
-        "eth_getTransactionByHash" => anvil.main_anvil.lock().await,
+        "eth_getTransactionByHash" => anvil.reference_anvil.lock().await,
         _ => anvil.main_anvil.lock().await,
     };
 
@@ -119,8 +122,10 @@ pub async fn serve(
     Arc<DoubleAnvil>,
     axum::Server<AddrIncoming, IntoMakeService<Router>>,
 ) {
-    let main_anvil = Anvil::new().spawn();
-    let reference_anvil = Anvil::new().spawn();
+    let main_anvil = Anvil::new().block_time(BLOCK_TIME_SECONDS).spawn();
+    let reference_anvil = Anvil::new().block_time(BLOCK_TIME_SECONDS).spawn();
+
+    tokio::time::sleep(Duration::from_secs(BLOCK_TIME_SECONDS)).await;
 
     tracing::info!("Main anvil instance: {}", main_anvil.endpoint());
     tracing::info!("Reference anvil instance: {}", reference_anvil.endpoint());
