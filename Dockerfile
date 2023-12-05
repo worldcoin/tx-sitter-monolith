@@ -26,6 +26,7 @@ RUN rustup component add cargo
 COPY . .
 
 # Build the binary
+RUN cargo fetch
 RUN cargo build --release --no-default-features
 
 # Make sure it runs
