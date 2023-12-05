@@ -28,9 +28,6 @@ impl Database {
     pub async fn new(config: &DatabaseConfig) -> eyre::Result<Self> {
         let connection_string = config.to_connection_string();
 
-        // TODO: Remove this!
-        tracing::info!("Connecting to database: {}", connection_string);
-
         let pool = loop {
             if !Postgres::database_exists(&connection_string).await? {
                 Postgres::create_database(&connection_string).await?;
