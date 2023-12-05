@@ -24,3 +24,5 @@ jobs:
         file: Dockerfile
         push: true
         tags: dzejkop/tx-sitter:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
