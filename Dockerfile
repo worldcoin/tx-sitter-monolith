@@ -21,6 +21,25 @@ ENV CARGO_HOME="/root/.cargo"
 # Install the toolchain
 RUN rustup component add cargo
 
+# TODO: Hacky but it works
+RUN mkdir -p ./src
+RUN mkdir -p ./crates/postgres-docker-utils/src
+RUN mkdir -p ./crates/fake-rpc/src
+
+# Copy only Cargo.toml for better caching
+COPY ./Cargo.toml ./Cargo.toml
+COPY ./Cargo.lock ./Cargo.lock
+COPY ./crates/postgres-docker-utils/Cargo.toml ./crates/postgres-docker-utils/Cargo.toml
+COPY ./crates/fake-rpc/Cargo.toml ./crates/fake-rpc/Cargo.toml
+
+RUN echo "fn main() {}" > ./src/main.rs
+RUN echo "fn main() {}" > ./crates/postgres-docker-utils/src/main.rs
+RUN echo "fn main() {}" > ./crates/fake-rpc/src/main.rs
+
+# Prebuild dependencies
+RUN cargo fetch
+RUN cargo build --release --no-default-features
+
 # Copy all the source files
 # .dockerignore ignores the target dir
 COPY . .
