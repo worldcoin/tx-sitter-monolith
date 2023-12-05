@@ -90,10 +90,10 @@ async fn rpc(
                 anvil.advance().await.unwrap();
             }
 
-            anvil.reference_anvil.lock().await
+            anvil.main_anvil.lock().await
         }
         "eth_getTransactionReceipt" => anvil.main_anvil.lock().await,
-        "eth_getTransactionByHash" => anvil.reference_anvil.lock().await,
+        "eth_getTransactionByHash" => anvil.main_anvil.lock().await,
         _ => anvil.main_anvil.lock().await,
     };
 

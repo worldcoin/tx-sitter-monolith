@@ -95,6 +95,7 @@ pub async fn spawn_server(
 
     let router = Router::new()
         .nest("/1", v1_routes)
+        .route("/health", get(routes::health))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(middleware::log_response));
 
