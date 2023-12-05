@@ -80,10 +80,6 @@ impl App {
         &self,
         api_token: &ApiKey,
     ) -> eyre::Result<bool> {
-        if self.config.server.disable_auth {
-            return Ok(true);
-        }
-
         self.db
             .is_api_key_valid(&api_token.relayer_id, api_token.api_key_hash())
             .await

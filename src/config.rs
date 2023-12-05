@@ -24,8 +24,17 @@ pub struct TxSitterConfig {
 pub struct ServerConfig {
     pub host: SocketAddr,
 
-    #[serde(default)]
-    pub disable_auth: bool,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl ServerConfig {
+    pub fn credentials(&self) -> Option<(&str, &str)> {
+        let username = self.username.as_deref()?;
+        let password = self.password.as_deref()?;
+
+        Some((username, password))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,7 +111,6 @@ mod tests {
 
         [server]
         host = "127.0.0.1:3000"
-        disable_auth = false
 
         [database]
         kind = "connection_string"
@@ -118,7 +126,6 @@ mod tests {
 
         [server]
         host = "127.0.0.1:3000"
-        disable_auth = false
 
         [database]
         kind = "parts"
@@ -140,7 +147,8 @@ mod tests {
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
-                disable_auth: false,
+                username: None,
+                password: None,
             },
             database: DatabaseConfig::connection_string(
                 "postgres://postgres:postgres@127.0.0.1:52804/database"
@@ -162,7 +170,8 @@ mod tests {
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
-                disable_auth: false,
+                username: None,
+                password: None,
             },
             database: DatabaseConfig::Parts(DbParts {
                 host: "host".to_string(),

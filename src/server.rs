@@ -6,6 +6,7 @@ use axum::routing::{get, post, IntoMakeService};
 use axum::Router;
 use hyper::server::conn::AddrIncoming;
 use thiserror::Error;
+use tower_http::validate_request::ValidateRequestHeaderLayer;
 
 use self::routes::relayer::{
     create_relayer, create_relayer_api_key, get_relayer, relayer_rpc,
@@ -73,7 +74,7 @@ pub async fn spawn_server(
         .route("/:api_token/rpc", post(relayer_rpc))
         .with_state(app.clone());
 
-    let admin_routes = Router::new()
+    let mut admin_routes = Router::new()
         .route("/relayer", post(create_relayer))
         .route(
             "/relayer/:relayer_id",
@@ -82,6 +83,11 @@ pub async fn spawn_server(
         .route("/relayer/:relayer_id/key", post(create_relayer_api_key))
         .route("/network/:chain_id", post(routes::network::create_network))
         .with_state(app.clone());
+
+    if let Some((username, password)) = app.config.server.credentials() {
+        admin_routes = admin_routes
+            .layer(ValidateRequestHeaderLayer::basic(username, password));
+    }
 
     let v1_routes = Router::new()
         .nest("/api", api_routes)
