@@ -718,6 +718,25 @@ impl Database {
         .await?)
     }
 
+    pub async fn read_txs(
+        &self,
+        relayer_id: &str,
+    ) -> eyre::Result<Vec<ReadTxData>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
+                   h.tx_hash, s.status
+            FROM transactions t
+            LEFT JOIN sent_transactions s ON t.id = s.tx_id
+            LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
+            WHERE t.relayer_id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn get_relayer_addresses(
         &self,
         chain_id: u64,

@@ -12,7 +12,7 @@ use self::routes::relayer::{
     create_relayer, create_relayer_api_key, get_relayer, relayer_rpc,
     update_relayer,
 };
-use self::routes::transaction::{get_tx, send_tx};
+use self::routes::transaction::{get_tx, get_txs, send_tx};
 use crate::app::App;
 
 mod middleware;
@@ -71,6 +71,7 @@ pub async fn spawn_server(
     let api_routes = Router::new()
         .route("/:api_token/tx", post(send_tx))
         .route("/:api_token/tx/:tx_id", get(get_tx))
+        .route("/:api_token/txs", get(get_txs))
         .route("/:api_token/rpc", post(relayer_rpc))
         .with_state(app.clone());
 

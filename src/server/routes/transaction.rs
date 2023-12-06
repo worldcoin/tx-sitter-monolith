@@ -99,6 +99,41 @@ pub async fn send_tx(
     Ok(Json(SendTxResponse { tx_id }))
 }
 
+#[tracing::instrument(skip(app, api_token))]
+pub async fn get_txs(
+    State(app): State<Arc<App>>,
+    Path((api_token, tx_id)): Path<(ApiKey, String)>,
+) -> Result<Json<Vec<GetTxResponse>>, ApiError> {
+    if !app.is_authorized(&api_token).await? {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let txs = app.db.read_txs(&tx_id).await?;
+
+    let txs = txs
+        .into_iter()
+        .map(|tx| GetTxResponse {
+            tx_id: tx.tx_id,
+            to: tx.to.0,
+            data: if tx.data.is_empty() {
+                None
+            } else {
+                Some(tx.data.into())
+            },
+            value: tx.value.0,
+            gas_limit: tx.gas_limit.0,
+            nonce: tx.nonce,
+            tx_hash: tx.tx_hash.map(|h| h.0),
+            status: tx
+                .status
+                .map(GetTxResponseStatus::TxStatus)
+                .unwrap_or(GetTxResponseStatus::Unsent(UnsentStatus::Unsent)),
+        })
+        .collect();
+
+    Ok(Json(txs))
+}
+
 #[tracing::instrument(skip(app))]
 pub async fn get_tx(
     State(app): State<Arc<App>>,
