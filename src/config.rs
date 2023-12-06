@@ -17,6 +17,9 @@ pub struct Config {
 pub struct TxSitterConfig {
     #[serde(with = "humantime_serde")]
     pub escalation_interval: Duration,
+
+    #[serde(default)]
+    pub datadog_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +111,7 @@ mod tests {
     const WITH_DB_CONNECTION_STRING: &str = indoc! {r#"
         [service]
         escalation_interval = "1h"
+        datadog_enabled = false
 
         [server]
         host = "127.0.0.1:3000"
@@ -123,6 +127,7 @@ mod tests {
     const WITH_DB_PARTS: &str = indoc! {r#"
         [service]
         escalation_interval = "1h"
+        datadog_enabled = false
 
         [server]
         host = "127.0.0.1:3000"
@@ -144,6 +149,7 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
+                datadog_enabled: false,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
@@ -167,6 +173,7 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
+                datadog_enabled: false,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),

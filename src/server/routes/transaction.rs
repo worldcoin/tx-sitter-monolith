@@ -110,26 +110,25 @@ pub async fn get_txs(
 
     let txs = app.db.read_txs(&tx_id).await?;
 
-    let txs = txs
-        .into_iter()
-        .map(|tx| GetTxResponse {
-            tx_id: tx.tx_id,
-            to: tx.to.0,
-            data: if tx.data.is_empty() {
-                None
-            } else {
-                Some(tx.data.into())
-            },
-            value: tx.value.0,
-            gas_limit: tx.gas_limit.0,
-            nonce: tx.nonce,
-            tx_hash: tx.tx_hash.map(|h| h.0),
-            status: tx
-                .status
-                .map(GetTxResponseStatus::TxStatus)
-                .unwrap_or(GetTxResponseStatus::Unsent(UnsentStatus::Unsent)),
-        })
-        .collect();
+    let txs =
+        txs.into_iter()
+            .map(|tx| GetTxResponse {
+                tx_id: tx.tx_id,
+                to: tx.to.0,
+                data: if tx.data.is_empty() {
+                    None
+                } else {
+                    Some(tx.data.into())
+                },
+                value: tx.value.0,
+                gas_limit: tx.gas_limit.0,
+                nonce: tx.nonce,
+                tx_hash: tx.tx_hash.map(|h| h.0),
+                status: tx.status.map(GetTxResponseStatus::TxStatus).unwrap_or(
+                    GetTxResponseStatus::Unsent(UnsentStatus::Unsent),
+                ),
+            })
+            .collect();
 
     Ok(Json(txs))
 }

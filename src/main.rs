@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use config::FileFormat;
+use telemetry_batteries::tracing::batteries::datadog::DatadogBattery;
+use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -33,11 +35,6 @@ async fn main() -> eyre::Result<()> {
         dotenv::from_path(path)?;
     }
 
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().pretty().compact())
-        .with(EnvFilter::from_default_env())
-        .init();
-
     let mut settings = config::Config::builder();
 
     for arg in &args.config {
@@ -59,6 +56,22 @@ async fn main() -> eyre::Result<()> {
         .build()?;
 
     let config = settings.try_deserialize::<Config>()?;
+
+    if config.service.datadog_enabled {
+        let datadog_battery = DatadogBattery::new(
+            Some("http://localhost:8126"),
+            Level::DEBUG,
+            "tx-sitter",
+            None,
+        );
+
+        datadog_battery.init()?;
+    } else {
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().pretty().compact())
+            .with(EnvFilter::from_default_env())
+            .init();
+    }
 
     let service = Service::new(config).await?;
     service.wait().await?;

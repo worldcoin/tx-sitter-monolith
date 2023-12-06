@@ -1,5 +1,6 @@
 [service]
 escalation_interval = "1m"
+datadog_enabled = true
 
 [server]
 host = "127.0.0.1:3000"

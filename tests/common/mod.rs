@@ -141,6 +141,7 @@ pub async fn setup_service(
     let config = Config {
         service: TxSitterConfig {
             escalation_interval,
+            datadog_enabled: false,
         },
         server: ServerConfig {
             host: SocketAddr::V4(SocketAddrV4::new(
