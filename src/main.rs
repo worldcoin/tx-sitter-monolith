@@ -61,7 +61,7 @@ async fn main() -> eyre::Result<()> {
         let datadog_battery = DatadogBattery::new(
             Some("http://localhost:8126"),
             Level::DEBUG,
-            "tx-sitter",
+            "tx-sitter-monolith",
             None,
         );
 
