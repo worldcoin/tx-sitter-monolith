@@ -59,7 +59,7 @@ async fn main() -> eyre::Result<()> {
 
     if config.service.datadog_enabled {
         let datadog_battery = DatadogBattery::new(
-            Some("http://localhost:8126"),
+            None,
             Level::DEBUG,
             "tx-sitter-monolith",
             None,
