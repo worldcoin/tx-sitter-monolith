@@ -28,23 +28,13 @@ impl Database {
     pub async fn new(config: &DatabaseConfig) -> eyre::Result<Self> {
         let connection_string = config.to_connection_string();
 
-        let pool = loop {
-            if !Postgres::database_exists(&connection_string).await? {
-                Postgres::create_database(&connection_string).await?;
-            }
+        if !Postgres::database_exists(&connection_string).await? {
+            Postgres::create_database(&connection_string).await?;
+        }
 
-            let pool = Pool::connect(&connection_string).await?;
+        let pool = Pool::connect(&connection_string).await?;
 
-            if let Err(err) = MIGRATOR.run(&pool).await {
-                tracing::error!("{err:?}");
-                tracing::warn!("Migration mismatch dropping previosu db");
-                drop(pool);
-                // Drop the DB if it's out of date - ONLY FOR TESTING
-                Postgres::drop_database(&connection_string).await?;
-            } else {
-                break pool;
-            }
-        };
+        MIGRATOR.run(&pool).await?;
 
         Ok(Self { pool })
     }
