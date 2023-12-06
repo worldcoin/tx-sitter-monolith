@@ -64,7 +64,6 @@ async fn send_many_txs() -> eyre::Result<()> {
             .send_tx(
                 &api_key,
                 &SendTxRequest {
-                    relayer_id: relayer_id.clone(),
                     to: ARBITRARY_ADDRESS,
                     value,
                     gas_limit: U256::from(21_000),

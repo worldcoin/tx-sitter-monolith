@@ -14,7 +14,6 @@ use crate::types::TransactionPriority;
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendTxRequest {
-    pub relayer_id: String,
     pub to: Address,
     #[serde(with = "crate::serde_utils::decimal_u256")]
     pub value: U256,
@@ -92,7 +91,7 @@ pub async fn send_tx(
             req.value,
             req.gas_limit,
             req.priority,
-            &req.relayer_id,
+            &api_token.relayer_id,
         )
         .await?;
 
