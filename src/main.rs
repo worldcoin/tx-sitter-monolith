@@ -58,12 +58,8 @@ async fn main() -> eyre::Result<()> {
     let config = settings.try_deserialize::<Config>()?;
 
     if config.service.datadog_enabled {
-        let datadog_battery = DatadogBattery::new(
-            None,
-            Level::DEBUG,
-            "tx-sitter-monolith",
-            None,
-        );
+        let datadog_battery =
+            DatadogBattery::new(None, Level::DEBUG, "tx-sitter-monolith", None);
 
         datadog_battery.init()?;
     } else {
