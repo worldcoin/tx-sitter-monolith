@@ -4513,7 +4513,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 [[package]]
 name = "telemetry-batteries"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/telemetry-batteries?branch=dzejkop/unnest-fields#8fa8fe137610b0e1e85a86a4cc9f6e4a78b23bbb"
+source = "git+https://github.com/worldcoin/telemetry-batteries?branch=dzejkop/unnest-fields#4d64684669879cefae4b3c5ca047fdf4c2c62a7b"
 dependencies = [
  "chrono",
  "dirs",
