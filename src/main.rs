@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use clap::Parser;
 use config::FileFormat;
 use telemetry_batteries::tracing::batteries::datadog::DatadogBattery;
-use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
