@@ -29,6 +29,10 @@ impl Service {
         task_runner.add_task("Handle soft reorgs", tasks::handle_soft_reorgs);
         task_runner.add_task("Handle hard reorgs", tasks::handle_hard_reorgs);
 
+        if app.config.service.statsd_enabled {
+            task_runner.add_task("Emit metrics", tasks::emit_metrics);
+        }
+
         for chain_id in chain_ids {
             Self::spawn_chain_tasks(&task_runner, chain_id)?;
         }

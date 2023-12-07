@@ -14,7 +14,9 @@ use crate::types::{RelayerInfo, RelayerUpdate, TransactionPriority};
 
 pub mod data;
 
-use self::data::{AddressWrapper, BlockFees, H256Wrapper, ReadTxData, RpcKind};
+use self::data::{
+    AddressWrapper, BlockFees, H256Wrapper, NetworkStats, ReadTxData, RpcKind,
+};
 pub use self::data::{TxForEscalation, TxStatus, UnsentTx};
 
 // Statically link in migration files
@@ -923,6 +925,82 @@ impl Database {
         .await?;
 
         Ok(is_valid)
+    }
+
+    pub async fn get_stats(&self, chain_id: u64) -> eyre::Result<NetworkStats> {
+        let (pending_txs,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM transactions t
+            JOIN relayers r ON (t.relayer_id = r.id)
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE s.tx_id IS NULL
+            AND r.chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let (mined_txs,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM transactions t
+            JOIN relayers r ON (t.relayer_id = r.id)
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE s.status = $1
+            AND   r.chain_id = $2
+            "#,
+        )
+        .bind(TxStatus::Mined)
+        .bind(chain_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let (finalized_txs,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM transactions t
+            JOIN relayers r ON (t.relayer_id = r.id)
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE s.status = $1
+            AND   r.chain_id = $2
+            "#,
+        )
+        .bind(TxStatus::Finalized)
+        .bind(chain_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let (total_indexed_blocks,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM blocks
+            WHERE chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let (block_txs,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM block_txs
+            WHERE chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(NetworkStats {
+            pending_txs: pending_txs as u64,
+            mined_txs: mined_txs as u64,
+            finalized_txs: finalized_txs as u64,
+            total_indexed_blocks: total_indexed_blocks as u64,
+            block_txs: block_txs as u64,
+        })
     }
 }
 

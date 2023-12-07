@@ -20,6 +20,9 @@ pub struct TxSitterConfig {
 
     #[serde(default)]
     pub datadog_enabled: bool,
+
+    #[serde(default)]
+    pub statsd_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +115,7 @@ mod tests {
         [service]
         escalation_interval = "1h"
         datadog_enabled = false
+        statsd_enabled = false
 
         [server]
         host = "127.0.0.1:3000"
@@ -128,6 +132,7 @@ mod tests {
         [service]
         escalation_interval = "1h"
         datadog_enabled = false
+        statsd_enabled = false
 
         [server]
         host = "127.0.0.1:3000"
@@ -150,6 +155,7 @@ mod tests {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
                 datadog_enabled: false,
+                statsd_enabled: false,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
@@ -174,6 +180,7 @@ mod tests {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
                 datadog_enabled: false,
+                statsd_enabled: false,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),

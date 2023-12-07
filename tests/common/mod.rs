@@ -142,6 +142,7 @@ pub async fn setup_service(
         service: TxSitterConfig {
             escalation_interval,
             datadog_enabled: false,
+            statsd_enabled: false,
         },
         server: ServerConfig {
             host: SocketAddr::V4(SocketAddrV4::new(

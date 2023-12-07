@@ -59,6 +59,15 @@ pub struct ReadTxData {
 }
 
 #[derive(Debug, Clone)]
+pub struct NetworkStats {
+    pub pending_txs: u64,
+    pub mined_txs: u64,
+    pub finalized_txs: u64,
+    pub total_indexed_blocks: u64,
+    pub block_txs: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct BlockFees {
     pub fee_estimates: FeesEstimate,
     pub gas_price: U256,

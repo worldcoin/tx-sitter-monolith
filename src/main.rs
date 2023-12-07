@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use config::FileFormat;
+use telemetry_batteries::metrics::statsd::StatsdBattery;
+use telemetry_batteries::metrics::MetricsBattery;
 use telemetry_batteries::tracing::batteries::datadog::DatadogBattery;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -67,6 +69,18 @@ async fn main() -> eyre::Result<()> {
             .with(tracing_subscriber::fmt::layer().pretty().compact())
             .with(EnvFilter::from_default_env())
             .init();
+    }
+
+    if config.service.statsd_enabled {
+        let statsd_battery = StatsdBattery::new(
+            "localhost",
+            8125,
+            5000,
+            1024,
+            Some("tx_sitter_monolith"),
+        )?;
+
+        statsd_battery.init()?;
     }
 
     let service = Service::new(config).await?;

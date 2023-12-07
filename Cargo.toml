@@ -65,6 +65,7 @@ sqlx = { version = "0.7.2", features = [
     "migrate",
     "bigdecimal",
 ] }
+metrics = "0.21.1"
 num-bigint = "0.4.4"
 bigdecimal = "0.4.2"
 spki = "0.7.2"

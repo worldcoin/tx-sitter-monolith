@@ -5050,6 +5050,7 @@ dependencies = [
  "hyper",
  "indoc",
  "itertools 0.12.0",
+ "metrics",
  "num-bigint",
  "postgres-docker-utils",
  "rand",
