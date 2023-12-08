@@ -101,13 +101,13 @@ pub async fn send_tx(
 #[tracing::instrument(skip(app, api_token))]
 pub async fn get_txs(
     State(app): State<Arc<App>>,
-    Path((api_token, tx_id)): Path<(ApiKey, String)>,
+    Path(api_token): Path<ApiKey>,
 ) -> Result<Json<Vec<GetTxResponse>>, ApiError> {
     if !app.is_authorized(&api_token).await? {
         return Err(ApiError::Unauthorized);
     }
 
-    let txs = app.db.read_txs(&tx_id).await?;
+    let txs = app.db.read_txs(&api_token.relayer_id).await?;
 
     let txs =
         txs.into_iter()

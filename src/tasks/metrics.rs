@@ -27,7 +27,6 @@ pub async fn emit_metrics(app: Arc<App>) -> eyre::Result<()> {
                 stats.total_indexed_blocks as f64,
                 &labels
             );
-            metrics::gauge!("block_fees", stats.block_txs as f64, &labels);
             metrics::gauge!("block_txs", stats.block_txs as f64, &labels);
         }
 
