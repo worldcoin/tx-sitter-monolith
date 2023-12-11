@@ -13,8 +13,7 @@ use itertools::Itertools;
 
 use crate::app::App;
 use crate::broadcast_utils::{
-    calculate_gas_fees_from_estimates, calculate_max_base_fee_per_gas,
-    should_send_transaction,
+    calculate_gas_fees_from_estimates, should_send_transaction,
 };
 use crate::db::UnsentTx;
 
@@ -88,8 +87,7 @@ async fn broadcast_relayer_txs(
             .await?
             .context("Missing block fees")?;
 
-        let max_base_fee_per_gas =
-            calculate_max_base_fee_per_gas(&fees.fee_estimates);
+        let max_base_fee_per_gas = fees.fee_estimates.base_fee_per_gas;
 
         let (max_fee_per_gas, max_priority_fee_per_gas) =
             calculate_gas_fees_from_estimates(

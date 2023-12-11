@@ -6,9 +6,6 @@ use crate::app::App;
 
 pub mod gas_estimation;
 
-const BASE_FEE_PER_GAS_SURGE_FACTOR: u64 = 2;
-
-
 /// Returns a tuple of max and max priority fee per gas
 pub fn calculate_gas_fees_from_estimates(
     estimates: &FeesEstimate,
@@ -20,15 +17,6 @@ pub fn calculate_gas_fees_from_estimates(
     let max_fee_per_gas = max_base_fee_per_gas + max_priority_fee_per_gas;
 
     (max_fee_per_gas, max_priority_fee_per_gas)
-}
-
-/// Calculates the max base fee per gas
-/// i.e. the base fee from estimates surged by a factor
-pub fn calculate_max_base_fee_per_gas(estimates: &FeesEstimate) -> U256 {
-    let base_fee_per_gas = estimates.base_fee_per_gas;
-
-    // Surge the base fee per gas
-    base_fee_per_gas * BASE_FEE_PER_GAS_SURGE_FACTOR
 }
 
 pub fn escalate_priority_fee(
