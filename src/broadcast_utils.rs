@@ -8,45 +8,27 @@ pub mod gas_estimation;
 
 const BASE_FEE_PER_GAS_SURGE_FACTOR: u64 = 2;
 
-// TODO: Adjust
-const MIN_PRIORITY_FEE: U256 = U256([10, 0, 0, 0]);
-const MAX_GAS_PRICE: U256 = U256([100_000_000_000, 0, 0, 0]);
 
 /// Returns a tuple of max and max priority fee per gas
 pub fn calculate_gas_fees_from_estimates(
     estimates: &FeesEstimate,
     tx_priority_index: usize,
     max_base_fee_per_gas: U256,
-) -> eyre::Result<(U256, U256)> {
+) -> (U256, U256) {
     let max_priority_fee_per_gas = estimates.percentile_fees[tx_priority_index];
 
-    let max_priority_fee_per_gas =
-        std::cmp::max(max_priority_fee_per_gas, MIN_PRIORITY_FEE);
-
     let max_fee_per_gas = max_base_fee_per_gas + max_priority_fee_per_gas;
-    let max_fee_per_gas = std::cmp::min(max_fee_per_gas, MAX_GAS_PRICE);
 
-    Ok((max_fee_per_gas, max_priority_fee_per_gas))
+    (max_fee_per_gas, max_priority_fee_per_gas)
 }
 
 /// Calculates the max base fee per gas
-/// Returns an error if the base fee per gas is too high
-///
 /// i.e. the base fee from estimates surged by a factor
-pub fn calculate_max_base_fee_per_gas(
-    estimates: &FeesEstimate,
-) -> eyre::Result<U256> {
+pub fn calculate_max_base_fee_per_gas(estimates: &FeesEstimate) -> U256 {
     let base_fee_per_gas = estimates.base_fee_per_gas;
 
-    if base_fee_per_gas > MAX_GAS_PRICE {
-        tracing::warn!("Base fee per gas is too high, retrying later");
-        eyre::bail!("Base fee per gas is too high");
-    }
-
     // Surge the base fee per gas
-    let max_base_fee_per_gas = base_fee_per_gas * BASE_FEE_PER_GAS_SURGE_FACTOR;
-
-    Ok(max_base_fee_per_gas)
+    base_fee_per_gas * BASE_FEE_PER_GAS_SURGE_FACTOR
 }
 
 pub fn escalate_priority_fee(

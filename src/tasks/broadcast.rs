@@ -89,14 +89,14 @@ async fn broadcast_relayer_txs(
             .context("Missing block fees")?;
 
         let max_base_fee_per_gas =
-            calculate_max_base_fee_per_gas(&fees.fee_estimates)?;
+            calculate_max_base_fee_per_gas(&fees.fee_estimates);
 
         let (max_fee_per_gas, max_priority_fee_per_gas) =
             calculate_gas_fees_from_estimates(
                 &fees.fee_estimates,
                 tx.priority.to_percentile_index(),
                 max_base_fee_per_gas,
-            )?;
+            );
 
         let eip1559_tx = Eip1559TransactionRequest {
             from: None,
