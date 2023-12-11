@@ -173,16 +173,30 @@ impl Database {
         relayer_id: &str,
     ) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
+
         let mut value_bytes = [0u8; 32];
         value.to_big_endian(&mut value_bytes);
 
         let mut gas_limit_bytes = [0u8; 32];
         gas_limit.to_big_endian(&mut gas_limit_bytes);
 
+        let (nonce,): (i64,) = sqlx::query_as(
+            r#"
+            UPDATE relayers
+            SET nonce = nonce + 1,
+                updated_at = now()
+            WHERE id = $1
+            RETURNING nonce - 1
+            "#,
+        )
+        .bind(relayer_id)
+        .fetch_one(tx.as_mut())
+        .await?;
+
         sqlx::query(
             r#"
             INSERT INTO transactions (id, tx_to, data, value, gas_limit, priority, relayer_id, nonce)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT nonce FROM relayers WHERE id = $7))
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         "#,
         )
         .bind(tx_id)
@@ -192,18 +206,7 @@ impl Database {
         .bind(gas_limit_bytes)
         .bind(priority)
         .bind(relayer_id)
-        .execute(tx.as_mut())
-        .await?;
-
-        sqlx::query(
-            r#"
-            UPDATE relayers
-            SET nonce = nonce + 1,
-                updated_at = now()
-            WHERE id = $1
-            "#,
-        )
-        .bind(relayer_id)
+        .bind(nonce)
         .execute(tx.as_mut())
         .await?;
 
