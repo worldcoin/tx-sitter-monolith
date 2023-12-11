@@ -1025,12 +1025,11 @@ impl Database {
     }
 
     pub async fn purge_unsent_txs(&self, relayer_id: &str) -> eyre::Result<()> {
-        let (nonce,): (i64,) = sqlx::query_as(
+        sqlx::query(
             r#"
             UPDATE relayers
             SET nonce = current_nonce
             WHERE id = $1
-            RETURNING nonce
             "#,
         )
         .bind(relayer_id)
@@ -1040,13 +1039,13 @@ impl Database {
         sqlx::query(
             r#"
             DELETE FROM transactions
-            WHERE nonce > $1
+            WHERE t.relayer_id = $1
             AND id NOT IN (
                 SELECT tx_id FROM sent_transactions
             )
             "#,
         )
-        .bind(nonce)
+        .bind(relayer_id)
         .execute(&self.pool)
         .await?;
 
