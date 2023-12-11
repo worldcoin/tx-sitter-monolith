@@ -1033,13 +1033,13 @@ impl Database {
             "#,
         )
         .bind(relayer_id)
-        .fetch_one(&self.pool)
+        .execute(&self.pool)
         .await?;
 
         sqlx::query(
             r#"
             DELETE FROM transactions
-            WHERE t.relayer_id = $1
+            WHERE relayer_id = $1
             AND id NOT IN (
                 SELECT tx_id FROM sent_transactions
             )
@@ -1092,6 +1092,32 @@ mod tests {
     #[tokio::test]
     async fn migration() -> eyre::Result<()> {
         let (_db, _db_container) = setup_db().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_relayer() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let chain_id = 123;
+        let network_name = "network_name";
+        let http_rpc = "http_rpc";
+        let ws_rpc = "ws_rpc";
+
+        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+            .await?;
+
+        let relayer_id = uuid();
+        let relayer_id = relayer_id.as_str();
+        let relayer_name = "relayer_name";
+        let key_id = "key_id";
+        let address = Address::from_low_u64_be(1);
+
+        db.create_relayer(relayer_id, relayer_name, chain_id, key_id, address)
+            .await?;
+
+        db.purge_unsent_txs(relayer_id).await?;
 
         Ok(())
     }
