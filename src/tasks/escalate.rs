@@ -37,22 +37,19 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
                 .context("Missing block")?;
 
             // Min increase of 20% on the priority fee required for a replacement tx
-            let increased_gas_price_percentage =
-                U256::from(100 + (10 * (1 + escalation)));
-
             let factor = U256::from(100);
+            let increased_gas_price_percentage =
+                factor + U256::from(10 * (1 + escalation));
 
-            let max_priority_fee_per_gas_increase =
-                tx.initial_max_priority_fee_per_gas.0
-                    * increased_gas_price_percentage
-                    / factor;
-
-            let max_priority_fee_per_gas =
-                tx.initial_max_priority_fee_per_gas.0
-                    + max_priority_fee_per_gas_increase;
+            let max_fee_per_gas_increase = tx.initial_max_fee_per_gas.0
+                * increased_gas_price_percentage
+                / factor;
 
             let max_fee_per_gas =
-                fees.fee_estimates.base_fee_per_gas + max_priority_fee_per_gas;
+                tx.initial_max_fee_per_gas.0 + max_fee_per_gas_increase;
+
+            let max_priority_fee_per_gas =
+                max_fee_per_gas - fees.fee_estimates.base_fee_per_gas;
 
             let eip1559_tx = Eip1559TransactionRequest {
                 from: None,
@@ -84,8 +81,6 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
 
             let tx_hash = pending_tx.tx_hash();
 
-            tracing::info!(?tx.id, ?tx_hash, "Tx escalated");
-
             app.db
                 .escalate_tx(
                     &tx.id,
@@ -94,6 +89,8 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
                     max_priority_fee_per_gas,
                 )
                 .await?;
+
+            tracing::info!(?tx.id, ?tx_hash, "Tx escalated");
         }
 
         tokio::time::sleep(app.config.service.escalation_interval).await;
