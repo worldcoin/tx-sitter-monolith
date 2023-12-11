@@ -95,6 +95,8 @@ pub async fn send_tx(
         )
         .await?;
 
+    tracing::info!(id = tx_id, "Tx created");
+
     Ok(Json(SendTxResponse { tx_id }))
 }
 
