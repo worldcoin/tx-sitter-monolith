@@ -76,7 +76,7 @@ async fn broadcast_relayer_txs(
     }
 
     for tx in txs {
-        tracing::info!(tx.id, "Sending tx");
+        tracing::info!(id = tx.id, "Sending tx");
 
         let middleware = app
             .signer_middleware(tx.chain_id, tx.key_id.clone())
@@ -134,8 +134,6 @@ async fn broadcast_relayer_txs(
 
         let tx_hash = pending_tx.tx_hash();
 
-        tracing::info!(?tx.id, ?tx_hash, "Tx sent successfully");
-
         app.db
             .insert_tx_broadcast(
                 &tx.id,
@@ -144,6 +142,8 @@ async fn broadcast_relayer_txs(
                 max_priority_fee_per_gas,
             )
             .await?;
+
+        tracing::info!(id = tx.id, hash = ?tx_hash, "Tx broadcast");
     }
 
     Ok(())
