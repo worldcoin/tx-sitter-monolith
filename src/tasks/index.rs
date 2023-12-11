@@ -17,6 +17,8 @@ const BLOCK_FEE_HISTORY_SIZE: usize = 10;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];
 const TIME_BETWEEN_FEE_ESTIMATION_SECONDS: u64 = 30;
 
+const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
+
 pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
         let ws_rpc = app.ws_provider(chain_id).await?;
@@ -106,6 +108,32 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
                 gas_price,
             )
             .await?;
+
+        let labels = [("chain_id", chain_id.to_string())];
+        metrics::gauge!(
+            "gas_price",
+            gas_price.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR,
+            &labels
+        );
+        metrics::gauge!(
+            "base_fee_per_gas",
+            fee_estimates.base_fee_per_gas.as_u64() as f64
+                * GAS_PRICE_FOR_METRICS_FACTOR,
+            &labels
+        );
+
+        for (i, percentile) in FEE_PERCENTILES.iter().enumerate() {
+            let percentile_fee = fee_estimates.percentile_fees[i];
+
+            metrics::gauge!(
+                "percentile_fee",
+                percentile_fee.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR,
+                &[
+                    ("chain_id", chain_id.to_string()),
+                    ("percentile", percentile.to_string()),
+                ]
+            );
+        }
 
         tokio::time::sleep(Duration::from_secs(
             TIME_BETWEEN_FEE_ESTIMATION_SECONDS,
