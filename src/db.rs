@@ -507,6 +507,9 @@ impl Database {
         Ok(())
     }
 
+    /// Marks txs as mined if the associated tx hash is present in a block
+    ///
+    /// returns cumulative gas used for all txs
     pub async fn mine_txs(&self, chain_id: u64) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
 
