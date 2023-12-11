@@ -410,7 +410,8 @@ impl Database {
         Ok(())
     }
 
-    pub async fn handle_soft_reorgs(&self) -> eyre::Result<()> {
+    /// Returns a list of soft reorged txs
+    pub async fn handle_soft_reorgs(&self) -> eyre::Result<Vec<String>> {
         let mut tx = self.pool.begin().await?;
 
         // Fetch txs which have valid tx hash different than what is actually mined
@@ -448,10 +449,11 @@ impl Database {
 
         tx.commit().await?;
 
-        Ok(())
+        Ok(tx_ids)
     }
 
-    pub async fn handle_hard_reorgs(&self) -> eyre::Result<()> {
+    /// Returns a list of hard reorged txs
+    pub async fn handle_hard_reorgs(&self) -> eyre::Result<Vec<String>> {
         let mut tx = self.pool.begin().await?;
 
         // Fetch txs which are marked as mined
@@ -466,10 +468,10 @@ impl Database {
                 LEFT JOIN  block_txs bt ON h.tx_hash = bt.tx_hash
                 WHERE      s.status = $1
             )
-            SELECT    t.id
-            FROM      reorg_candidates t
-            GROUP BY  t.id
-            HAVING    COUNT(t.chain_id) = 0
+            SELECT    r.id
+            FROM      reorg_candidates r
+            GROUP BY  r.id
+            HAVING    COUNT(r.chain_id) = 0
             "#,
         )
         .bind(TxStatus::Mined)
@@ -504,7 +506,7 @@ impl Database {
 
         tx.commit().await?;
 
-        Ok(())
+        Ok(tx_ids)
     }
 
     /// Marks txs as mined if the associated tx hash is present in a block
