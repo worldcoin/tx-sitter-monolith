@@ -90,6 +90,16 @@ pub async fn update_relayer(
 }
 
 #[tracing::instrument(skip(app))]
+pub async fn get_relayers(
+    State(app): State<Arc<App>>,
+    Path(relayer_id): Path<String>,
+) -> Result<Json<Vec<RelayerInfo>>, ApiError> {
+    let relayer_info = app.db.get_relayers().await?;
+
+    Ok(Json(relayer_info))
+}
+
+#[tracing::instrument(skip(app))]
 pub async fn get_relayer(
     State(app): State<Arc<App>>,
     Path(relayer_id): Path<String>,

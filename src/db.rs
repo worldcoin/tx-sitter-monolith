@@ -120,16 +120,46 @@ impl Database {
         Ok(())
     }
 
+    pub async fn get_relayers(&self) -> eyre::Result<Vec<RelayerInfo>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                name,
+                chain_id,
+                key_id,
+                address,
+                nonce,
+                current_nonce,
+                max_inflight_txs,
+                gas_limits
+            FROM relayers
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn get_relayer(&self, id: &str) -> eyre::Result<RelayerInfo> {
         Ok(sqlx::query_as(
             r#"
-            SELECT id, name, chain_id, key_id, address, nonce, current_nonce, max_inflight_txs, gas_limits
+            SELECT
+                id,
+                name,
+                chain_id,
+                key_id,
+                address,
+                nonce,
+                current_nonce,
+                max_inflight_txs,
+                gas_limits
             FROM relayers
             WHERE id = $1
-            "#)
-            .bind(id)
-            .fetch_one(&self.pool).await?
+            "#,
         )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     pub async fn create_transaction(

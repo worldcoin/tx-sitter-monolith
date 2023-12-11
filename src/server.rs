@@ -9,8 +9,8 @@ use thiserror::Error;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 
 use self::routes::relayer::{
-    create_relayer, create_relayer_api_key, get_relayer, relayer_rpc,
-    update_relayer,
+    create_relayer, create_relayer_api_key, get_relayer, get_relayers,
+    relayer_rpc, update_relayer,
 };
 use self::routes::transaction::{get_tx, get_txs, send_tx};
 use crate::app::App;
@@ -77,6 +77,7 @@ pub async fn spawn_server(
 
     let mut admin_routes = Router::new()
         .route("/relayer", post(create_relayer))
+        .route("/relayers", get(get_relayers))
         .route(
             "/relayer/:relayer_id",
             post(update_relayer).get(get_relayer),
