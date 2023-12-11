@@ -51,7 +51,18 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
                 )
                 .await?;
 
-            app.db.mine_txs(chain_id).await?;
+            let mined_txs = app.db.mine_txs(chain_id).await?;
+
+            let metric_labels = [("chain_id", chain_id.to_string())];
+            for tx in mined_txs {
+                tracing::info!(
+                    id = tx.0,
+                    hash = ?tx.1,
+                    "Tx mined"
+                );
+
+                metrics::increment_counter!("tx_mined", &metric_labels);
+            }
 
             let relayer_addresses =
                 app.db.get_relayer_addresses(chain_id).await?;
@@ -118,11 +129,11 @@ async fn update_relayer_nonces(
             let tx_count =
                 rpc.get_transaction_count(relayer_address, None).await?;
 
-            // tracing::info!(
-            //     nonce = ?tx_count,
-            //     ?relayer_address,
-            //     "Updating relayer nonce"
-            // );
+            tracing::info!(
+                nonce = ?tx_count,
+                ?relayer_address,
+                "Updating relayer nonce"
+            );
 
             app.db
                 .update_relayer_nonce(

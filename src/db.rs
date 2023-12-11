@@ -509,61 +509,44 @@ impl Database {
 
     /// Marks txs as mined if the associated tx hash is present in a block
     ///
-    /// returns cumulative gas used for all txs
-    pub async fn mine_txs(&self, chain_id: u64) -> eyre::Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch txs which are marked as pending but have an associated tx
-        // present in in one of the block txs
-        let items: Vec<(String, H256Wrapper, DateTime<Utc>)> = sqlx::query_as(
+    /// returns the tx ids and hashes for all mined txs
+    pub async fn mine_txs(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Vec<(String, H256)>> {
+        let updated_txs: Vec<(String, H256Wrapper)> = sqlx::query_as(
             r#"
-            SELECT t.id, h.tx_hash, b.timestamp
-            FROM   transactions t
-            JOIN   sent_transactions s ON t.id = s.tx_id
-            JOIN   tx_hashes h ON t.id = h.tx_id
-            JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
-            JOIN   blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
-            WHERE  s.status = $1
-            AND    b.chain_id = $2
+            WITH cte AS (
+                SELECT t.id, h.tx_hash, b.timestamp
+                FROM   transactions t
+                JOIN   sent_transactions s ON t.id = s.tx_id
+                JOIN   tx_hashes h ON t.id = h.tx_id
+                JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
+                JOIN   blocks b ON
+                           bt.block_number = b.block_number
+                       AND bt.chain_id = b.chain_id
+                WHERE  s.status = $1
+                AND    b.chain_id = $2
+            )
+            UPDATE    sent_transactions
+            SET       status = $3,
+                      valid_tx_hash = cte.tx_hash,
+                      mined_at = cte.timestamp
+            FROM      cte
+            WHERE     sent_transactions.tx_id = cte.id
+            RETURNING sent_transactions.tx_id, sent_transactions.valid_tx_hash
             "#,
         )
         .bind(TxStatus::Pending)
         .bind(chain_id as i64)
-        .fetch_all(tx.as_mut())
-        .await?;
-
-        let mut tx_ids = Vec::new();
-        let mut tx_hashes = Vec::new();
-        let mut timestamps = Vec::new();
-
-        for (tx_id, tx_hash, timestamp) in items {
-            tx_ids.push(tx_id);
-            tx_hashes.push(tx_hash);
-            timestamps.push(timestamp);
-        }
-
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    status = $1,
-                   valid_tx_hash = mined.tx_hash,
-                   mined_at = mined.timestamp
-            FROM   transactions t,
-                   UNNEST($2::TEXT[], $3::BYTEA[], $4::TIMESTAMPTZ[]) AS mined(tx_id, tx_hash, timestamp)
-            WHERE  t.id = mined.tx_id
-            AND    t.id = s.tx_id
-            "#,
-        )
         .bind(TxStatus::Mined)
-        .bind(&tx_ids)
-        .bind(&tx_hashes)
-        .bind(&timestamps)
-        .execute(tx.as_mut())
+        .fetch_all(&self.pool)
         .await?;
 
-        tx.commit().await?;
-
-        Ok(())
+        Ok(updated_txs
+            .into_iter()
+            .map(|(id, hash)| (id, hash.0))
+            .collect())
     }
 
     pub async fn finalize_txs(
