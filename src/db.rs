@@ -1023,6 +1023,39 @@ impl Database {
             block_txs: block_txs as u64,
         })
     }
+
+    pub async fn purge_unsent_txs(&self, relayer_id: &str) -> eyre::Result<()> {
+        let unsent_txs = self.get_unsent_txs().await?;
+
+        let unsent_tx_ids: Vec<_> = unsent_txs
+            .into_iter()
+            .filter(|tx| tx.relayer_id == relayer_id)
+            .map(|tx| tx.id)
+            .collect();
+
+        sqlx::query(
+            r#"
+            DELETE FROM transactions
+            WHERE id = ANY($1::TEXT[])
+            "#,
+        )
+        .bind(&unsent_tx_ids)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            UPDATE relayers
+            SET nonce = current_nonce
+            WHERE id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

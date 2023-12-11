@@ -108,6 +108,19 @@ pub async fn get_relayer(
     Ok(Json(relayer_info))
 }
 
+/// Resets the relayer
+/// deletes all unsent txs
+/// and resets nonce to the current confirmed nonce
+#[tracing::instrument(skip(app))]
+pub async fn purge_unsent_txs(
+    State(app): State<Arc<App>>,
+    Path(relayer_id): Path<String>,
+) -> Result<(), ApiError> {
+    app.db.purge_unsent_txs(&relayer_id).await?;
+
+    Ok(())
+}
+
 #[tracing::instrument(skip(app))]
 pub async fn relayer_rpc(
     State(app): State<Arc<App>>,
