@@ -1,5 +1,7 @@
 mod common;
 
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use tx_sitter::server::routes::relayer::CreateApiKeyResponse;
 
 use crate::common::prelude::*;
@@ -59,18 +61,29 @@ async fn send_many_txs() -> eyre::Result<()> {
     let value: U256 = parse_units("10", "ether")?.into();
     let num_transfers = 10;
 
+    let mut tasks = FuturesUnordered::new();
     for _ in 0..num_transfers {
-        client
-            .send_tx(
-                &api_key,
-                &SendTxRequest {
-                    to: ARBITRARY_ADDRESS,
-                    value,
-                    gas_limit: U256::from(21_000),
-                    ..Default::default()
-                },
-            )
-            .await?;
+        let client = &client;
+        tasks.push(async {
+            client
+                .send_tx(
+                    &api_key,
+                    &SendTxRequest {
+                        to: ARBITRARY_ADDRESS,
+                        value,
+                        gas_limit: U256::from(21_000),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+            Ok(())
+        });
+    }
+
+    while let Some(result) = tasks.next().await {
+        let result: eyre::Result<()> = result;
+        result?;
     }
 
     let expected_balance = value * num_transfers;
