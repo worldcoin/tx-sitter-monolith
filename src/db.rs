@@ -1069,9 +1069,17 @@ mod tests {
         let url =
             format!("postgres://postgres:postgres@{db_socket_addr}/database");
 
-        let db = Database::new(&DatabaseConfig::connection_string(url)).await?;
+        for _ in 0..5 {
+            match Database::new(&DatabaseConfig::connection_string(&url)).await
+            {
+                Ok(db) => return Ok((db, db_container)),
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
 
-        Ok((db, db_container))
+        Err(eyre::eyre!("Failed to connect to the database"))
     }
 
     async fn full_update(
