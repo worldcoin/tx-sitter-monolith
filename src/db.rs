@@ -1089,9 +1089,17 @@ mod tests {
         let url =
             format!("postgres://postgres:postgres@{db_socket_addr}/database");
 
-        let db = Database::new(&DatabaseConfig::connection_string(url)).await?;
+        for _ in 0..5 {
+            match Database::new(&DatabaseConfig::connection_string(&url)).await
+            {
+                Ok(db) => return Ok((db, db_container)),
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
 
-        Ok((db, db_container))
+        Err(eyre::eyre!("Failed to connect to the database"))
     }
 
     async fn full_update(
@@ -1406,7 +1414,7 @@ mod tests {
     async fn blocks() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
 
-        let block_number = 1;
+        let block_numbers = vec![0, 1];
         let chain_id = 1;
         let timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
         let txs = &[
@@ -1415,7 +1423,10 @@ mod tests {
             H256::from_low_u64_be(3),
         ];
 
-        db.save_block(block_number, chain_id, timestamp, txs)
+        db.save_block(block_numbers[0], chain_id, timestamp, txs)
+            .await?;
+
+        db.save_block(block_numbers[1], chain_id, timestamp, txs)
             .await?;
 
         let fee_estimates = FeesEstimate {
@@ -1425,13 +1436,19 @@ mod tests {
 
         let gas_price = U256::from(1_000_000_007);
 
-        db.save_block_fees(block_number, chain_id, &fee_estimates, gas_price)
-            .await?;
+        db.save_block_fees(
+            block_numbers[1],
+            chain_id,
+            &fee_estimates,
+            gas_price,
+        )
+        .await?;
 
+        let latest_block_number = db.get_latest_block_number(chain_id).await?;
         let block_fees = db.get_latest_block_fees_by_chain_id(chain_id).await?;
-
         let block_fees = block_fees.context("Missing fees")?;
 
+        assert_eq!(latest_block_number, block_numbers[1]);
         assert_eq!(
             block_fees.fee_estimates.base_fee_per_gas,
             fee_estimates.base_fee_per_gas
