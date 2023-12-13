@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use ethers::providers::{Http, Middleware, Provider};
+use ethers::providers::{Http, Middleware, Provider, SubscriptionStream, Ws};
 use ethers::types::{Block, BlockNumber, H256};
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
@@ -27,34 +27,12 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
         // Subscribe to new block with the WS client which uses an unbounded receiver, buffering the stream
         let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
 
-        // Get the latest block from the db
-        let next_block_number =
-            app.db.get_latest_block_number(chain_id).await? + 1;
+        // Get the first block from the stream, backfilling any missing blocks between the latest block in the db
 
-        // Get the first block from the stream and backfill any missing blocks
+        //TODO: note in the comments that this fills the block
         if let Some(latest_block) = blocks_stream.next().await {
-            let latest_block_number = latest_block
-                .number
-                .context("Missing block number")?
-                .as_u64();
-
-            if latest_block_number > next_block_number {
-                // Backfill blocks between the last synced block and the chain head
-                for block_number in next_block_number..latest_block_number {
-                    let block = rpc
-                        .get_block::<BlockNumber>(block_number.into())
-                        .await?
-                        .context(format!(
-                            "Could not get block at height {}",
-                            block_number
-                        ))?;
-
-                    index_block(app.clone(), chain_id, &rpc, block).await?;
-                }
-
-                // Index the latest block after backfilling
-                index_block(app.clone(), chain_id, &rpc, latest_block).await?;
-            }
+            backfill_to_block(app.clone(), chain_id, &rpc, latest_block)
+                .await?;
         }
 
         // Index incoming blocks from the stream
@@ -110,6 +88,45 @@ pub async fn index_block(
     let relayer_addresses = app.db.get_relayer_addresses(chain_id).await?;
 
     update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id).await?;
+    Ok(())
+}
+
+pub async fn backfill_to_block(
+    app: Arc<App>,
+    chain_id: u64,
+    rpc: &Provider<Http>,
+    latest_block: Block<H256>,
+) -> eyre::Result<()> {
+    // Get the latest block from the db
+    if let Some(latest_db_block_number) =
+        app.db.get_latest_block_number(chain_id).await?
+    {
+        let next_block_number: u64 = latest_db_block_number + 1;
+
+        // Get the first block from the stream and backfill any missing blocks
+        let latest_block_number = latest_block
+            .number
+            .context("Missing block number")?
+            .as_u64();
+
+        if latest_block_number > next_block_number {
+            // Backfill blocks between the last synced block and the chain head, non inclusive
+            for block_number in next_block_number..latest_block_number {
+                let block = rpc
+                    .get_block::<BlockNumber>(block_number.into())
+                    .await?
+                    .context(format!(
+                        "Could not get block at height {}",
+                        block_number
+                    ))?;
+
+                index_block(app.clone(), chain_id, &rpc, block).await?;
+            }
+        }
+
+        // Index the latest block after backfilling
+        index_block(app.clone(), chain_id, &rpc, latest_block).await?;
+    };
     Ok(())
 }
 

@@ -306,8 +306,8 @@ impl Database {
     pub async fn get_latest_block_number(
         &self,
         chain_id: u64,
-    ) -> eyre::Result<u64> {
-        let (block_number,): (i64,) = sqlx::query_as(
+    ) -> eyre::Result<Option<u64>> {
+        let block_number: Option<(i64,)> = sqlx::query_as(
             r#"
             SELECT block_number
             FROM   blocks
@@ -317,10 +317,10 @@ impl Database {
             "#,
         )
         .bind(chain_id as i64)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(block_number as u64)
+        Ok(block_number.map(|(n,)| n as u64))
     }
 
     pub async fn get_latest_block_fees_by_chain_id(
@@ -1444,7 +1444,10 @@ mod tests {
         )
         .await?;
 
-        let latest_block_number = db.get_latest_block_number(chain_id).await?;
+        let latest_block_number =
+            db.get_latest_block_number(chain_id)
+                .await?
+                .context("Could not get latest block number")?;
         let block_fees = db.get_latest_block_fees_by_chain_id(chain_id).await?;
         let block_fees = block_fees.context("Missing fees")?;
 
