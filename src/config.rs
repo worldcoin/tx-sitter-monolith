@@ -24,11 +24,15 @@ pub struct TxSitterConfig {
     #[serde(default)]
     pub statsd_enabled: bool,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub predefined_networks: Vec<PredefinedNetwork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predefined: Option<Predefined>,
+}
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub predefined_relayers: Vec<PredefinedRelayer>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct Predefined {
+    pub network: PredefinedNetwork,
+    pub relayer: PredefinedRelayer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,8 +190,7 @@ mod tests {
                 escalation_interval: Duration::from_secs(60 * 60),
                 datadog_enabled: false,
                 statsd_enabled: false,
-                predefined_networks: vec![],
-                predefined_relayers: vec![],
+                predefined: None,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
@@ -213,8 +216,7 @@ mod tests {
                 escalation_interval: Duration::from_secs(60 * 60),
                 datadog_enabled: false,
                 statsd_enabled: false,
-                predefined_networks: vec![],
-                predefined_relayers: vec![],
+                predefined: None,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),

@@ -86,42 +86,38 @@ impl Service {
 async fn initialize_predefined_values(
     app: &Arc<App>,
 ) -> Result<(), eyre::Error> {
-    if !app.config.service.predefined_relayers.is_empty()
-        && !app.config.keys.is_local()
-    {
+    if app.config.service.predefined.is_some() && !app.config.keys.is_local() {
         eyre::bail!("Predefined relayers are only supported with local keys");
     }
 
-    for predefined_network in &app.config.service.predefined_networks {
-        app.db
-            .create_network(
-                predefined_network.chain_id,
-                &predefined_network.name,
-                &predefined_network.http_rpc,
-                &predefined_network.ws_rpc,
-            )
-            .await?;
+    let predefined = app.config.service.predefined.as_ref().unwrap();
 
-        let task_runner = TaskRunner::new(app.clone());
-        Service::spawn_chain_tasks(&task_runner, predefined_network.chain_id)?;
-    }
+    app.db
+        .create_network(
+            predefined.network.chain_id,
+            &predefined.network.name,
+            &predefined.network.http_rpc,
+            &predefined.network.ws_rpc,
+        )
+        .await?;
 
-    for predefined_relayer in &app.config.service.predefined_relayers {
-        let secret_key = signing_key_from_hex(&predefined_relayer.key_id)?;
+    let task_runner = TaskRunner::new(app.clone());
+    Service::spawn_chain_tasks(&task_runner, predefined.network.chain_id)?;
 
-        let signer = Wallet::from(secret_key);
-        let address = signer.address();
+    let secret_key = signing_key_from_hex(&predefined.relayer.key_id)?;
 
-        app.db
-            .create_relayer(
-                &predefined_relayer.id,
-                &predefined_relayer.name,
-                predefined_relayer.chain_id,
-                &predefined_relayer.key_id,
-                address,
-            )
-            .await?;
-    }
+    let signer = Wallet::from(secret_key);
+    let address = signer.address();
+
+    app.db
+        .create_relayer(
+            &predefined.relayer.id,
+            &predefined.relayer.name,
+            predefined.relayer.chain_id,
+            &predefined.relayer.key_id,
+            address,
+        )
+        .await?;
 
     Ok(())
 }

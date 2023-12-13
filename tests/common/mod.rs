@@ -18,8 +18,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use tx_sitter::client::TxSitterClient;
 use tx_sitter::config::{
-    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, PredefinedNetwork,
-    PredefinedRelayer, ServerConfig, TxSitterConfig,
+    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, Predefined,
+    PredefinedNetwork, PredefinedRelayer, ServerConfig, TxSitterConfig,
 };
 use tx_sitter::service::Service;
 
@@ -150,18 +150,20 @@ pub async fn setup_service(
             escalation_interval,
             datadog_enabled: false,
             statsd_enabled: false,
-            predefined_networks: vec![PredefinedNetwork {
-                chain_id: DEFAULT_ANVIL_CHAIN_ID,
-                name: "Anvil".to_string(),
-                http_rpc: format!("http://{}", rpc_url),
-                ws_rpc: anvil_handle.ws_addr(),
-            }],
-            predefined_relayers: vec![PredefinedRelayer {
-                name: "Anvil".to_string(),
-                id: DEFAULT_RELAYER_ID.to_string(),
-                key_id: anvil_private_key,
-                chain_id: DEFAULT_ANVIL_CHAIN_ID,
-            }],
+            predefined: Some(Predefined {
+                network: PredefinedNetwork {
+                    chain_id: DEFAULT_ANVIL_CHAIN_ID,
+                    name: "Anvil".to_string(),
+                    http_rpc: format!("http://{}", rpc_url),
+                    ws_rpc: anvil_handle.ws_addr(),
+                },
+                relayer: PredefinedRelayer {
+                    name: "Anvil".to_string(),
+                    id: DEFAULT_RELAYER_ID.to_string(),
+                    key_id: anvil_private_key,
+                    chain_id: DEFAULT_ANVIL_CHAIN_ID,
+                },
+            }),
         },
         server: ServerConfig {
             host: SocketAddr::V4(SocketAddrV4::new(
