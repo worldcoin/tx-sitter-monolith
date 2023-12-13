@@ -1414,7 +1414,7 @@ mod tests {
     async fn blocks() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
 
-        let block_numbers = vec![0, 1];
+        let block_numbers = [0, 1];
         let chain_id = 1;
         let timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
         let txs = &[

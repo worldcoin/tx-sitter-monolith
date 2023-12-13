@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use ethers::providers::{Http, Middleware, Provider, SubscriptionStream, Ws};
+use ethers::providers::{Http, Middleware, Provider};
 use ethers::types::{Block, BlockNumber, H256};
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
@@ -85,7 +85,7 @@ pub async fn index_block(
 
     let relayer_addresses = app.db.get_relayer_addresses(chain_id).await?;
 
-    update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id).await?;
+    update_relayer_nonces(relayer_addresses, &app, rpc, chain_id).await?;
     Ok(())
 }
 
@@ -118,12 +118,12 @@ pub async fn backfill_to_block(
                         block_number
                     ))?;
 
-                index_block(app.clone(), chain_id, &rpc, block).await?;
+                index_block(app.clone(), chain_id, rpc, block).await?;
             }
         }
 
         // Index the latest block after backfilling
-        index_block(app.clone(), chain_id, &rpc, latest_block).await?;
+        index_block(app.clone(), chain_id, rpc, latest_block).await?;
     };
     Ok(())
 }
