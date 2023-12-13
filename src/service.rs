@@ -1,10 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use ethers::signers::{Signer, Wallet};
 use tokio::task::JoinHandle;
 
 use crate::app::App;
 use crate::config::Config;
+use crate::keys::local_keys::signing_key_from_hex;
 use crate::task_runner::TaskRunner;
 use crate::tasks;
 
@@ -44,6 +46,8 @@ impl Service {
             Ok(())
         });
 
+        initialize_predefined_values(&app).await?;
+
         Ok(Self {
             _app: app,
             local_addr,
@@ -77,4 +81,47 @@ impl Service {
 
         Ok(())
     }
+}
+
+async fn initialize_predefined_values(
+    app: &Arc<App>,
+) -> Result<(), eyre::Error> {
+    if !app.config.service.predefined_relayers.is_empty()
+        && !app.config.keys.is_local()
+    {
+        eyre::bail!("Predefined relayers are only supported with local keys");
+    }
+
+    for predefined_network in &app.config.service.predefined_networks {
+        app.db
+            .create_network(
+                predefined_network.chain_id,
+                &predefined_network.name,
+                &predefined_network.http_rpc,
+                &predefined_network.ws_rpc,
+            )
+            .await?;
+
+        let task_runner = TaskRunner::new(app.clone());
+        Service::spawn_chain_tasks(&task_runner, predefined_network.chain_id)?;
+    }
+
+    for predefined_relayer in &app.config.service.predefined_relayers {
+        let secret_key = signing_key_from_hex(&predefined_relayer.key_id)?;
+
+        let signer = Wallet::from(secret_key);
+        let address = signer.address();
+
+        app.db
+            .create_relayer(
+                &predefined_relayer.id,
+                &predefined_relayer.name,
+                predefined_relayer.chain_id,
+                &predefined_relayer.key_id,
+                address,
+            )
+            .await?;
+    }
+
+    Ok(())
 }

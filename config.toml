@@ -3,6 +3,16 @@ escalation_interval = "1m"
 datadog_enabled = false
 statsd_enabled = false
 
+[[predefined_networks]]
+chain_id = 31337
+http_url = "http://127.0.0.1:8545"
+ws_url = "ws://127.0.0.1:8545"
+
+[[predefined_relayers]]
+id = "1b908a34-5dc1-4d2d-a146-5eb46e975830"
+chain_id = 31337
+key_id = "d10607662a85424f02a33fb1e6d095bd0ac7154396ff09762e41f82ff2233aaa"
+
 [server]
 host = "127.0.0.1:3000"
 disable_auth = false

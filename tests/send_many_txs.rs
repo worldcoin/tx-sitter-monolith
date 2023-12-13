@@ -18,44 +18,11 @@ async fn send_many_txs() -> eyre::Result<()> {
     let (_service, client) =
         setup_service(&double_anvil, &db_url, ESCALATION_INTERVAL).await?;
 
-    let CreateRelayerResponse {
-        address: relayer_address,
-        relayer_id,
-    } = client
-        .create_relayer(&CreateRelayerRequest {
-            name: "Test relayer".to_string(),
-            chain_id: DEFAULT_ANVIL_CHAIN_ID,
-        })
-        .await?;
-
     let CreateApiKeyResponse { api_key } =
-        client.create_relayer_api_key(&relayer_id).await?;
+        client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
 
-    // Fund the relayer
-    let middleware = setup_middleware(
-        format!("http://{}", double_anvil.local_addr()),
-        DEFAULT_ANVIL_PRIVATE_KEY,
-    )
-    .await?;
-
-    let amount: U256 = parse_units("1000", "ether")?.into();
-
-    middleware
-        .send_transaction(
-            Eip1559TransactionRequest {
-                to: Some(relayer_address.into()),
-                value: Some(amount),
-                ..Default::default()
-            },
-            None,
-        )
-        .await?
-        .await?;
-
-    let provider = middleware.provider();
-
-    let current_balance = provider.get_balance(relayer_address, None).await?;
-    assert_eq!(current_balance, amount);
+    let provider =
+        setup_provider(format!("http://{}", double_anvil.local_addr())).await?;
 
     // Send a transaction
     let value: U256 = parse_units("10", "ether")?.into();

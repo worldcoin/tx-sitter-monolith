@@ -23,6 +23,30 @@ pub struct TxSitterConfig {
 
     #[serde(default)]
     pub statsd_enabled: bool,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predefined_networks: Vec<PredefinedNetwork>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predefined_relayers: Vec<PredefinedRelayer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PredefinedNetwork {
+    pub chain_id: u64,
+    pub name: String,
+    pub http_rpc: String,
+    pub ws_rpc: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PredefinedRelayer {
+    pub id: String,
+    pub name: String,
+    pub key_id: String,
+    pub chain_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,9 +125,15 @@ pub enum KeysConfig {
 #[serde(rename_all = "snake_case")]
 pub struct KmsKeysConfig {}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LocalKeysConfig {}
+
+impl KeysConfig {
+    pub fn is_local(&self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -156,6 +186,8 @@ mod tests {
                 escalation_interval: Duration::from_secs(60 * 60),
                 datadog_enabled: false,
                 statsd_enabled: false,
+                predefined_networks: vec![],
+                predefined_relayers: vec![],
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
@@ -166,7 +198,7 @@ mod tests {
                 "postgres://postgres:postgres@127.0.0.1:52804/database"
                     .to_string(),
             ),
-            keys: KeysConfig::Local(LocalKeysConfig {}),
+            keys: KeysConfig::Local(LocalKeysConfig::default()),
         };
 
         let toml = toml::to_string_pretty(&config).unwrap();
@@ -181,6 +213,8 @@ mod tests {
                 escalation_interval: Duration::from_secs(60 * 60),
                 datadog_enabled: false,
                 statsd_enabled: false,
+                predefined_networks: vec![],
+                predefined_relayers: vec![],
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
@@ -194,7 +228,7 @@ mod tests {
                 password: "pass".to_string(),
                 database: "db".to_string(),
             }),
-            keys: KeysConfig::Local(LocalKeysConfig {}),
+            keys: KeysConfig::Local(LocalKeysConfig::default()),
         };
 
         let toml = toml::to_string_pretty(&config).unwrap();
