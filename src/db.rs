@@ -734,6 +734,8 @@ impl Database {
     pub async fn read_txs(
         &self,
         relayer_id: &str,
+        tx_status: Option<TxStatus>,
+        unsent: bool,
     ) -> eyre::Result<Vec<ReadTxData>> {
         Ok(sqlx::query_as(
             r#"
@@ -743,9 +745,13 @@ impl Database {
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.relayer_id = $1
+            AND   ($2 IS NULL OR s.status = $2)
+            AND   ($3 = false OR s.tx_id IS NULL)
             "#,
         )
         .bind(relayer_id)
+        .bind(tx_status)
+        .bind(unsent)
         .fetch_all(&self.pool)
         .await?)
     }

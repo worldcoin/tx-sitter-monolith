@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::{Json, Path, State};
+use axum::extract::{Json, Path, Query, State};
 use ethers::types::{Address, Bytes, H256, U256};
 use eyre::Result;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,13 @@ pub struct SendTxRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SendTxResponse {
     pub tx_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetTxQuery {
+    #[serde(default)]
+    pub status: Option<GetTxResponseStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,12 +111,23 @@ pub async fn send_tx(
 pub async fn get_txs(
     State(app): State<Arc<App>>,
     Path(api_token): Path<ApiKey>,
+    Query(query): Query<GetTxQuery>,
 ) -> Result<Json<Vec<GetTxResponse>>, ApiError> {
     if !app.is_authorized(&api_token).await? {
         return Err(ApiError::Unauthorized);
     }
 
-    let txs = app.db.read_txs(&api_token.relayer_id).await?;
+    let txs = match query.status {
+        Some(GetTxResponseStatus::TxStatus(status)) => {
+            app.db
+                .read_txs(&api_token.relayer_id, Some(status), false)
+                .await?
+        }
+        Some(GetTxResponseStatus::Unsent(_)) => {
+            app.db.read_txs(&api_token.relayer_id, None, true).await?
+        }
+        _ => app.db.read_txs(&api_token.relayer_id, None, false).await?,
+    };
 
     let txs =
         txs.into_iter()
