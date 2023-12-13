@@ -40,7 +40,7 @@ async fn broadcast_unsent_txs(
     let mut futures = FuturesUnordered::new();
 
     for (relayer_id, txs) in txs_by_relayer {
-        futures.push(broadcast_relayer_txs(&app, relayer_id, txs));
+        futures.push(broadcast_relayer_txs(app, relayer_id, txs));
     }
 
     while let Some(result) = futures.next().await {
