@@ -90,7 +90,9 @@ async fn initialize_predefined_values(
         eyre::bail!("Predefined relayers are only supported with local keys");
     }
 
-    let predefined = app.config.service.predefined.as_ref().unwrap();
+    let Some(predefined) = app.config.service.predefined.as_ref() else {
+        return Ok(());
+    };
 
     app.db
         .create_network(
