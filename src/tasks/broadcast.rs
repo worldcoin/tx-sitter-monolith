@@ -5,7 +5,7 @@ use std::time::Duration;
 use ethers::providers::Middleware;
 use ethers::types::transaction::eip2718::TypedTransaction;
 use ethers::types::transaction::eip2930::AccessList;
-use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress};
+use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress, H256};
 use eyre::ContextCompat;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -96,44 +96,74 @@ async fn broadcast_relayer_txs(
                 max_base_fee_per_gas,
             );
 
-        let eip1559_tx = Eip1559TransactionRequest {
-            from: None,
-            to: Some(NameOrAddress::from(Address::from(tx.tx_to.0))),
-            gas: Some(tx.gas_limit.0),
-            value: Some(tx.value.0),
-            data: Some(tx.data.into()),
-            nonce: Some(tx.nonce.into()),
-            access_list: AccessList::default(),
-            max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
-            max_fee_per_gas: Some(max_fee_per_gas),
-            chain_id: Some(tx.chain_id.into()),
+        let mut typed_transaction =
+            TypedTransaction::Eip1559(Eip1559TransactionRequest {
+                from: None,
+                to: Some(NameOrAddress::from(Address::from(tx.tx_to.0))),
+                gas: Some(tx.gas_limit.0),
+                value: Some(tx.value.0),
+                data: Some(tx.data.into()),
+                nonce: Some(tx.nonce.into()),
+                access_list: AccessList::default(),
+                max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
+                max_fee_per_gas: Some(max_fee_per_gas),
+                chain_id: Some(tx.chain_id.into()),
+            });
+
+        // Fill and simulate the transaction
+        middleware
+            .fill_transaction(&mut typed_transaction, None)
+            .await?;
+
+        // Simulate the transaction
+        match middleware.call(&typed_transaction, None).await {
+            Ok(_) => {
+                tracing::info!(?tx.id, "Tx simulated successfully");
+            }
+            Err(err) => {
+                tracing::error!(?tx.id, error = ?err,  "Failed to simulate tx");
+                continue;
+            }
         };
 
-        tracing::debug!(?eip1559_tx, "Sending tx");
+        // Get the raw signed tx and derive the tx hash
+        let raw_signed_tx = middleware
+            .signer()
+            .raw_signed_tx(&typed_transaction)
+            .await?;
+
+        let tx_hash = H256::from(ethers::utils::keccak256(&raw_signed_tx));
+
+        app.db
+            .insert_into_tx_hashes(
+                &tx.id,
+                tx_hash,
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            )
+            .await?;
+
+        tracing::debug!(?tx.id, "Sending tx");
 
         // TODO: Is it possible that we send a tx but don't store it in the DB?
         // TODO: Be smarter about error handling - a tx can fail to be sent
         //       e.g. because the relayer is out of funds
         //       but we don't want to retry it forever
-        let pending_tx = middleware
-            .send_transaction(TypedTransaction::Eip1559(eip1559_tx), None)
-            .await;
+        let pending_tx = middleware.send_raw_transaction(raw_signed_tx).await;
 
-        let pending_tx = match pending_tx {
+        match pending_tx {
             Ok(pending_tx) => {
                 tracing::info!(?pending_tx, "Tx sent successfully");
-                pending_tx
             }
             Err(err) => {
-                tracing::error!(error = ?err, "Failed to send tx");
+                tracing::error!(?tx.id, error = ?err, "Failed to send tx");
                 continue;
             }
         };
 
-        let tx_hash = pending_tx.tx_hash();
-
+        // Insert the tx into
         app.db
-            .insert_tx_broadcast(
+            .insert_into_sent_transactions(
                 &tx.id,
                 tx_hash,
                 max_fee_per_gas,

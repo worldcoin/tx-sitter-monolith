@@ -231,7 +231,7 @@ impl Database {
         .await?)
     }
 
-    pub async fn insert_tx_broadcast(
+    pub async fn insert_into_tx_hashes(
         &self,
         tx_id: &str,
         tx_hash: H256,
@@ -246,8 +246,6 @@ impl Database {
         initial_max_priority_fee_per_gas
             .to_big_endian(&mut initial_max_priority_fee_per_gas_bytes);
 
-        let mut tx = self.pool.begin().await?;
-
         sqlx::query(
             r#"
             INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
@@ -258,8 +256,26 @@ impl Database {
         .bind(tx_hash.as_bytes())
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
-        .execute(tx.as_mut())
+        .execute(&self.pool)
         .await?;
+
+        Ok(())
+    }
+
+    pub async fn insert_into_sent_transactions(
+        &self,
+        tx_id: &str,
+        tx_hash: H256,
+        initial_max_fee_per_gas: U256,
+        initial_max_priority_fee_per_gas: U256,
+    ) -> eyre::Result<()> {
+        let mut initial_max_fee_per_gas_bytes = [0u8; 32];
+        initial_max_fee_per_gas
+            .to_big_endian(&mut initial_max_fee_per_gas_bytes);
+
+        let mut initial_max_priority_fee_per_gas_bytes = [0u8; 32];
+        initial_max_priority_fee_per_gas
+            .to_big_endian(&mut initial_max_priority_fee_per_gas_bytes);
 
         sqlx::query(
             r#"
@@ -271,9 +287,7 @@ impl Database {
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
         .bind(tx_hash.as_bytes())
-        .execute(tx.as_mut()).await?;
-
-        tx.commit().await?;
+        .execute(&self.pool).await?;
 
         Ok(())
     }
@@ -1295,7 +1309,15 @@ mod tests {
         let initial_max_fee_per_gas = U256::from(1);
         let initial_max_priority_fee_per_gas = U256::from(1);
 
-        db.insert_tx_broadcast(
+        db.insert_into_tx_hashes(
+            tx_id,
+            tx_hash_1,
+            initial_max_fee_per_gas,
+            initial_max_priority_fee_per_gas,
+        )
+        .await?;
+
+        db.insert_into_sent_transactions(
             tx_id,
             tx_hash_1,
             initial_max_fee_per_gas,
