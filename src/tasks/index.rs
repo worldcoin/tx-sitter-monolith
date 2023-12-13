@@ -24,11 +24,14 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
         let ws_rpc = app.ws_provider(chain_id).await?;
         let rpc = app.http_provider(chain_id).await?;
 
+        // Subscribe to new block with the WS client which uses an unbounded receiver, buffering the stream
         let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
 
+        // Get the latest block from the db
         let next_block_number =
             app.db.get_latest_block_number(chain_id).await? + 1;
 
+        // Get the first block from the stream and backfill any missing blocks
         if let Some(latest_block) = blocks_stream.next().await {
             let latest_block_number = latest_block
                 .number
@@ -36,7 +39,8 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
                 .as_u64();
 
             if latest_block_number > next_block_number {
-                for block_number in next_block_number..=latest_block_number {
+                // Backfill blocks between the last synced block and the chain head
+                for block_number in next_block_number..latest_block_number {
                     let block = rpc
                         .get_block::<BlockNumber>(block_number.into())
                         .await?
@@ -47,9 +51,13 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 
                     index_block(app.clone(), chain_id, &rpc, block).await?;
                 }
+
+                // Index the latest block after backfilling
+                index_block(app.clone(), chain_id, &rpc, latest_block).await?;
             }
         }
 
+        // Index incoming blocks from the stream
         while let Some(block) = blocks_stream.next().await {
             index_block(app.clone(), chain_id, &rpc, block).await?;
         }
