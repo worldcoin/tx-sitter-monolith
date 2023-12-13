@@ -292,6 +292,23 @@ impl Database {
         Ok(())
     }
 
+    // Gets all transactions that were simulated but not sent
+    pub async fn recover_simulated_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT     r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.priority, t.nonce, r.key_id, r.chain_id
+            FROM       transactions t
+            INNER JOIN tx_hashes h ON (h.tx_id = t.id)
+            INNER JOIN relayers r ON (t.relayer_id = r.id
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE s.tx_id IS NULL
+            ORDER BY r.id, t.nonce ASC;
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn get_latest_block_number_without_fee_estimates(
         &self,
         chain_id: u64,

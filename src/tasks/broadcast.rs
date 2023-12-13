@@ -18,39 +18,38 @@ use crate::broadcast_utils::{
 use crate::db::UnsentTx;
 
 pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
+    // Recovery any unsent transactions that were simulated but never sent
+    let recovered_txs = app.db.recover_simulated_txs().await?;
+    broadcast_unsent_txs(&app, recovered_txs).await?;
+
     loop {
-        let mut txs = app.db.get_unsent_txs().await?;
-
-        txs.sort_unstable_by_key(|tx| tx.relayer_id.clone());
-
-        let txs_by_relayer =
-            txs.into_iter().group_by(|tx| tx.relayer_id.clone());
-
-        let txs_by_relayer: HashMap<_, _> = txs_by_relayer
-            .into_iter()
-            .map(|(relayer_id, txs)| {
-                let mut txs = txs.collect_vec();
-
-                txs.sort_unstable_by_key(|tx| tx.nonce);
-
-                (relayer_id, txs)
-            })
-            .collect();
-
-        let mut futures = FuturesUnordered::new();
-
-        for (relayer_id, txs) in txs_by_relayer {
-            futures.push(broadcast_relayer_txs(&app, relayer_id, txs));
-        }
-
-        while let Some(result) = futures.next().await {
-            if let Err(err) = result {
-                tracing::error!(error = ?err, "Failed broadcasting txs");
-            }
-        }
+        // Get all unsent txs and broadcast
+        let txs = app.db.get_unsent_txs().await?;
+        broadcast_unsent_txs(&app, txs).await?;
 
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+async fn broadcast_unsent_txs(
+    app: &App,
+    txs: Vec<UnsentTx>,
+) -> eyre::Result<()> {
+    let txs_by_relayer = sort_txs_by_relayer(txs);
+
+    let mut futures = FuturesUnordered::new();
+
+    for (relayer_id, txs) in txs_by_relayer {
+        futures.push(broadcast_relayer_txs(&app, relayer_id, txs));
+    }
+
+    while let Some(result) = futures.next().await {
+        if let Err(err) = result {
+            tracing::error!(error = ?err, "Failed broadcasting txs");
+        }
+    }
+
+    Ok(())
 }
 
 #[tracing::instrument(skip(app, txs))]
@@ -175,4 +174,22 @@ async fn broadcast_relayer_txs(
     }
 
     Ok(())
+}
+
+fn sort_txs_by_relayer(
+    mut txs: Vec<UnsentTx>,
+) -> HashMap<String, Vec<UnsentTx>> {
+    txs.sort_unstable_by_key(|tx| tx.relayer_id.clone());
+    let txs_by_relayer = txs.into_iter().group_by(|tx| tx.relayer_id.clone());
+
+    txs_by_relayer
+        .into_iter()
+        .map(|(relayer_id, txs)| {
+            let mut txs = txs.collect_vec();
+
+            txs.sort_unstable_by_key(|tx| tx.nonce);
+
+            (relayer_id, txs)
+        })
+        .collect()
 }
