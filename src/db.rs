@@ -303,6 +303,26 @@ impl Database {
         Ok(block_number.map(|(n,)| n as u64))
     }
 
+    pub async fn get_latest_block_number(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<u64> {
+        let (block_number,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT block_number
+            FROM   blocks
+            WHERE  chain_id = $1
+            ORDER BY block_number DESC
+            LIMIT  1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(block_number as u64)
+    }
+
     pub async fn get_latest_block_fees_by_chain_id(
         &self,
         chain_id: u64,
