@@ -120,13 +120,13 @@ pub async fn get_txs(
     let txs = match query.status {
         Some(GetTxResponseStatus::TxStatus(status)) => {
             app.db
-                .read_txs(&api_token.relayer_id, Some(status), false)
+                .read_txs(&api_token.relayer_id, Some(Some(status)))
                 .await?
         }
         Some(GetTxResponseStatus::Unsent(_)) => {
-            app.db.read_txs(&api_token.relayer_id, None, true).await?
+            app.db.read_txs(&api_token.relayer_id, Some(None)).await?
         }
-        _ => app.db.read_txs(&api_token.relayer_id, None, false).await?,
+        None => app.db.read_txs(&api_token.relayer_id, None).await?,
     };
 
     let txs =
