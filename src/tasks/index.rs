@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ethers::providers::{Http, Middleware, Provider};
-use ethers::types::BlockNumber;
+use ethers::types::{Block, BlockNumber, H256};
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -24,55 +24,108 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
         let ws_rpc = app.ws_provider(chain_id).await?;
         let rpc = app.http_provider(chain_id).await?;
 
+        // Subscribe to new block with the WS client which uses an unbounded receiver, buffering the stream
         let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
 
-        while let Some(block) = blocks_stream.next().await {
-            let block_number =
-                block.number.context("Missing block number")?.as_u64();
-
-            tracing::info!(block_number, "Indexing block");
-
-            let block_timestamp_seconds = block.timestamp.as_u64();
-            let block_timestamp = DateTime::<Utc>::from_timestamp(
-                block_timestamp_seconds as i64,
-                0,
-            )
-            .context("Invalid timestamp")?;
-
-            let block = rpc
-                .get_block(block_number)
-                .await?
-                .context("Missing block")?;
-
-            app.db
-                .save_block(
-                    block.number.unwrap().as_u64(),
-                    chain_id,
-                    block_timestamp,
-                    &block.transactions,
-                )
-                .await?;
-
-            let mined_txs = app.db.mine_txs(chain_id).await?;
-
-            let metric_labels = [("chain_id", chain_id.to_string())];
-            for tx in mined_txs {
-                tracing::info!(
-                    id = tx.0,
-                    hash = ?tx.1,
-                    "Tx mined"
-                );
-
-                metrics::increment_counter!("tx_mined", &metric_labels);
-            }
-
-            let relayer_addresses =
-                app.db.get_relayer_addresses(chain_id).await?;
-
-            update_relayer_nonces(relayer_addresses, &app, &rpc, chain_id)
+        // Get the first block from the stream, backfilling any missing blocks from the latest block in the db to the chain head
+        if let Some(latest_block) = blocks_stream.next().await {
+            backfill_to_block(app.clone(), chain_id, &rpc, latest_block)
                 .await?;
         }
+
+        // Index incoming blocks from the stream
+        while let Some(block) = blocks_stream.next().await {
+            index_block(app.clone(), chain_id, &rpc, block).await?;
+        }
     }
+}
+
+pub async fn index_block(
+    app: Arc<App>,
+    chain_id: u64,
+    rpc: &Provider<Http>,
+    block: Block<H256>,
+) -> eyre::Result<()> {
+    let block_number = block.number.context("Missing block number")?.as_u64();
+
+    tracing::info!(block_number, "Indexing block");
+
+    let block_timestamp_seconds = block.timestamp.as_u64();
+    let block_timestamp =
+        DateTime::<Utc>::from_timestamp(block_timestamp_seconds as i64, 0)
+            .context("Invalid timestamp")?;
+
+    let block = rpc
+        .get_block(block_number)
+        .await?
+        .context("Missing block")?;
+
+    app.db
+        .save_block(
+            block.number.unwrap().as_u64(),
+            chain_id,
+            block_timestamp,
+            &block.transactions,
+        )
+        .await?;
+
+    let mined_txs = app.db.mine_txs(chain_id).await?;
+
+    let metric_labels: [(&str, String); 1] =
+        [("chain_id", chain_id.to_string())];
+    for tx in mined_txs {
+        tracing::info!(
+            id = tx.0,
+            hash = ?tx.1,
+            "Tx mined"
+        );
+
+        metrics::increment_counter!("tx_mined", &metric_labels);
+    }
+
+    let relayer_addresses = app.db.get_relayer_addresses(chain_id).await?;
+
+    update_relayer_nonces(relayer_addresses, &app, rpc, chain_id).await?;
+    Ok(())
+}
+
+pub async fn backfill_to_block(
+    app: Arc<App>,
+    chain_id: u64,
+    rpc: &Provider<Http>,
+    latest_block: Block<H256>,
+) -> eyre::Result<()> {
+    // Get the latest block from the db
+    if let Some(latest_db_block_number) =
+        app.db.get_latest_block_number(chain_id).await?
+    {
+        let next_block_number: u64 = latest_db_block_number + 1;
+
+        // Get the first block from the stream and backfill any missing blocks
+        let latest_block_number = latest_block
+            .number
+            .context("Missing block number")?
+            .as_u64();
+
+        if latest_block_number > next_block_number {
+            // Backfill blocks between the last synced block and the chain head, non inclusive
+            for block_number in next_block_number..latest_block_number {
+                let block = rpc
+                    .get_block::<BlockNumber>(block_number.into())
+                    .await?
+                    .context(format!(
+                        "Could not get block at height {}",
+                        block_number
+                    ))?;
+
+                index_block(app.clone(), chain_id, rpc, block).await?;
+            }
+        }
+
+        // Index the latest block after backfilling
+        index_block(app.clone(), chain_id, rpc, latest_block).await?;
+    };
+    Ok(())
 }
 
 pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
