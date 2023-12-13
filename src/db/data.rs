@@ -43,7 +43,7 @@ pub struct TxForEscalation {
     pub escalation_count: usize,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct ReadTxData {
     pub tx_id: String,
     pub to: AddressWrapper,

@@ -754,7 +754,13 @@ impl Database {
     pub async fn read_txs(
         &self,
         relayer_id: &str,
+        tx_status_filter: Option<Option<TxStatus>>,
     ) -> eyre::Result<Vec<ReadTxData>> {
+        let (should_filter, status_filter) = match tx_status_filter {
+            Some(status) => (true, status),
+            None => (false, None),
+        };
+
         Ok(sqlx::query_as(
             r#"
             SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
@@ -763,9 +769,12 @@ impl Database {
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.relayer_id = $1
+            AND   ($2 = true AND s.status = $3) OR $2 = false
             "#,
         )
         .bind(relayer_id)
+        .bind(should_filter)
+        .bind(status_filter)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -1310,6 +1319,9 @@ mod tests {
         assert_eq!(tx.nonce, 0);
         assert_eq!(tx.tx_hash, None);
 
+        let unsent_txs = db.read_txs(relayer_id, None).await?;
+        assert_eq!(unsent_txs.len(), 1, "1 unsent tx");
+
         let tx_hash_1 = H256::from_low_u64_be(1);
         let tx_hash_2 = H256::from_low_u64_be(2);
         let initial_max_fee_per_gas = U256::from(1);
@@ -1327,6 +1339,18 @@ mod tests {
 
         assert_eq!(tx.tx_hash.unwrap().0, tx_hash_1);
         assert_eq!(tx.status, Some(TxStatus::Pending));
+
+        let unsent_txs = db.read_txs(relayer_id, Some(None)).await?;
+        assert_eq!(unsent_txs.len(), 0, "0 unsent tx");
+
+        let pending_txs = db
+            .read_txs(relayer_id, Some(Some(TxStatus::Pending)))
+            .await?;
+        assert_eq!(pending_txs.len(), 1, "1 pending tx");
+
+        let all_txs = db.read_txs(relayer_id, None).await?;
+
+        assert_eq!(all_txs, pending_txs);
 
         db.escalate_tx(
             tx_id,
