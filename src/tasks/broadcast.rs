@@ -18,15 +18,10 @@ use crate::broadcast_utils::{
 use crate::db::UnsentTx;
 
 pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
-    // Recovery any unsent transactions that were simulated but never sent
-    let recovered_txs = app.db.recover_simulated_txs().await?;
-    broadcast_unsent_txs(&app, recovered_txs).await?;
-
     loop {
         // Get all unsent txs and broadcast
         let txs = app.db.get_unsent_txs().await?;
         broadcast_unsent_txs(&app, txs).await?;
-
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
