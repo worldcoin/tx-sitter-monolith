@@ -231,7 +231,7 @@ impl Database {
         .await?)
     }
 
-    pub async fn insert_into_tx_hashes(
+    pub async fn insert_tx_broadcast(
         &self,
         tx_id: &str,
         tx_hash: H256,
@@ -246,37 +246,20 @@ impl Database {
         initial_max_priority_fee_per_gas
             .to_big_endian(&mut initial_max_priority_fee_per_gas_bytes);
 
+        let mut tx = self.pool.begin().await?;
+
         sqlx::query(
             r#"
             INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (tx_id) DO NOTHING
             "#,
         )
         .bind(tx_id)
         .bind(tx_hash.as_bytes())
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
-
-        Ok(())
-    }
-
-    pub async fn insert_into_sent_transactions(
-        &self,
-        tx_id: &str,
-        tx_hash: H256,
-        initial_max_fee_per_gas: U256,
-        initial_max_priority_fee_per_gas: U256,
-    ) -> eyre::Result<()> {
-        let mut initial_max_fee_per_gas_bytes = [0u8; 32];
-        initial_max_fee_per_gas
-            .to_big_endian(&mut initial_max_fee_per_gas_bytes);
-
-        let mut initial_max_priority_fee_per_gas_bytes = [0u8; 32];
-        initial_max_priority_fee_per_gas
-            .to_big_endian(&mut initial_max_priority_fee_per_gas_bytes);
 
         sqlx::query(
             r#"
@@ -288,7 +271,9 @@ impl Database {
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
         .bind(tx_hash.as_bytes())
-        .execute(&self.pool).await?;
+        .execute(tx.as_mut()).await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
