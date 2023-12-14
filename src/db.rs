@@ -1295,15 +1295,7 @@ mod tests {
         let initial_max_fee_per_gas = U256::from(1);
         let initial_max_priority_fee_per_gas = U256::from(1);
 
-        db.insert_into_tx_hashes(
-            tx_id,
-            tx_hash_1,
-            initial_max_fee_per_gas,
-            initial_max_priority_fee_per_gas,
-        )
-        .await?;
-
-        db.insert_into_sent_transactions(
+        db.insert_tx_broadcast(
             tx_id,
             tx_hash_1,
             initial_max_fee_per_gas,

@@ -109,6 +109,8 @@ async fn broadcast_relayer_txs(
             .fill_transaction(&mut typed_transaction, None)
             .await?;
 
+        tracing::debug!(?tx.id, "Simulating tx");
+
         // Simulate the transaction
         match middleware.call(&typed_transaction, None).await {
             Ok(_) => {
@@ -129,7 +131,7 @@ async fn broadcast_relayer_txs(
         let tx_hash = H256::from(ethers::utils::keccak256(&raw_signed_tx));
 
         app.db
-            .insert_into_tx_hashes(
+            .insert_tx_broadcast(
                 &tx.id,
                 tx_hash,
                 max_fee_per_gas,
@@ -154,16 +156,6 @@ async fn broadcast_relayer_txs(
                 continue;
             }
         };
-
-        // Insert the tx into
-        app.db
-            .insert_into_sent_transactions(
-                &tx.id,
-                tx_hash,
-                max_fee_per_gas,
-                max_priority_fee_per_gas,
-            )
-            .await?;
 
         tracing::info!(id = tx.id, hash = ?tx_hash, "Tx broadcast");
     }
