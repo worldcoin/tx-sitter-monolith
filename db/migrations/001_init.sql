@@ -60,6 +60,9 @@ CREATE TABLE tx_hashes (
     escalated                BOOL NOT NULL DEFAULT FALSE
 );
 
+ALTER TABLE tx_hashes
+ADD UNIQUE (tx_id);
+
 -- Dynamic tx data & data used for escalations
 CREATE TABLE sent_transactions (
     tx_id                            VARCHAR(255) PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,

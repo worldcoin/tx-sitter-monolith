@@ -250,7 +250,7 @@ impl Database {
             r#"
             INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (tx_hash) DO UPDATE
+            ON CONFLICT (tx_id) DO NOTHING
             "#,
         )
         .bind(tx_id)
