@@ -3,6 +3,7 @@ use ethers::core::types::transaction::eip2718::TypedTransaction;
 use ethers::core::types::transaction::eip712::Eip712;
 use ethers::core::types::{Address, Signature as EthSig};
 use ethers::signers::{Signer, Wallet, WalletError};
+use ethers::types::Bytes;
 use thiserror::Error;
 
 use crate::aws::ethers_signer::AwsSigner;
@@ -11,6 +12,20 @@ use crate::aws::ethers_signer::AwsSigner;
 pub enum UniversalSigner {
     Aws(AwsSigner),
     Local(Wallet<SigningKey>),
+}
+
+impl UniversalSigner {
+    pub async fn raw_signed_tx(
+        &self,
+        tx: &TypedTransaction,
+    ) -> eyre::Result<Bytes> {
+        let signature = match self {
+            Self::Aws(signer) => signer.sign_transaction(tx).await?,
+            Self::Local(signer) => signer.sign_transaction(tx).await?,
+        };
+
+        Ok(tx.rlp_signed(&signature))
+    }
 }
 
 #[derive(Debug, Error)]
