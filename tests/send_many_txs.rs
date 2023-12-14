@@ -1,5 +1,7 @@
 mod common;
 
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use tx_sitter::server::routes::relayer::CreateApiKeyResponse;
 
 use crate::common::prelude::*;
@@ -16,61 +18,39 @@ async fn send_many_txs() -> eyre::Result<()> {
     let (_service, client) =
         setup_service(&double_anvil, &db_url, ESCALATION_INTERVAL).await?;
 
-    let CreateRelayerResponse {
-        address: relayer_address,
-        relayer_id,
-    } = client
-        .create_relayer(&CreateRelayerRequest {
-            name: "Test relayer".to_string(),
-            chain_id: DEFAULT_ANVIL_CHAIN_ID,
-        })
-        .await?;
-
     let CreateApiKeyResponse { api_key } =
-        client.create_relayer_api_key(&relayer_id).await?;
+        client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
 
-    // Fund the relayer
-    let middleware = setup_middleware(
-        format!("http://{}", double_anvil.local_addr()),
-        DEFAULT_ANVIL_PRIVATE_KEY,
-    )
-    .await?;
-
-    let amount: U256 = parse_units("1000", "ether")?.into();
-
-    middleware
-        .send_transaction(
-            Eip1559TransactionRequest {
-                to: Some(relayer_address.into()),
-                value: Some(amount),
-                ..Default::default()
-            },
-            None,
-        )
-        .await?
-        .await?;
-
-    let provider = middleware.provider();
-
-    let current_balance = provider.get_balance(relayer_address, None).await?;
-    assert_eq!(current_balance, amount);
+    let provider =
+        setup_provider(format!("http://{}", double_anvil.local_addr())).await?;
 
     // Send a transaction
     let value: U256 = parse_units("10", "ether")?.into();
     let num_transfers = 10;
 
+    let mut tasks = FuturesUnordered::new();
     for _ in 0..num_transfers {
-        client
-            .send_tx(
-                &api_key,
-                &SendTxRequest {
-                    to: ARBITRARY_ADDRESS,
-                    value,
-                    gas_limit: U256::from(21_000),
-                    ..Default::default()
-                },
-            )
-            .await?;
+        let client = &client;
+        tasks.push(async {
+            client
+                .send_tx(
+                    &api_key,
+                    &SendTxRequest {
+                        to: ARBITRARY_ADDRESS,
+                        value,
+                        gas_limit: U256::from(21_000),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+            Ok(())
+        });
+    }
+
+    while let Some(result) = tasks.next().await {
+        let result: eyre::Result<()> = result;
+        result?;
     }
 
     let expected_balance = value * num_transfers;

@@ -303,6 +303,26 @@ impl Database {
         Ok(block_number.map(|(n,)| n as u64))
     }
 
+    pub async fn get_latest_block_number(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<u64>> {
+        let block_number: Option<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT block_number
+            FROM   blocks
+            WHERE  chain_id = $1
+            ORDER BY block_number DESC
+            LIMIT  1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(block_number.map(|(n,)| n as u64))
+    }
+
     pub async fn get_latest_block_fees_by_chain_id(
         &self,
         chain_id: u64,
@@ -734,7 +754,13 @@ impl Database {
     pub async fn read_txs(
         &self,
         relayer_id: &str,
+        tx_status_filter: Option<Option<TxStatus>>,
     ) -> eyre::Result<Vec<ReadTxData>> {
+        let (should_filter, status_filter) = match tx_status_filter {
+            Some(status) => (true, status),
+            None => (false, None),
+        };
+
         Ok(sqlx::query_as(
             r#"
             SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
@@ -743,9 +769,12 @@ impl Database {
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.relayer_id = $1
+            AND   ($2 = true AND s.status = $3) OR $2 = false
             "#,
         )
         .bind(relayer_id)
+        .bind(should_filter)
+        .bind(status_filter)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -1074,7 +1103,7 @@ mod tests {
             {
                 Ok(db) => return Ok((db, db_container)),
                 Err(_) => {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
         }
@@ -1290,6 +1319,9 @@ mod tests {
         assert_eq!(tx.nonce, 0);
         assert_eq!(tx.tx_hash, None);
 
+        let unsent_txs = db.read_txs(relayer_id, None).await?;
+        assert_eq!(unsent_txs.len(), 1, "1 unsent tx");
+
         let tx_hash_1 = H256::from_low_u64_be(1);
         let tx_hash_2 = H256::from_low_u64_be(2);
         let initial_max_fee_per_gas = U256::from(1);
@@ -1307,6 +1339,18 @@ mod tests {
 
         assert_eq!(tx.tx_hash.unwrap().0, tx_hash_1);
         assert_eq!(tx.status, Some(TxStatus::Pending));
+
+        let unsent_txs = db.read_txs(relayer_id, Some(None)).await?;
+        assert_eq!(unsent_txs.len(), 0, "0 unsent tx");
+
+        let pending_txs = db
+            .read_txs(relayer_id, Some(Some(TxStatus::Pending)))
+            .await?;
+        assert_eq!(pending_txs.len(), 1, "1 pending tx");
+
+        let all_txs = db.read_txs(relayer_id, None).await?;
+
+        assert_eq!(all_txs, pending_txs);
 
         db.escalate_tx(
             tx_id,
@@ -1394,7 +1438,7 @@ mod tests {
     async fn blocks() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
 
-        let block_number = 1;
+        let block_numbers = [0, 1];
         let chain_id = 1;
         let timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
         let txs = &[
@@ -1403,7 +1447,10 @@ mod tests {
             H256::from_low_u64_be(3),
         ];
 
-        db.save_block(block_number, chain_id, timestamp, txs)
+        db.save_block(block_numbers[0], chain_id, timestamp, txs)
+            .await?;
+
+        db.save_block(block_numbers[1], chain_id, timestamp, txs)
             .await?;
 
         let fee_estimates = FeesEstimate {
@@ -1413,13 +1460,22 @@ mod tests {
 
         let gas_price = U256::from(1_000_000_007);
 
-        db.save_block_fees(block_number, chain_id, &fee_estimates, gas_price)
-            .await?;
+        db.save_block_fees(
+            block_numbers[1],
+            chain_id,
+            &fee_estimates,
+            gas_price,
+        )
+        .await?;
 
+        let latest_block_number =
+            db.get_latest_block_number(chain_id)
+                .await?
+                .context("Could not get latest block number")?;
         let block_fees = db.get_latest_block_fees_by_chain_id(chain_id).await?;
-
         let block_fees = block_fees.context("Missing fees")?;
 
+        assert_eq!(latest_block_number, block_numbers[1]);
         assert_eq!(
             block_fees.fee_estimates.base_fee_per_gas,
             fee_estimates.base_fee_per_gas
