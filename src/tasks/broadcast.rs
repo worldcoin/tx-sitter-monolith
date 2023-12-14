@@ -21,30 +21,22 @@ pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
     loop {
         // Get all unsent txs and broadcast
         let txs = app.db.get_unsent_txs().await?;
-        broadcast_unsent_txs(&app, txs).await?;
+        let txs_by_relayer = sort_txs_by_relayer(txs);
+
+        let mut futures = FuturesUnordered::new();
+
+        for (relayer_id, txs) in txs_by_relayer {
+            futures.push(broadcast_relayer_txs(&app, relayer_id, txs));
+        }
+
+        while let Some(result) = futures.next().await {
+            if let Err(err) = result {
+                tracing::error!(error = ?err, "Failed broadcasting txs");
+            }
+        }
+
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-}
-
-async fn broadcast_unsent_txs(
-    app: &App,
-    txs: Vec<UnsentTx>,
-) -> eyre::Result<()> {
-    let txs_by_relayer = sort_txs_by_relayer(txs);
-
-    let mut futures = FuturesUnordered::new();
-
-    for (relayer_id, txs) in txs_by_relayer {
-        futures.push(broadcast_relayer_txs(app, relayer_id, txs));
-    }
-
-    while let Some(result) = futures.next().await {
-        if let Err(err) = result {
-            tracing::error!(error = ?err, "Failed broadcasting txs");
-        }
-    }
-
-    Ok(())
 }
 
 #[tracing::instrument(skip(app, txs))]
