@@ -9,7 +9,7 @@ members = ["crates/*"]
 
 [dependencies]
 async-trait = "0.1.74"
-# Third Party
+
 ## AWS
 aws-config = { version = "1.0.1" }
 aws-credential-types = { version = "1.0.1", features = [

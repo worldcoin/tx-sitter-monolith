@@ -133,7 +133,6 @@ async fn broadcast_relayer_txs(
 
         tracing::debug!(?tx.id, "Sending tx");
 
-        // TODO: Is it possible that we send a tx but don't store it in the DB?
         // TODO: Be smarter about error handling - a tx can fail to be sent
         //       e.g. because the relayer is out of funds
         //       but we don't want to retry it forever
