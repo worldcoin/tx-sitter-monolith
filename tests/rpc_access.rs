@@ -18,15 +18,8 @@ async fn rpc_access() -> eyre::Result<()> {
     let (service, client) =
         setup_service(&double_anvil, &db_url, ESCALATION_INTERVAL).await?;
 
-    let CreateRelayerResponse { relayer_id, .. } = client
-        .create_relayer(&CreateRelayerRequest {
-            name: "Test relayer".to_string(),
-            chain_id: DEFAULT_ANVIL_CHAIN_ID,
-        })
-        .await?;
-
     let CreateApiKeyResponse { api_key } =
-        client.create_relayer_api_key(&relayer_id).await?;
+        client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
 
     let rpc_url =
         format!("http://{}/1/api/{api_key}/rpc", service.local_addr());
