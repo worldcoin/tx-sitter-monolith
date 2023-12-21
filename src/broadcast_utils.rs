@@ -12,18 +12,9 @@ pub fn calculate_gas_fees_from_estimates(
     tx_priority_index: usize,
     max_base_fee_per_gas: U256,
 ) -> (U256, U256) {
-    println!("estimates = {estimates:#?}");
-
     let max_priority_fee_per_gas = estimates.percentile_fees[tx_priority_index];
 
     let max_fee_per_gas = max_base_fee_per_gas + max_priority_fee_per_gas;
-
-    println!(
-        "max_base_fee_per_gas = {max_base_fee_per_gas}, max_priority_fee_per_gas = {max_priority_fee_per_gas}, max_fee_per_gas = {max_fee_per_gas}",
-        max_base_fee_per_gas = max_base_fee_per_gas,
-        max_priority_fee_per_gas = max_priority_fee_per_gas,
-        max_fee_per_gas = max_fee_per_gas,
-    );
 
     (max_fee_per_gas, max_priority_fee_per_gas)
 }

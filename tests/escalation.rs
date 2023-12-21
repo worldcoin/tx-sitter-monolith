@@ -36,13 +36,13 @@ async fn escalation() -> eyre::Result<()> {
         )
         .await?;
 
-    for _ in 0..10 {
+    for _ in 0..24 {
         let balance = provider.get_balance(ARBITRARY_ADDRESS, None).await?;
 
         if balance == value {
             return Ok(());
         } else {
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
         }
     }
 

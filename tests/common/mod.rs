@@ -10,8 +10,6 @@ use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, Eip1559TransactionRequest, H160, U256};
 use ethers::utils::{Anvil, AnvilInstance};
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use postgres_docker_utils::DockerContainerGuard;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -73,7 +71,7 @@ pub fn setup_tracing() {
             EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())
                 // Logging from fake_rpc can get very messy so we set it to warn only
-                .parse_lossy("info,fake_rpc=warn"),
+                .parse_lossy("info,tx_sitter=debug,fake_rpc=warn"),
         )
         .init();
 }
@@ -92,32 +90,21 @@ pub async fn setup_anvil(block_time: u64) -> eyre::Result<AnvilInstance> {
     let middleware =
         setup_middleware(anvil.endpoint(), SECONDARY_ANVIL_PRIVATE_KEY).await?;
 
+    // Wait for the chain to start and produce at least one block
+    tokio::time::sleep(Duration::from_secs(block_time)).await;
+
     // We need to seed some transactions so we can get fee estimates on the first block
-    // let mut nonce = 0;
-    // let mut futures = FuturesUnordered::new();
-    // for i in 0..100 {
-    //     let tx = middleware
-    //         .send_transaction(
-    //             Eip1559TransactionRequest {
-    //                 nonce: Some(U256::from(nonce)),
-    //                 to: Some(DEFAULT_ANVIL_ACCOUNT.into()),
-    //                 value: Some(U256::from(100u64)),
-    //                 max_fee_per_gas: Some(U256::from(40_000_000_000u64)),
-    //                 max_priority_fee_per_gas: Some(U256::from(10_000u64)),
-    //                 ..Default::default()
-    //             },
-    //             None,
-    //         )
-    //         .await?;
-
-    //     futures.push(tx);
-
-    //     nonce += 1;
-    // }
-
-    // while let Some(tx) = futures.next().await {
-    //     tx?;
-    // }
+    middleware
+        .send_transaction(
+            Eip1559TransactionRequest {
+                to: Some(DEFAULT_ANVIL_ACCOUNT.into()),
+                value: Some(U256::from(100u64)),
+                ..Default::default()
+            },
+            None,
+        )
+        .await?
+        .await?;
 
     Ok(anvil)
 }
