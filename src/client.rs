@@ -5,7 +5,9 @@ use crate::server::routes::network::NewNetworkInfo;
 use crate::server::routes::relayer::{
     CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
 };
-use crate::server::routes::transaction::{SendTxRequest, SendTxResponse};
+use crate::server::routes::transaction::{
+    GetTxResponse, SendTxRequest, SendTxResponse,
+};
 
 pub struct TxSitterClient {
     client: reqwest::Client,
@@ -37,6 +39,17 @@ impl TxSitterClient {
         R: serde::de::DeserializeOwned,
     {
         let response = self.client.post(url).json(&body).send().await?;
+
+        let response = Self::validate_response(response).await?;
+
+        Ok(response.json().await?)
+    }
+
+    async fn json_get<R>(&self, url: &str) -> eyre::Result<R>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        let response = self.client.get(url).send().await?;
 
         let response = Self::validate_response(response).await?;
 
@@ -75,6 +88,21 @@ impl TxSitterClient {
     ) -> eyre::Result<SendTxResponse> {
         self.json_post(&format!("{}/1/api/{api_key}/tx", self.url), req)
             .await
+    }
+
+    pub async fn get_tx(
+        &self,
+        api_key: &ApiKey,
+        tx_id: &str,
+    ) -> eyre::Result<GetTxResponse> {
+        Ok(self
+            .json_get(&format!(
+                "{}/1/api/{api_key}/tx/{tx_id}",
+                self.url,
+                api_key = api_key,
+                tx_id = tx_id
+            ))
+            .await?)
     }
 
     pub async fn create_network(
