@@ -19,8 +19,7 @@ async fn send_tx() -> eyre::Result<()> {
     let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
 
-    let provider =
-        setup_provider(anvil.endpoint()).await?;
+    let provider = setup_provider(anvil.endpoint()).await?;
 
     // Send a transaction
     let value: U256 = parse_units("1", "ether")?.into();

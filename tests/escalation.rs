@@ -76,7 +76,7 @@ async fn get_tx_hash(
     tx_id: &str,
 ) -> eyre::Result<H256> {
     loop {
-        let tx = client.get_tx(&api_key, tx_id).await?;
+        let tx = client.get_tx(api_key, tx_id).await?;
 
         if let Some(tx_hash) = tx.tx_hash {
             return Ok(tx_hash);

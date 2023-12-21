@@ -95,14 +95,13 @@ impl TxSitterClient {
         api_key: &ApiKey,
         tx_id: &str,
     ) -> eyre::Result<GetTxResponse> {
-        Ok(self
-            .json_get(&format!(
-                "{}/1/api/{api_key}/tx/{tx_id}",
-                self.url,
-                api_key = api_key,
-                tx_id = tx_id
-            ))
-            .await?)
+        self.json_get(&format!(
+            "{}/1/api/{api_key}/tx/{tx_id}",
+            self.url,
+            api_key = api_key,
+            tx_id = tx_id
+        ))
+        .await
     }
 
     pub async fn create_network(
