@@ -16,7 +16,10 @@ async fn escalation() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
-    let anvil = setup_anvil(ANVIL_BLOCK_TIME).await?;
+    let anvil = AnvilBuilder::default()
+        .block_time(ANVIL_BLOCK_TIME)
+        .spawn()
+        .await?;
 
     let (_service, client) =
         setup_service(&anvil, &db_url, ESCALATION_INTERVAL).await?;
