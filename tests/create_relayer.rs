@@ -9,10 +9,10 @@ async fn create_relayer() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
-    let double_anvil = setup_double_anvil().await?;
+    let anvil = setup_anvil(DEFAULT_ANVIL_BLOCK_TIME).await?;
 
     let (_service, client) =
-        setup_service(&double_anvil, &db_url, ESCALATION_INTERVAL).await?;
+        setup_service(&anvil, &db_url, ESCALATION_INTERVAL).await?;
 
     let CreateRelayerResponse { .. } = client
         .create_relayer(&CreateRelayerRequest {

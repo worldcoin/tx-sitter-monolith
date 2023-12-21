@@ -5,7 +5,7 @@ use std::time::Duration;
 use ethers::providers::Middleware;
 use ethers::types::transaction::eip2718::TypedTransaction;
 use ethers::types::transaction::eip2930::AccessList;
-use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress, H256};
+use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress, H256, U256};
 use eyre::ContextCompat;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;

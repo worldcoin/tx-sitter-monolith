@@ -13,10 +13,10 @@ async fn rpc_access() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
-    let double_anvil = setup_double_anvil().await?;
+    let anvil = setup_anvil(DEFAULT_ANVIL_BLOCK_TIME).await?;
 
     let (service, client) =
-        setup_service(&double_anvil, &db_url, ESCALATION_INTERVAL).await?;
+        setup_service(&anvil, &db_url, ESCALATION_INTERVAL).await?;
 
     let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;

@@ -9,9 +9,10 @@ use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, Eip1559TransactionRequest, H160, U256};
-use fake_rpc::DoubleAnvil;
+use ethers::utils::{Anvil, AnvilInstance};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use postgres_docker_utils::DockerContainerGuard;
-use tokio::task::JoinHandle;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -57,24 +58,12 @@ pub const ARBITRARY_ADDRESS: Address = H160(hex_literal::hex!(
 ));
 
 pub const DEFAULT_ANVIL_CHAIN_ID: u64 = 31337;
+pub const DEFAULT_ANVIL_BLOCK_TIME: u64 = 2;
 
 pub const DEFAULT_RELAYER_ID: &str = "1b908a34-5dc1-4d2d-a146-5eb46e975830";
 
-pub struct DoubleAnvilHandle {
-    pub double_anvil: Arc<DoubleAnvil>,
-    ws_addr: String,
-    local_addr: SocketAddr,
-    server_handle: JoinHandle<eyre::Result<()>>,
-}
-
-impl DoubleAnvilHandle {
-    pub fn local_addr(&self) -> String {
-        self.local_addr.to_string()
-    }
-
-    pub fn ws_addr(&self) -> String {
-        self.ws_addr.clone()
-    }
+pub struct AnvilWrapper {
+    pub anvil: Anvil,
 }
 
 pub fn setup_tracing() {
@@ -97,52 +86,47 @@ pub async fn setup_db() -> eyre::Result<(String, DockerContainerGuard)> {
     Ok((url, db_container))
 }
 
-pub async fn setup_double_anvil() -> eyre::Result<DoubleAnvilHandle> {
-    let (double_anvil, server) = fake_rpc::serve(0).await;
+pub async fn setup_anvil(block_time: u64) -> eyre::Result<AnvilInstance> {
+    let anvil = Anvil::new().block_time(block_time).spawn();
 
-    let local_addr = server.local_addr();
-
-    let server_handle = tokio::spawn(async move {
-        server.await?;
-        Ok(())
-    });
-
-    let middleware = setup_middleware(
-        format!("http://{local_addr}"),
-        SECONDARY_ANVIL_PRIVATE_KEY,
-    )
-    .await?;
+    let middleware =
+        setup_middleware(anvil.endpoint(), SECONDARY_ANVIL_PRIVATE_KEY).await?;
 
     // We need to seed some transactions so we can get fee estimates on the first block
-    middleware
-        .send_transaction(
-            Eip1559TransactionRequest {
-                to: Some(DEFAULT_ANVIL_ACCOUNT.into()),
-                value: Some(U256::from(100u64)),
-                ..Default::default()
-            },
-            None,
-        )
-        .await?
-        .await?;
+    // let mut nonce = 0;
+    // let mut futures = FuturesUnordered::new();
+    // for i in 0..100 {
+    //     let tx = middleware
+    //         .send_transaction(
+    //             Eip1559TransactionRequest {
+    //                 nonce: Some(U256::from(nonce)),
+    //                 to: Some(DEFAULT_ANVIL_ACCOUNT.into()),
+    //                 value: Some(U256::from(100u64)),
+    //                 max_fee_per_gas: Some(U256::from(40_000_000_000u64)),
+    //                 max_priority_fee_per_gas: Some(U256::from(10_000u64)),
+    //                 ..Default::default()
+    //             },
+    //             None,
+    //         )
+    //         .await?;
 
-    let ws_addr = double_anvil.ws_endpoint().await;
+    //     futures.push(tx);
 
-    Ok(DoubleAnvilHandle {
-        double_anvil,
-        ws_addr,
-        local_addr,
-        server_handle,
-    })
+    //     nonce += 1;
+    // }
+
+    // while let Some(tx) = futures.next().await {
+    //     tx?;
+    // }
+
+    Ok(anvil)
 }
 
 pub async fn setup_service(
-    anvil_handle: &DoubleAnvilHandle,
+    anvil: &AnvilInstance,
     db_connection_url: &str,
     escalation_interval: Duration,
 ) -> eyre::Result<(Service, TxSitterClient)> {
-    let rpc_url = anvil_handle.local_addr();
-
     let anvil_private_key = hex::encode(DEFAULT_ANVIL_PRIVATE_KEY);
 
     let config = Config {
@@ -154,8 +138,8 @@ pub async fn setup_service(
                 network: PredefinedNetwork {
                     chain_id: DEFAULT_ANVIL_CHAIN_ID,
                     name: "Anvil".to_string(),
-                    http_rpc: format!("http://{}", rpc_url),
-                    ws_rpc: anvil_handle.ws_addr(),
+                    http_rpc: anvil.endpoint(),
+                    ws_rpc: anvil.ws_endpoint(),
                 },
                 relayer: PredefinedRelayer {
                     name: "Anvil".to_string(),

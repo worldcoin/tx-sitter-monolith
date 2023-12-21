@@ -13,16 +13,15 @@ async fn send_many_txs() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
-    let double_anvil = setup_double_anvil().await?;
+    let anvil = setup_anvil(DEFAULT_ANVIL_BLOCK_TIME).await?;
 
     let (_service, client) =
-        setup_service(&double_anvil, &db_url, ESCALATION_INTERVAL).await?;
+        setup_service(&anvil, &db_url, ESCALATION_INTERVAL).await?;
 
     let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
 
-    let provider =
-        setup_provider(format!("http://{}", double_anvil.local_addr())).await?;
+    let provider = setup_provider(anvil.endpoint()).await?;
 
     // Send a transaction
     let value: U256 = parse_units("10", "ether")?.into();

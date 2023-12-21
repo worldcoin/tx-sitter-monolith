@@ -1706,43 +1706,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fake-rpc"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "config",
- "dotenv",
- "ethers",
- "ethers-signers",
- "eyre",
- "futures",
- "headers",
- "hex",
- "hex-literal",
- "humantime",
- "humantime-serde",
- "hyper",
- "rand",
- "reqwest",
- "serde",
- "serde_json",
- "sha3",
- "spki",
- "sqlx",
- "strum",
- "thiserror",
- "tokio",
- "toml 0.8.8",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid 0.8.2",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5040,7 +5003,6 @@ dependencies = [
  "dotenv",
  "ethers",
  "eyre",
- "fake-rpc",
  "futures",
  "headers",
  "hex",

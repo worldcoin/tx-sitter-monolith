@@ -4,14 +4,15 @@ use tx_sitter::server::routes::relayer::CreateApiKeyResponse;
 
 use crate::common::prelude::*;
 
-const ESCALATION_INTERVAL: Duration = Duration::from_secs(30);
+const ESCALATION_INTERVAL: Duration = Duration::from_secs(2);
+const ANVIL_BLOCK_TIME: u64 = 12;
 
 #[tokio::test]
-async fn send_tx() -> eyre::Result<()> {
+async fn escalation() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
-    let anvil = setup_anvil(DEFAULT_ANVIL_BLOCK_TIME).await?;
+    let anvil = setup_anvil(ANVIL_BLOCK_TIME).await?;
 
     let (_service, client) =
         setup_service(&anvil, &db_url, ESCALATION_INTERVAL).await?;
@@ -19,8 +20,7 @@ async fn send_tx() -> eyre::Result<()> {
     let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
 
-    let provider =
-        setup_provider(anvil.endpoint()).await?;
+    let provider = setup_provider(anvil.endpoint()).await?;
 
     // Send a transaction
     let value: U256 = parse_units("1", "ether")?.into();
