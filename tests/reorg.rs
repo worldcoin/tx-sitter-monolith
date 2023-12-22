@@ -1,27 +1,19 @@
 mod common;
 
-use ethers::prelude::{Http, Provider};
-use ethers::types::H256;
-use tx_sitter::api_key::ApiKey;
-use tx_sitter::client::TxSitterClient;
-use tx_sitter::server::routes::relayer::CreateApiKeyResponse;
-
 use crate::common::prelude::*;
-
-const ESCALATION_INTERVAL: Duration = Duration::from_secs(2);
 
 #[tokio::test]
 async fn reorg() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
-    let anvil = AnvilBuilder::default()
-        .spawn()
-        .await?;
+    let anvil = AnvilBuilder::default().spawn().await?;
     let anvil_port = anvil.port();
 
-    let (_service, client) =
-        setup_service(&anvil, &db_url, ESCALATION_INTERVAL).await?;
+    let (_service, client) = ServiceBuilder::default()
+        .hard_reorg_interval(Duration::from_secs(2))
+        .build(&anvil, &db_url)
+        .await?;
 
     let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
@@ -45,9 +37,12 @@ async fn reorg() -> eyre::Result<()> {
     await_balance(&provider, value).await?;
 
     // Drop anvil to simulate a reorg
+    tracing::warn!("Dropping anvil & restarting at port {anvil_port}");
     drop(anvil);
 
-    AnvilBuilder::default().port(anvil_port).spawn().await?;
+    let anvil = AnvilBuilder::default().port(anvil_port).spawn().await?;
+    let provider = setup_provider(anvil.endpoint()).await?;
+
     await_balance(&provider, value).await?;
 
     Ok(())
@@ -58,7 +53,15 @@ async fn await_balance(
     value: U256,
 ) -> eyre::Result<()> {
     for _ in 0..24 {
-        let balance = provider.get_balance(ARBITRARY_ADDRESS, None).await?;
+        let balance = match provider.get_balance(ARBITRARY_ADDRESS, None).await
+        {
+            Ok(balance) => balance,
+            Err(err) => {
+                tracing::warn!("Error getting balance: {:?}", err);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+        };
 
         if balance == value {
             return Ok(());
@@ -68,20 +71,4 @@ async fn await_balance(
     }
 
     eyre::bail!("Balance not updated in time");
-}
-
-async fn get_tx_hash(
-    client: &TxSitterClient,
-    api_key: &ApiKey,
-    tx_id: &str,
-) -> eyre::Result<H256> {
-    loop {
-        let tx = client.get_tx(api_key, tx_id).await?;
-
-        if let Some(tx_hash) = tx.tx_hash {
-            return Ok(tx_hash);
-        } else {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-        }
-    }
 }

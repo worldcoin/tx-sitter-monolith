@@ -2,8 +2,6 @@ mod common;
 
 use crate::common::prelude::*;
 
-const ESCALATION_INTERVAL: Duration = Duration::from_secs(30);
-
 #[tokio::test]
 async fn create_relayer() -> eyre::Result<()> {
     setup_tracing();
@@ -12,7 +10,7 @@ async fn create_relayer() -> eyre::Result<()> {
     let anvil = AnvilBuilder::default().spawn().await?;
 
     let (_service, client) =
-        setup_service(&anvil, &db_url, ESCALATION_INTERVAL).await?;
+        ServiceBuilder::default().build(&anvil, &db_url).await?;
 
     let CreateRelayerResponse { .. } = client
         .create_relayer(&CreateRelayerRequest {

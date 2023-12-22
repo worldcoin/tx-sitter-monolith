@@ -18,6 +18,12 @@ pub struct TxSitterConfig {
     #[serde(with = "humantime_serde")]
     pub escalation_interval: Duration,
 
+    #[serde(with = "humantime_serde", default = "default_soft_reorg_interval")]
+    pub soft_reorg_interval: Duration,
+
+    #[serde(with = "humantime_serde", default = "default_hard_reorg_interval")]
+    pub hard_reorg_interval: Duration,
+
     #[serde(default)]
     pub datadog_enabled: bool,
 
@@ -26,6 +32,14 @@ pub struct TxSitterConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predefined: Option<Predefined>,
+}
+
+const fn default_soft_reorg_interval() -> Duration {
+    Duration::from_secs(60)
+}
+
+const fn default_hard_reorg_interval() -> Duration {
+    Duration::from_secs(60 * 60)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +162,8 @@ mod tests {
     const WITH_DB_CONNECTION_STRING: &str = indoc! {r#"
         [service]
         escalation_interval = "1h"
+        soft_reorg_interval = "1m"
+        hard_reorg_interval = "1h"
         datadog_enabled = false
         statsd_enabled = false
 
@@ -165,6 +181,8 @@ mod tests {
     const WITH_DB_PARTS: &str = indoc! {r#"
         [service]
         escalation_interval = "1h"
+        soft_reorg_interval = "1m"
+        hard_reorg_interval = "1h"
         datadog_enabled = false
         statsd_enabled = false
 
@@ -188,6 +206,8 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
+                soft_reorg_interval: default_soft_reorg_interval(),
+                hard_reorg_interval: default_hard_reorg_interval(),
                 datadog_enabled: false,
                 statsd_enabled: false,
                 predefined: None,
@@ -214,6 +234,8 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
+                soft_reorg_interval: default_soft_reorg_interval(),
+                hard_reorg_interval: default_hard_reorg_interval(),
                 datadog_enabled: false,
                 statsd_enabled: false,
                 predefined: None,

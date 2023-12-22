@@ -1,11 +1,5 @@
 mod common;
 
-use ethers::prelude::{Http, Provider};
-use ethers::types::H256;
-use tx_sitter::api_key::ApiKey;
-use tx_sitter::client::TxSitterClient;
-use tx_sitter::server::routes::relayer::CreateApiKeyResponse;
-
 use crate::common::prelude::*;
 
 const ESCALATION_INTERVAL: Duration = Duration::from_secs(2);
@@ -21,8 +15,10 @@ async fn escalation() -> eyre::Result<()> {
         .spawn()
         .await?;
 
-    let (_service, client) =
-        setup_service(&anvil, &db_url, ESCALATION_INTERVAL).await?;
+    let (_service, client) = ServiceBuilder::default()
+        .escalation_interval(ESCALATION_INTERVAL)
+        .build(&anvil, &db_url)
+        .await?;
 
     let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
