@@ -94,6 +94,8 @@ async fn initialize_predefined_values(
         return Ok(());
     };
 
+    tracing::warn!("Running with predefined values is not recommended in a production environment");
+
     app.db
         .create_network(
             predefined.network.chain_id,
@@ -118,6 +120,13 @@ async fn initialize_predefined_values(
             predefined.relayer.chain_id,
             &predefined.relayer.key_id,
             address,
+        )
+        .await?;
+
+    app.db
+        .create_api_key(
+            &predefined.relayer.api_key.relayer_id,
+            predefined.relayer.api_key.api_key_hash(),
         )
         .await?;
 

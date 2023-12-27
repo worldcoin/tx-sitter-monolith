@@ -13,7 +13,16 @@ pub struct ApiKey {
 }
 
 impl ApiKey {
-    pub fn new(relayer_id: impl ToString) -> Self {
+    pub fn new(relayer_id: impl ToString, key: [u8; 32]) -> Self {
+        let relayer_id = relayer_id.to_string();
+
+        Self {
+            relayer_id,
+            api_key: key,
+        }
+    }
+
+    pub fn random(relayer_id: impl ToString) -> Self {
         let relayer_id = relayer_id.to_string();
 
         let mut api_key = [0u8; 32];

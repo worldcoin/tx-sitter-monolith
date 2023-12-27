@@ -2,6 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
 use ethers::utils::AnvilInstance;
+use tx_sitter::api_key::ApiKey;
 use tx_sitter::client::TxSitterClient;
 use tx_sitter::config::{
     Config, DatabaseConfig, KeysConfig, LocalKeysConfig, Predefined,
@@ -71,6 +72,8 @@ impl ServiceBuilder {
                         id: DEFAULT_RELAYER_ID.to_string(),
                         key_id: anvil_private_key,
                         chain_id: DEFAULT_ANVIL_CHAIN_ID,
+                        // TODO: Use this key in tests
+                        api_key: ApiKey::random(DEFAULT_RELAYER_ID),
                     },
                 }),
             },

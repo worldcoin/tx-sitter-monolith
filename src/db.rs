@@ -935,7 +935,7 @@ impl Database {
         Ok(items.into_iter().map(|(x,)| x as u64).collect())
     }
 
-    pub async fn save_api_key(
+    pub async fn create_api_key(
         &self,
         relayer_id: &str,
         api_key_hash: [u8; 32],

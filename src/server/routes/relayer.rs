@@ -158,10 +158,10 @@ pub async fn create_relayer_api_key(
     State(app): State<Arc<App>>,
     Path(relayer_id): Path<String>,
 ) -> Result<Json<CreateApiKeyResponse>, ApiError> {
-    let api_key = ApiKey::new(&relayer_id);
+    let api_key = ApiKey::random(&relayer_id);
 
     app.db
-        .save_api_key(&relayer_id, api_key.api_key_hash())
+        .create_api_key(&relayer_id, api_key.api_key_hash())
         .await?;
 
     Ok(Json(CreateApiKeyResponse { api_key }))
