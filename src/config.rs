@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::api_key::ApiKey;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Config {
@@ -65,6 +67,7 @@ pub struct PredefinedRelayer {
     pub name: String,
     pub key_id: String,
     pub chain_id: u64,
+    pub api_key: ApiKey,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
