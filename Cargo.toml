@@ -81,7 +81,6 @@ url = "2.4.1"
 uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
-fake-rpc = { path = "crates/fake-rpc" }
 indoc = "2.0.3"
 test-case = "3.1.0"
 

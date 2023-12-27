@@ -1,22 +1,16 @@
 mod common;
 
-use ethers::prelude::*;
-use tx_sitter::server::routes::relayer::CreateApiKeyResponse;
-use url::Url;
-
 use crate::common::prelude::*;
-
-const ESCALATION_INTERVAL: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn rpc_access() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
-    let double_anvil = setup_double_anvil().await?;
+    let anvil = AnvilBuilder::default().spawn().await?;
 
     let (service, client) =
-        setup_service(&double_anvil, &db_url, ESCALATION_INTERVAL).await?;
+        ServiceBuilder::default().build(&anvil, &db_url).await?;
 
     let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;

@@ -39,7 +39,7 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
             // Min increase of 20% on the priority fee required for a replacement tx
             let factor = U256::from(100);
             let increased_gas_price_percentage =
-                factor + U256::from(10 * (1 + escalation));
+                factor + U256::from(20 * (1 + escalation));
 
             let max_fee_per_gas_increase = tx.initial_max_fee_per_gas.0
                 * increased_gas_price_percentage
@@ -50,6 +50,13 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
 
             let max_priority_fee_per_gas =
                 max_fee_per_gas - fees.fee_estimates.base_fee_per_gas;
+
+            tracing::warn!(
+                "Initial tx fees are max = {}, priority = {}",
+                tx.initial_max_fee_per_gas.0,
+                tx.initial_max_priority_fee_per_gas.0
+            );
+            tracing::warn!("Escalating with max fee = {max_fee_per_gas} and max priority = {max_priority_fee_per_gas}");
 
             let eip1559_tx = Eip1559TransactionRequest {
                 from: None,
