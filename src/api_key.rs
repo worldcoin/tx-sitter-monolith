@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::str::FromStr;
 
 use base64::Engine;
@@ -53,7 +54,7 @@ impl<'de> serde::Deserialize<'de> for ApiKey {
     where
         D: serde::Deserializer<'de>,
     {
-        <&str>::deserialize(deserializer)?
+        <Cow<'static, str>>::deserialize(deserializer)?
             .parse()
             .map_err(serde::de::Error::custom)
     }
@@ -105,22 +106,51 @@ mod tests {
 
     use super::*;
 
+    fn random_api_key() -> ApiKey {
+        let mut api_key = [0u8; 32];
+        OsRng.fill_bytes(&mut api_key);
+
+        ApiKey::new(uuid::Uuid::new_v4().to_string(), api_key)
+    }
+
     #[test]
     fn from_to_str() {
-        let api_key = ApiKey {
-            relayer_id: uuid::Uuid::new_v4().to_string(),
-            api_key: {
-                let mut api_key = [0u8; 32];
-                OsRng.fill_bytes(&mut api_key);
-                api_key
-            },
-        };
+        let api_key = random_api_key();
 
         let api_key_str = api_key.to_string();
 
         println!("api_key_str = {api_key_str}");
 
         let api_key_parsed = api_key_str.parse::<ApiKey>().unwrap();
+
+        assert_eq!(api_key, api_key_parsed);
+    }
+
+    #[test]
+    fn from_to_serde_json() {
+        let api_key = random_api_key();
+
+        let api_key_json = serde_json::to_string(&api_key).unwrap();
+
+        println!("api_key_str = {api_key_json}");
+
+        let api_key_parsed: ApiKey =
+            serde_json::from_str(&api_key_json).unwrap();
+
+        assert_eq!(api_key, api_key_parsed);
+    }
+
+    #[test]
+    fn from_to_serde_json_owned() {
+        let api_key = random_api_key();
+
+        let api_key_json: serde_json::Value =
+            serde_json::to_value(&api_key).unwrap();
+
+        println!("api_key_str = {api_key_json}");
+
+        let api_key_parsed: ApiKey =
+            serde_json::from_value(api_key_json).unwrap();
 
         assert_eq!(api_key, api_key_parsed);
     }
