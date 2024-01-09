@@ -132,7 +132,8 @@ impl Database {
                 nonce,
                 current_nonce,
                 max_inflight_txs,
-                gas_price_limits
+                gas_price_limits,
+                enabled
             FROM relayers
             "#,
         )
@@ -152,7 +153,8 @@ impl Database {
                 nonce,
                 current_nonce,
                 max_inflight_txs,
-                gas_price_limits
+                gas_price_limits,
+                enabled
             FROM relayers
             WHERE id = $1
             "#,
@@ -1241,6 +1243,7 @@ mod tests {
                     chain_id: 1,
                     value: U256Wrapper(U256::from(10_123u64)),
                 }]),
+                enabled: None,
             },
         )
         .await?;

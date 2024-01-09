@@ -43,6 +43,7 @@ pub struct RelayerInfo {
     #[sqlx(try_from = "i64")]
     pub max_inflight_txs: u64,
     pub gas_price_limits: Json<Vec<RelayerGasPriceLimit>>,
+    pub enabled: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
@@ -50,12 +51,12 @@ pub struct RelayerInfo {
 pub struct RelayerUpdate {
     #[serde(default)]
     pub relayer_name: Option<String>,
-
     #[serde(default)]
     pub max_inflight_txs: Option<u64>,
-
     #[serde(default)]
     pub gas_price_limits: Option<Vec<RelayerGasPriceLimit>>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
@@ -86,6 +87,7 @@ mod tests {
                 value: U256Wrapper(U256::zero()),
                 chain_id: 1,
             }]),
+            enabled: true
         };
 
         let json = serde_json::to_string_pretty(&info).unwrap();
@@ -105,7 +107,8 @@ mod tests {
                   "value": "0x0",
                   "chainId": 1
                 }
-              ]
+              ],
+              "enabled": true
             }
         "#};
 
