@@ -21,7 +21,7 @@ echo "Creating relayer"
 let relayer = http post -t application/json $"($txSitter)/1/admin/relayer" { "name": "My Relayer", "chainId": 11155111 }
 
 http post -t application/json $"($txSitter)/1/admin/relayer/($relayer.relayerId)" {
-    gasLimits: [
+    gasPriceLimits: [
         { chainId: 11155111, value: "0x123" }
     ]
 }
