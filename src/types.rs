@@ -42,7 +42,7 @@ pub struct RelayerInfo {
     pub current_nonce: u64,
     #[sqlx(try_from = "i64")]
     pub max_inflight_txs: u64,
-    pub gas_limits: Json<Vec<RelayerGasLimit>>,
+    pub gas_price_limits: Json<Vec<RelayerGasPriceLimit>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
@@ -55,12 +55,12 @@ pub struct RelayerUpdate {
     pub max_inflight_txs: Option<u64>,
 
     #[serde(default)]
-    pub gas_limits: Option<Vec<RelayerGasLimit>>,
+    pub gas_price_limits: Option<Vec<RelayerGasPriceLimit>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct RelayerGasLimit {
+pub struct RelayerGasPriceLimit {
     pub value: U256Wrapper,
     pub chain_id: i64,
 }
@@ -82,7 +82,7 @@ mod tests {
             nonce: 0,
             current_nonce: 0,
             max_inflight_txs: 0,
-            gas_limits: Json(vec![RelayerGasLimit {
+            gas_price_limits: Json(vec![RelayerGasPriceLimit {
                 value: U256Wrapper(U256::zero()),
                 chain_id: 1,
             }]),
@@ -100,7 +100,7 @@ mod tests {
               "nonce": 0,
               "currentNonce": 0,
               "maxInflightTxs": 0,
-              "gasLimits": [
+              "gasPriceLimits": [
                 {
                   "value": "0x0",
                   "chainId": 1

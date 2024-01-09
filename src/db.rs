@@ -101,16 +101,16 @@ impl Database {
             .await?;
         }
 
-        if let Some(gas_limits) = &update.gas_limits {
+        if let Some(gas_price_limits) = &update.gas_price_limits {
             sqlx::query(
                 r#"
                 UPDATE relayers
-                SET    gas_limits = $2
+                SET    gas_price_limits = $2
                 WHERE  id = $1
                 "#,
             )
             .bind(id)
-            .bind(Json(gas_limits))
+            .bind(Json(gas_price_limits))
             .execute(tx.as_mut())
             .await?;
         }
@@ -132,7 +132,7 @@ impl Database {
                 nonce,
                 current_nonce,
                 max_inflight_txs,
-                gas_limits
+                gas_price_limits
             FROM relayers
             "#,
         )
@@ -152,7 +152,7 @@ impl Database {
                 nonce,
                 current_nonce,
                 max_inflight_txs,
-                gas_limits
+                gas_price_limits
             FROM relayers
             WHERE id = $1
             "#,
@@ -1090,7 +1090,7 @@ mod tests {
 
     use super::*;
     use crate::db::data::U256Wrapper;
-    use crate::types::RelayerGasLimit;
+    use crate::types::RelayerGasPriceLimit;
 
     async fn setup_db() -> eyre::Result<(Database, DockerContainerGuard)> {
         let db_container = postgres_docker_utils::setup().await?;
@@ -1230,14 +1230,14 @@ mod tests {
         assert_eq!(relayer.nonce, 0);
         assert_eq!(relayer.current_nonce, 0);
         assert_eq!(relayer.max_inflight_txs, 5);
-        assert_eq!(relayer.gas_limits.0, vec![]);
+        assert_eq!(relayer.gas_price_limits.0, vec![]);
 
         db.update_relayer(
             relayer_id,
             &RelayerUpdate {
                 relayer_name: None,
                 max_inflight_txs: Some(10),
-                gas_limits: Some(vec![RelayerGasLimit {
+                gas_price_limits: Some(vec![RelayerGasPriceLimit {
                     chain_id: 1,
                     value: U256Wrapper(U256::from(10_123u64)),
                 }]),
@@ -1256,8 +1256,8 @@ mod tests {
         assert_eq!(relayer.current_nonce, 0);
         assert_eq!(relayer.max_inflight_txs, 10);
         assert_eq!(
-            relayer.gas_limits.0,
-            vec![RelayerGasLimit {
+            relayer.gas_price_limits.0,
+            vec![RelayerGasPriceLimit {
                 chain_id: 1,
                 value: U256Wrapper(U256::from(10_123u64)),
             }]

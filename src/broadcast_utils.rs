@@ -25,7 +25,7 @@ pub async fn should_send_transaction(
 ) -> eyre::Result<bool> {
     let relayer = app.db.get_relayer(relayer_id).await?;
 
-    for gas_limit in &relayer.gas_limits.0 {
+    for gas_limit in &relayer.gas_price_limits.0 {
         let chain_fees = app
             .db
             .get_latest_block_fees_by_chain_id(relayer.chain_id)
