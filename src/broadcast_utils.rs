@@ -3,6 +3,7 @@ use eyre::ContextCompat;
 
 use self::gas_estimation::FeesEstimate;
 use crate::app::App;
+use crate::types::RelayerInfo;
 
 pub mod gas_estimation;
 
@@ -21,9 +22,17 @@ pub fn calculate_gas_fees_from_estimates(
 
 pub async fn should_send_transaction(
     app: &App,
-    relayer_id: &str,
+    relayer: &RelayerInfo,
 ) -> eyre::Result<bool> {
-    let relayer = app.db.get_relayer(relayer_id).await?;
+    if !relayer.enabled {
+        tracing::warn!(
+            relayer_id = relayer.id,
+            chain_id = relayer.chain_id,
+            "Relayer is disabled, skipping transactions broadcast"
+        );
+
+        return Ok(false);
+    }
 
     for gas_limit in &relayer.gas_price_limits.0 {
         let chain_fees = app

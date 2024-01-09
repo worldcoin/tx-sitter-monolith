@@ -87,7 +87,7 @@ mod tests {
                 value: U256Wrapper(U256::zero()),
                 chain_id: 1,
             }]),
-            enabled: true
+            enabled: true,
         };
 
         let json = serde_json::to_string_pretty(&info).unwrap();

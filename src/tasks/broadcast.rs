@@ -44,14 +44,16 @@ async fn broadcast_relayer_txs(
     app: &App,
     relayer_id: String,
     txs: Vec<UnsentTx>,
-) -> Result<(), eyre::Error> {
+) -> eyre::Result<()> {
     if txs.is_empty() {
         return Ok(());
     }
 
     tracing::info!(relayer_id, num_txs = txs.len(), "Broadcasting relayer txs");
 
-    if !should_send_transaction(app, &relayer_id).await? {
+    let relayer = app.db.get_relayer(&relayer_id).await?;
+
+    if !should_send_transaction(app, &relayer).await? {
         tracing::warn!(
             relayer_id = relayer_id,
             "Skipping transaction broadcasts"
