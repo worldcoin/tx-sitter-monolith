@@ -48,7 +48,7 @@ async fn escalate_relayer_txs(
     for tx in txs {
         tracing::info!(id = tx.id, tx.escalation_count, "Escalating tx");
 
-        if !should_send_transaction(&app, &relayer).await? {
+        if !should_send_transaction(app, &relayer).await? {
             tracing::warn!(id = tx.id, "Skipping transaction broadcast");
 
             return Ok(());
