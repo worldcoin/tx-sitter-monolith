@@ -14,9 +14,7 @@ use crate::types::{RelayerInfo, RelayerUpdate, TransactionPriority};
 
 pub mod data;
 
-use self::data::{
-    AddressWrapper, BlockFees, H256Wrapper, NetworkStats, ReadTxData, RpcKind,
-};
+use self::data::{BlockFees, H256Wrapper, NetworkStats, ReadTxData, RpcKind};
 pub use self::data::{TxForEscalation, TxStatus, UnsentTx};
 
 // Statically link in migration files
@@ -141,7 +139,10 @@ impl Database {
         .await?)
     }
 
-    pub async fn get_relayers_by_chain_id(&self, chain_id: u64) -> eyre::Result<Vec<RelayerInfo>> {
+    pub async fn get_relayers_by_chain_id(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Vec<RelayerInfo>> {
         Ok(sqlx::query_as(
             r#"
             SELECT

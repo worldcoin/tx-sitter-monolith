@@ -146,7 +146,11 @@ async fn broadcast_relayer_txs(
 
         match pending_tx {
             Ok(pending_tx) => {
-                tracing::info!(tx_id = tx.id, ?pending_tx, "Transaction sent successfully");
+                tracing::info!(
+                    tx_id = tx.id,
+                    ?pending_tx,
+                    "Transaction sent successfully"
+                );
             }
             Err(err) => {
                 tracing::error!(tx_id = tx.id, error = ?err, "Failed to send transaction");
