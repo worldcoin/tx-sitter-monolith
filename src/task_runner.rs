@@ -33,12 +33,12 @@ where
             let mut failures = vec![];
 
             loop {
-                tracing::info!(label, "Running task");
+                tracing::info!(task_label = label, "Running task");
 
                 let result = task(app.clone()).await;
 
                 if let Err(err) = result {
-                    tracing::error!(label, error = ?err, "Task failed");
+                    tracing::error!(task_label = label, error = ?err, "Task failed");
 
                     failures.push(Instant::now());
                     let backoff = determine_backoff(&failures);
@@ -47,7 +47,7 @@ where
 
                     prune_failures(&mut failures);
                 } else {
-                    tracing::info!(label, "Task finished");
+                    tracing::info!(task_label = label, "Task finished");
                     break;
                 }
             }

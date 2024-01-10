@@ -12,6 +12,7 @@ use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
+use crate::types::RelayerInfo;
 
 const BLOCK_FEE_HISTORY_SIZE: usize = 10;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];
@@ -48,7 +49,7 @@ pub async fn index_block(
 ) -> eyre::Result<()> {
     let block_number = block.number.context("Missing block number")?.as_u64();
 
-    tracing::info!(block_number, "Indexing block");
+    tracing::info!(chain_id, block_number, "Indexing block");
 
     let block_timestamp_seconds = block.timestamp.as_u64();
     let block_timestamp =
@@ -75,17 +76,18 @@ pub async fn index_block(
         [("chain_id", chain_id.to_string())];
     for tx in mined_txs {
         tracing::info!(
-            id = tx.0,
-            hash = ?tx.1,
+            tx_id = tx.0,
+            tx_hash = ?tx.1,
             "Tx mined"
         );
 
         metrics::increment_counter!("tx_mined", &metric_labels);
     }
 
-    let relayer_addresses = app.db.get_relayer_addresses(chain_id).await?;
+    let relayers = app.db.get_relayers_by_chain_id(chain_id).await?;
 
-    update_relayer_nonces(relayer_addresses, &app, rpc, chain_id).await?;
+    update_relayer_nonces(&relayers, &app, rpc, chain_id).await?;
+
     Ok(())
 }
 
@@ -138,14 +140,18 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             .await?;
 
         let Some(latest_block_number) = latest_block_number else {
-            tracing::info!("No blocks to estimate fees for");
+            tracing::info!(chain_id, "No blocks to estimate fees for");
 
             tokio::time::sleep(Duration::from_secs(2)).await;
 
             continue;
         };
 
-        tracing::info!(block_number = latest_block_number, "Estimating fees");
+        tracing::info!(
+            chain_id,
+            block_number = latest_block_number,
+            "Estimating fees"
+        );
 
         let fee_estimates = get_block_fee_estimates(&rpc, latest_block_number)
             .await
@@ -196,30 +202,31 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 }
 
 async fn update_relayer_nonces(
-    relayer_addresses: Vec<ethers::types::H160>,
+    relayers: &[RelayerInfo],
     app: &Arc<App>,
     rpc: &Provider<Http>,
     chain_id: u64,
 ) -> Result<(), eyre::Error> {
     let mut futures = FuturesUnordered::new();
 
-    for relayer_address in relayer_addresses {
+    for relayer in relayers {
         let app = app.clone();
 
         futures.push(async move {
             let tx_count =
-                rpc.get_transaction_count(relayer_address, None).await?;
+                rpc.get_transaction_count(relayer.address.0, None).await?;
 
             tracing::info!(
+                relayer_id = relayer.id,
                 nonce = ?tx_count,
-                ?relayer_address,
+                relayer_address = ?relayer.address.0,
                 "Updating relayer nonce"
             );
 
             app.db
                 .update_relayer_nonce(
                     chain_id,
-                    relayer_address,
+                    relayer.address.0,
                     tx_count.as_u64(),
                 )
                 .await?;
