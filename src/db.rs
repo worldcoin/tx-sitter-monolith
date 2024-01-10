@@ -14,9 +14,7 @@ use crate::types::{RelayerInfo, RelayerUpdate, TransactionPriority};
 
 pub mod data;
 
-use self::data::{
-    AddressWrapper, BlockFees, H256Wrapper, NetworkStats, ReadTxData, RpcKind,
-};
+use self::data::{BlockFees, H256Wrapper, NetworkStats, ReadTxData, RpcKind};
 pub use self::data::{TxForEscalation, TxStatus, UnsentTx};
 
 // Statically link in migration files
@@ -137,6 +135,32 @@ impl Database {
             FROM relayers
             "#,
         )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn get_relayers_by_chain_id(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Vec<RelayerInfo>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                name,
+                chain_id,
+                key_id,
+                address,
+                nonce,
+                current_nonce,
+                max_inflight_txs,
+                gas_price_limits,
+                enabled
+            FROM relayers
+            WHERE chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -779,24 +803,6 @@ impl Database {
         .bind(status_filter)
         .fetch_all(&self.pool)
         .await?)
-    }
-
-    pub async fn get_relayer_addresses(
-        &self,
-        chain_id: u64,
-    ) -> eyre::Result<Vec<Address>> {
-        let items: Vec<(AddressWrapper,)> = sqlx::query_as(
-            r#"
-            SELECT address
-            FROM   relayers
-            WHERE  chain_id = $1
-            "#,
-        )
-        .bind(chain_id as i64)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(items.into_iter().map(|(wrapper,)| wrapper.0).collect())
     }
 
     pub async fn update_relayer_nonce(

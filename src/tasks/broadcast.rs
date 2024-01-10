@@ -13,14 +13,17 @@ use itertools::Itertools;
 
 use crate::app::App;
 use crate::broadcast_utils::{
-    calculate_gas_fees_from_estimates, should_send_transaction,
+    calculate_gas_fees_from_estimates, should_send_relayer_transactions,
 };
 use crate::db::UnsentTx;
 
+const NO_TXS_SLEEP_DURATION: Duration = Duration::from_secs(2);
+
 pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
     loop {
-        // Get all unsent txs and broadcast
         let txs = app.db.get_unsent_txs().await?;
+        let num_txs = txs.len();
+
         let txs_by_relayer = sort_txs_by_relayer(txs);
 
         let mut futures = FuturesUnordered::new();
@@ -31,11 +34,13 @@ pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
 
         while let Some(result) = futures.next().await {
             if let Err(err) = result {
-                tracing::error!(error = ?err, "Failed broadcasting txs");
+                tracing::error!(error = ?err, "Failed broadcasting transactions");
             }
         }
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        if num_txs == 0 {
+            tokio::time::sleep(NO_TXS_SLEEP_DURATION).await;
+        }
     }
 }
 
@@ -49,21 +54,22 @@ async fn broadcast_relayer_txs(
         return Ok(());
     }
 
-    tracing::info!(relayer_id, num_txs = txs.len(), "Broadcasting relayer txs");
-
     let relayer = app.db.get_relayer(&relayer_id).await?;
 
-    if !should_send_transaction(app, &relayer).await? {
-        tracing::warn!(
-            relayer_id = relayer_id,
-            "Skipping transaction broadcasts"
-        );
+    if !should_send_relayer_transactions(app, &relayer).await? {
+        tracing::warn!(relayer_id = relayer_id, "Skipping relayer broadcasts");
 
         return Ok(());
     }
 
+    tracing::info!(
+        relayer_id,
+        num_txs = txs.len(),
+        "Broadcasting relayer transactions"
+    );
+
     for tx in txs {
-        tracing::info!(id = tx.id, "Sending tx");
+        tracing::info!(tx_id = tx.id, nonce = tx.nonce, "Sending transaction");
 
         let middleware = app
             .signer_middleware(tx.chain_id, tx.key_id.clone())
@@ -103,16 +109,22 @@ async fn broadcast_relayer_txs(
             .fill_transaction(&mut typed_transaction, None)
             .await?;
 
-        tracing::debug!(?tx.id, "Simulating tx");
+        tracing::debug!(tx_id = tx.id, "Simulating transaction");
 
         // Simulate the transaction
         match middleware.call(&typed_transaction, None).await {
             Ok(_) => {
-                tracing::info!(?tx.id, "Tx simulated successfully");
+                tracing::info!(
+                    tx_id = tx.id,
+                    "Transaction simulated successfully"
+                );
             }
             Err(err) => {
-                tracing::error!(?tx.id, error = ?err,  "Failed to simulate tx");
-                continue;
+                tracing::error!(tx_id = tx.id, error = ?err,  "Failed to simulate transaction");
+
+                // If we fail while broadcasting a tx with nonce `n`,
+                // it doesn't make sense to broadcast tx with nonce `n + 1`
+                return Ok(());
             }
         };
 
@@ -133,24 +145,25 @@ async fn broadcast_relayer_txs(
             )
             .await?;
 
-        tracing::debug!(?tx.id, "Sending tx");
+        tracing::debug!(tx_id = tx.id, "Sending transaction");
 
-        // TODO: Be smarter about error handling - a tx can fail to be sent
-        //       e.g. because the relayer is out of funds
-        //       but we don't want to retry it forever
         let pending_tx = middleware.send_raw_transaction(raw_signed_tx).await;
 
-        match pending_tx {
-            Ok(pending_tx) => {
-                tracing::info!(?pending_tx, "Tx sent successfully");
-            }
+        let pending_tx = match pending_tx {
+            Ok(pending_tx) => pending_tx,
             Err(err) => {
-                tracing::error!(?tx.id, error = ?err, "Failed to send tx");
+                tracing::error!(tx_id = tx.id, error = ?err, "Failed to send transaction");
                 continue;
             }
         };
 
-        tracing::info!(id = tx.id, hash = ?tx_hash, "Tx broadcast");
+        tracing::info!(
+            tx_id = tx.id,
+            tx_nonce = tx.nonce,
+            tx_hash = ?tx_hash,
+            ?pending_tx,
+            "Transaction broadcast"
+        );
     }
 
     Ok(())

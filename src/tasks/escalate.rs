@@ -10,7 +10,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
 use crate::app::App;
-use crate::broadcast_utils::should_send_transaction;
+use crate::broadcast_utils::should_send_relayer_transactions;
 use crate::db::TxForEscalation;
 
 pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
@@ -46,13 +46,20 @@ async fn escalate_relayer_txs(
     let relayer = app.db.get_relayer(&relayer_id).await?;
 
     for tx in txs {
-        tracing::info!(id = tx.id, tx.escalation_count, "Escalating tx");
-
-        if !should_send_transaction(app, &relayer).await? {
-            tracing::warn!(id = tx.id, "Skipping transaction broadcast");
+        if !should_send_relayer_transactions(app, &relayer).await? {
+            tracing::warn!(
+                relayer_id = relayer.id,
+                "Skipping relayer escalations"
+            );
 
             return Ok(());
         }
+
+        tracing::info!(
+            tx_id = tx.id,
+            escalation_count = tx.escalation_count,
+            "Escalating transaction"
+        );
 
         let escalation = tx.escalation_count + 1;
 
@@ -71,22 +78,16 @@ async fn escalate_relayer_txs(
         let increased_gas_price_percentage =
             factor + U256::from(20 * (1 + escalation));
 
-        let max_fee_per_gas_increase = tx.initial_max_fee_per_gas.0
-            * increased_gas_price_percentage
-            / factor;
+        let initial_max_fee_per_gas = tx.initial_max_fee_per_gas.0;
+
+        let max_fee_per_gas_increase =
+            initial_max_fee_per_gas * increased_gas_price_percentage / factor;
 
         let max_fee_per_gas =
-            tx.initial_max_fee_per_gas.0 + max_fee_per_gas_increase;
+            initial_max_fee_per_gas + max_fee_per_gas_increase;
 
         let max_priority_fee_per_gas =
             max_fee_per_gas - fees.fee_estimates.base_fee_per_gas;
-
-        tracing::warn!(
-            "Initial tx fees are max = {}, priority = {}",
-            tx.initial_max_fee_per_gas.0,
-            tx.initial_max_priority_fee_per_gas.0
-        );
-        tracing::warn!("Escalating with max fee = {max_fee_per_gas} and max priority = {max_priority_fee_per_gas}");
 
         let eip1559_tx = Eip1559TransactionRequest {
             from: None,
@@ -106,17 +107,25 @@ async fn escalate_relayer_txs(
             .await;
 
         let pending_tx = match pending_tx {
-            Ok(pending_tx) => {
-                tracing::info!(?pending_tx, "Tx sent successfully");
-                pending_tx
-            }
+            Ok(pending_tx) => pending_tx,
             Err(err) => {
-                tracing::error!(error = ?err, "Failed to send tx");
+                tracing::error!(tx_id = tx.id, error = ?err, "Failed to escalate transaction");
                 continue;
             }
         };
 
         let tx_hash = pending_tx.tx_hash();
+
+        tracing::info!(
+            tx_id = tx.id,
+            ?tx_hash,
+            ?initial_max_fee_per_gas,
+            ?max_fee_per_gas_increase,
+            ?max_fee_per_gas,
+            ?max_priority_fee_per_gas,
+            ?pending_tx,
+            "Escalated transaction"
+        );
 
         app.db
             .escalate_tx(
@@ -127,7 +136,7 @@ async fn escalate_relayer_txs(
             )
             .await?;
 
-        tracing::info!(id = ?tx.id, hash = ?tx_hash, "Tx escalated");
+        tracing::info!(tx_id = tx.id, "Escalated transaction saved");
     }
 
     Ok(())

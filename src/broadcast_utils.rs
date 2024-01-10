@@ -20,7 +20,7 @@ pub fn calculate_gas_fees_from_estimates(
     (max_fee_per_gas, max_priority_fee_per_gas)
 }
 
-pub async fn should_send_transaction(
+pub async fn should_send_relayer_transactions(
     app: &App,
     relayer: &RelayerInfo,
 ) -> eyre::Result<bool> {
@@ -43,6 +43,7 @@ pub async fn should_send_transaction(
 
         if chain_fees.gas_price > gas_limit.value.0 {
             tracing::warn!(
+                relayer_id = relayer.id,
                 chain_id = relayer.chain_id,
                 gas_price = ?chain_fees.gas_price,
                 gas_limit = ?gas_limit.value.0,
