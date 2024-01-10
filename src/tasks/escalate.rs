@@ -47,7 +47,10 @@ async fn escalate_relayer_txs(
 
     for tx in txs {
         if !should_send_relayer_transactions(app, &relayer).await? {
-            tracing::warn!(tx_id = tx.id, "Skipping transaction broadcast");
+            tracing::warn!(
+                relayer_id = relayer.id,
+                "Skipping relayer escalations"
+            );
 
             return Ok(());
         }

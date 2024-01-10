@@ -17,10 +17,14 @@ use crate::broadcast_utils::{
 };
 use crate::db::UnsentTx;
 
+const NO_TXS_SLEEP_DURATION: Duration = Duration::from_secs(2);
+
 pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
     loop {
         // Get all unsent txs and broadcast
         let txs = app.db.get_unsent_txs().await?;
+        let num_txs = txs.len();
+
         let txs_by_relayer = sort_txs_by_relayer(txs);
 
         let mut futures = FuturesUnordered::new();
@@ -35,7 +39,9 @@ pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
             }
         }
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        if num_txs == 0 {
+            tokio::time::sleep(NO_TXS_SLEEP_DURATION).await;
+        }
     }
 }
 
@@ -49,22 +55,19 @@ async fn broadcast_relayer_txs(
         return Ok(());
     }
 
+    let relayer = app.db.get_relayer(&relayer_id).await?;
+
+    if !should_send_relayer_transactions(app, &relayer).await? {
+        tracing::warn!(relayer_id = relayer_id, "Skipping relayer broadcasts");
+
+        return Ok(());
+    }
+
     tracing::info!(
         relayer_id,
         num_txs = txs.len(),
         "Broadcasting relayer transactions"
     );
-
-    let relayer = app.db.get_relayer(&relayer_id).await?;
-
-    if !should_send_relayer_transactions(app, &relayer).await? {
-        tracing::warn!(
-            relayer_id = relayer_id,
-            "Skipping transaction broadcasts"
-        );
-
-        return Ok(());
-    }
 
     for tx in txs {
         tracing::info!(tx_id = tx.id, nonce = tx.nonce, "Sending transaction");
@@ -119,7 +122,10 @@ async fn broadcast_relayer_txs(
             }
             Err(err) => {
                 tracing::error!(tx_id = tx.id, error = ?err,  "Failed to simulate transaction");
-                continue;
+
+                // If we fail while broadcasting a tx with nonce `n`,
+                // it doesn't make sense to broadcast tx with nonce `n + 1`
+                return Ok(());
             }
         };
 
@@ -144,21 +150,21 @@ async fn broadcast_relayer_txs(
 
         let pending_tx = middleware.send_raw_transaction(raw_signed_tx).await;
 
-        match pending_tx {
-            Ok(pending_tx) => {
-                tracing::info!(
-                    tx_id = tx.id,
-                    ?pending_tx,
-                    "Transaction sent successfully"
-                );
-            }
+        let pending_tx = match pending_tx {
+            Ok(pending_tx) => pending_tx,
             Err(err) => {
                 tracing::error!(tx_id = tx.id, error = ?err, "Failed to send transaction");
                 continue;
             }
         };
 
-        tracing::info!(tx_id = tx.id, tx_hash = ?tx_hash, "Transaction broadcast");
+        tracing::info!(
+            tx_id = tx.id,
+            tx_nonce = tx.nonce,
+            tx_hash = ?tx_hash,
+            ?pending_tx,
+            "Transaction broadcast"
+        );
     }
 
     Ok(())
