@@ -21,7 +21,6 @@ const NO_TXS_SLEEP_DURATION: Duration = Duration::from_secs(2);
 
 pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
     loop {
-        // Get all unsent txs and broadcast
         let txs = app.db.get_unsent_txs().await?;
         let num_txs = txs.len();
 
