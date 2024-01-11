@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ethers::providers::Middleware;
+use ethers::middleware::gas_oracle::MiddlewareError;
+use ethers::middleware::signer::SignerMiddlewareError;
+use ethers::providers::{Middleware, ProviderError};
 use ethers::types::transaction::eip2718::TypedTransaction;
 use ethers::types::transaction::eip2930::AccessList;
 use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress, H256};
@@ -120,11 +122,30 @@ async fn broadcast_relayer_txs(
                 );
             }
             Err(err) => {
-                tracing::error!(tx_id = tx.id, error = ?err,  "Failed to simulate transaction");
+                match err {
+                    SignerMiddlewareError::MiddlewareError(
+                        ProviderError::JsonRpcClientError(err),
+                    ) => {
+                        // In the case that the transaction reverted during simulation, we should still continue to broadcast.
+                        tracing::warn!(
+                            tx_id = tx.id,
+                            error = ?err,
+                            "Transaction reverted during simulation"
+                        );
+                    }
 
-                // If we fail while broadcasting a tx with nonce `n`,
-                // it doesn't make sense to broadcast tx with nonce `n + 1`
-                return Ok(());
+                    _ => {
+                        tracing::error!(
+                            tx_id = tx.id,
+                            error = ?err,
+                            "Failed to simulate transaction"
+                        );
+
+                        // If we fail while broadcasting a tx with nonce `n`,
+                        // it doesn't make sense to broadcast tx with nonce `n + 1`
+                        return Ok(());
+                    }
+                }
             }
         };
 
