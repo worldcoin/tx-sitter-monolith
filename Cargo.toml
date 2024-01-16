@@ -9,13 +9,12 @@ members = ["crates/*"]
 [dependencies]
 # Third Party
 ## AWS
-aws-config = { version = "0.57.2" }
-aws-sdk-kms = "0.36.0"
-aws-smithy-types = "0.57.2"
-aws-types = "0.57.2"
-aws-credential-types = { version = "0.57.2", features = [
-    "hardcoded-credentials",
-] }
+aws-config = { version = "1" }
+aws-sdk-kms = "1"
+aws-smithy-types = "1"
+aws-types = "1"
+aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
+aws-smithy-runtime-api = "1"
 
 ## Other
 serde = "1.0.136"
