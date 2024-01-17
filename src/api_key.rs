@@ -3,40 +3,37 @@ use std::str::FromStr;
 
 use base64::Engine;
 use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use sha3::{Digest, Sha3_256};
+
+const SECRET_LEN: usize = 16;
+const UUID_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiKey {
     pub relayer_id: String,
-    pub api_key: [u8; 32],
+    pub secret: [u8; SECRET_LEN],
 }
 
 impl ApiKey {
-    pub fn new(relayer_id: impl ToString, key: [u8; 32]) -> Self {
+    pub fn new(relayer_id: impl ToString, secret: [u8; SECRET_LEN]) -> Self {
         let relayer_id = relayer_id.to_string();
 
-        Self {
-            relayer_id,
-            api_key: key,
-        }
+        Self { relayer_id, secret }
     }
 
     pub fn random(relayer_id: impl ToString) -> Self {
         let relayer_id = relayer_id.to_string();
 
-        let mut api_key = [0u8; 32];
-        OsRng.fill_bytes(&mut api_key);
-
         Self {
             relayer_id,
-            api_key,
+            secret: OsRng.gen(),
         }
     }
 
     pub fn api_key_hash(&self) -> [u8; 32] {
-        Sha3_256::digest(self.api_key).into()
+        Sha3_256::digest(self.secret).into()
     }
 }
 
@@ -66,32 +63,31 @@ impl FromStr for ApiKey {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let buffer = base64::prelude::BASE64_URL_SAFE.decode(s)?;
 
-        if buffer.len() != 48 {
+        if buffer.len() != UUID_LEN + SECRET_LEN {
             return Err(eyre::eyre!("invalid api key"));
         }
 
-        let relayer_id = uuid::Uuid::from_slice(&buffer[..16])?;
+        let relayer_id = uuid::Uuid::from_slice(&buffer[..UUID_LEN])?;
         let relayer_id = relayer_id.to_string();
 
-        let mut api_key = [0u8; 32];
-        api_key.copy_from_slice(&buffer[16..]);
+        let api_key = buffer[UUID_LEN..].try_into()?;
 
         Ok(Self {
             relayer_id,
-            api_key,
+            secret: api_key,
         })
     }
 }
 
 impl std::fmt::Display for ApiKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut buffer = [0u8; 48];
+        let mut buffer = [0u8; 32];
 
         let relayer_id = uuid::Uuid::parse_str(&self.relayer_id)
             .map_err(|_| std::fmt::Error)?;
 
-        buffer[..16].copy_from_slice(relayer_id.as_bytes());
-        buffer[16..].copy_from_slice(&self.api_key);
+        buffer[..UUID_LEN].copy_from_slice(relayer_id.as_bytes());
+        buffer[UUID_LEN..].copy_from_slice(&self.secret);
 
         let encoded = base64::prelude::BASE64_URL_SAFE.encode(buffer);
 
@@ -102,15 +98,11 @@ impl std::fmt::Display for ApiKey {
 #[cfg(test)]
 mod tests {
     use rand::rngs::OsRng;
-    use rand::RngCore;
 
     use super::*;
 
     fn random_api_key() -> ApiKey {
-        let mut api_key = [0u8; 32];
-        OsRng.fill_bytes(&mut api_key);
-
-        ApiKey::new(uuid::Uuid::new_v4().to_string(), api_key)
+        ApiKey::new(uuid::Uuid::new_v4().to_string(), OsRng.gen())
     }
 
     #[test]
