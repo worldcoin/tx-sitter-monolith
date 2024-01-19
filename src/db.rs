@@ -7,6 +7,7 @@ use ethers::types::{Address, H256, U256};
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::types::{BigDecimal, Json};
 use sqlx::{Pool, Postgres, Row};
+use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
@@ -39,6 +40,7 @@ impl Database {
         Ok(Self { pool })
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn create_relayer(
         &self,
         id: &str,
@@ -64,6 +66,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn update_relayer(
         &self,
         id: &str,
@@ -188,6 +191,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn create_transaction(
         &self,
         tx_id: &str,
@@ -257,6 +261,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn insert_tx_broadcast(
         &self,
         tx_id: &str,
@@ -402,6 +407,7 @@ impl Database {
         Ok(row.try_get::<bool, _>(0)?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn save_block(
         &self,
         block_number: u64,
@@ -464,6 +470,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn save_block_fees(
         &self,
         block_number: u64,
@@ -490,6 +497,7 @@ impl Database {
     }
 
     /// Returns a list of soft reorged txs
+    #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_soft_reorgs(&self) -> eyre::Result<Vec<String>> {
         let mut tx = self.pool.begin().await?;
 
@@ -532,6 +540,7 @@ impl Database {
     }
 
     /// Returns a list of hard reorged txs
+    #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_hard_reorgs(&self) -> eyre::Result<Vec<String>> {
         let mut tx = self.pool.begin().await?;
 
@@ -591,6 +600,7 @@ impl Database {
     /// Marks txs as mined if the associated tx hash is present in a block
     ///
     /// returns the tx ids and hashes for all mined txs
+    #[instrument(skip(self), level = "debug", ret)]
     pub async fn mine_txs(
         &self,
         chain_id: u64,
@@ -630,6 +640,7 @@ impl Database {
             .collect())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn finalize_txs(
         &self,
         finalization_timestmap: DateTime<Utc>,
@@ -700,6 +711,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn escalate_tx(
         &self,
         tx_id: &str,
@@ -805,6 +817,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn update_relayer_nonce(
         &self,
         chain_id: u64,
@@ -829,6 +842,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn prune_blocks(
         &self,
         timestamp: DateTime<Utc>,
@@ -846,6 +860,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn prune_txs(
         &self,
         timestamp: DateTime<Utc>,
@@ -868,6 +883,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn create_network(
         &self,
         chain_id: u64,
@@ -943,6 +959,7 @@ impl Database {
         Ok(items.into_iter().map(|(x,)| x as u64).collect())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn create_api_key(
         &self,
         relayer_id: &str,
@@ -1061,6 +1078,7 @@ impl Database {
         })
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn purge_unsent_txs(&self, relayer_id: &str) -> eyre::Result<()> {
         sqlx::query(
             r#"
