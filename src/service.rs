@@ -125,8 +125,8 @@ async fn initialize_predefined_values(
 
     app.db
         .create_api_key(
-            &predefined.relayer.api_key.relayer_id,
-            predefined.relayer.api_key.api_key_hash(),
+            predefined.relayer.api_key.relayer_id(),
+            predefined.relayer.api_key.api_key_secret_hash(),
         )
         .await?;
 

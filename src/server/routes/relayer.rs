@@ -131,7 +131,7 @@ pub async fn relayer_rpc(
         return Err(ApiError::Unauthorized);
     }
 
-    let relayer_info = app.db.get_relayer(&api_token.relayer_id).await?;
+    let relayer_info = app.db.get_relayer(api_token.relayer_id()).await?;
 
     // TODO: Cache?
     let http_provider = app.http_provider(relayer_info.chain_id).await?;
@@ -161,7 +161,7 @@ pub async fn create_relayer_api_key(
     let api_key = ApiKey::random(&relayer_id);
 
     app.db
-        .create_api_key(&relayer_id, api_key.api_key_hash())
+        .create_api_key(&relayer_id, api_key.api_key_secret_hash())
         .await?;
 
     Ok(Json(CreateApiKeyResponse { api_key }))

@@ -81,7 +81,10 @@ impl App {
         api_token: &ApiKey,
     ) -> eyre::Result<bool> {
         self.db
-            .is_api_key_valid(&api_token.relayer_id, api_token.api_key_hash())
+            .is_api_key_valid(
+                api_token.relayer_id(),
+                api_token.api_key_secret_hash(),
+            )
             .await
     }
 }

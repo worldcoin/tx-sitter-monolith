@@ -98,7 +98,7 @@ pub async fn send_tx(
             req.value,
             req.gas_limit,
             req.priority,
-            &api_token.relayer_id,
+            api_token.relayer_id(),
         )
         .await?;
 
@@ -120,13 +120,13 @@ pub async fn get_txs(
     let txs = match query.status {
         Some(GetTxResponseStatus::TxStatus(status)) => {
             app.db
-                .read_txs(&api_token.relayer_id, Some(Some(status)))
+                .read_txs(api_token.relayer_id(), Some(Some(status)))
                 .await?
         }
         Some(GetTxResponseStatus::Unsent(_)) => {
-            app.db.read_txs(&api_token.relayer_id, Some(None)).await?
+            app.db.read_txs(api_token.relayer_id(), Some(None)).await?
         }
-        None => app.db.read_txs(&api_token.relayer_id, None).await?,
+        None => app.db.read_txs(api_token.relayer_id(), None).await?,
     };
 
     let txs =
