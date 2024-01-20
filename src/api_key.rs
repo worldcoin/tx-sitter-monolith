@@ -12,10 +12,37 @@ const MIN_SECRET_LEN: usize = 16;
 const MAX_SECRET_LEN: usize = 32;
 const UUID_LEN: usize = 16;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Eq, PartialEq)]
+struct ApiSecret(Vec<u8>);
+
+/// Derive Serialize manually to avoid leaking the secret.
+impl Serialize for ApiSecret {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&"***")
+    }
+}
+
+/// Derive Debug manually to avoid leaking the secret.
+impl std::fmt::Debug for ApiSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ApiSecret").field(&"***").finish()
+    }
+}
+
+/// Zero out the secret when dropped.
+impl Drop for ApiSecret {
+    fn drop(&mut self) {
+        self.0.iter_mut().for_each(|b| *b = 0);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApiKey {
     relayer_id: String,
-    secret: Vec<u8>,
+    secret: ApiSecret,
 }
 
 impl ApiKey {
@@ -28,7 +55,10 @@ impl ApiKey {
         }
         let relayer_id = relayer_id.to_string();
 
-        Ok(Self { relayer_id, secret })
+        Ok(Self {
+            relayer_id,
+            secret: ApiSecret(secret),
+        })
     }
 
     pub fn random(relayer_id: impl ToString) -> Self {
@@ -36,12 +66,12 @@ impl ApiKey {
 
         Self {
             relayer_id,
-            secret: OsRng.gen::<[u8; DEFAULT_SECRET_LEN]>().into(),
+            secret: ApiSecret(OsRng.gen::<[u8; DEFAULT_SECRET_LEN]>().into()),
         }
     }
 
     pub fn api_key_secret_hash(&self) -> [u8; 32] {
-        Sha3_256::digest(self.secret.clone()).into()
+        Sha3_256::digest(self.secret.0.clone()).into()
     }
 
     pub fn relayer_id(&self) -> &str {
@@ -54,7 +84,8 @@ impl Serialize for ApiKey {
         &self,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
+        serializer
+            .serialize_str(&self.reveal().map_err(serde::ser::Error::custom)?)
     }
 }
 
@@ -84,14 +115,14 @@ impl FromStr for ApiKey {
         let relayer_id = uuid::Uuid::from_slice(&buffer[..UUID_LEN])?;
         let relayer_id = relayer_id.to_string();
 
-        let secret = buffer[UUID_LEN..].into();
+        let secret = ApiSecret(buffer[UUID_LEN..].into());
 
         Ok(Self { relayer_id, secret })
     }
 }
 
-impl std::fmt::Display for ApiKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ApiKey {
+    pub fn reveal(&self) -> eyre::Result<String> {
         let relayer_id = uuid::Uuid::parse_str(&self.relayer_id)
             .map_err(|_| std::fmt::Error)?;
 
@@ -99,12 +130,10 @@ impl std::fmt::Display for ApiKey {
             .as_bytes()
             .iter()
             .cloned()
-            .chain(self.secret.iter().cloned())
+            .chain(self.secret.0.iter().cloned())
             .collect::<Vec<_>>();
 
-        let encoded = base64::prelude::BASE64_URL_SAFE.encode(bytes);
-
-        write!(f, "{}", encoded)
+        Ok(base64::prelude::BASE64_URL_SAFE.encode(bytes))
     }
 }
 
@@ -127,7 +156,7 @@ mod tests {
         OsRng.fill(&mut buf[..]);
         ApiKey {
             relayer_id: uuid::Uuid::new_v4().to_string(),
-            secret: buf.into(),
+            secret: ApiSecret(buf.into()),
         }
     }
 
@@ -136,7 +165,7 @@ mod tests {
         OsRng.fill(&mut buf[..]);
         ApiKey {
             relayer_id: uuid::Uuid::new_v4().to_string(),
-            secret: buf.into(),
+            secret: ApiSecret(buf.into()),
         }
     }
 
@@ -144,33 +173,44 @@ mod tests {
     fn from_to_str() {
         let api_key = random_api_key();
 
-        let api_key_str = api_key.to_string();
+        let api_key_str = api_key.reveal().unwrap();
 
         println!("api_key_str = {api_key_str}");
 
         let api_key_parsed = api_key_str.parse::<ApiKey>().unwrap();
 
-        assert_eq!(api_key, api_key_parsed);
+        assert_eq!(api_key.relayer_id, api_key_parsed.relayer_id);
+        assert_eq!(api_key.secret, api_key_parsed.secret);
+    }
+
+    #[test]
+    fn assert_api_secret_debug() {
+        let api_secret = random_api_key().secret;
+        assert_eq!(&format!("{:?}", api_secret), "ApiSecret(\"***\")");
     }
 
     #[test]
     fn assert_api_key_length_validation() {
         let long_api_key = invalid_long_api_key();
+
         let _ = ApiKey::new(
             long_api_key.relayer_id.clone(),
-            long_api_key.secret.clone(),
+            long_api_key.secret.0.clone(),
         )
         .expect_err("long api key should be invalid");
-        let _ = ApiKey::from_str(long_api_key.to_string().as_str())
+
+        let _ = ApiKey::from_str(&long_api_key.reveal().unwrap())
             .expect_err("long api key should be invalid");
 
         let short_api_key = invalid_short_api_key();
+
         let _ = ApiKey::new(
             short_api_key.relayer_id.clone(),
-            short_api_key.secret.clone(),
+            short_api_key.secret.0.clone(),
         )
         .expect_err("short api key should be invalid");
-        let _ = ApiKey::from_str(short_api_key.to_string().as_str())
+
+        let _ = ApiKey::from_str(&short_api_key.reveal().unwrap())
             .expect_err("short api key should be invalid");
     }
 

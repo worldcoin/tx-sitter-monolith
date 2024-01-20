@@ -86,8 +86,11 @@ impl TxSitterClient {
         api_key: &ApiKey,
         req: &SendTxRequest,
     ) -> eyre::Result<SendTxResponse> {
-        self.json_post(&format!("{}/1/api/{api_key}/tx", self.url), req)
-            .await
+        self.json_post(
+            &format!("{}/1/api/{}/tx", self.url, api_key.reveal()?),
+            req,
+        )
+        .await
     }
 
     pub async fn get_tx(
@@ -96,9 +99,9 @@ impl TxSitterClient {
         tx_id: &str,
     ) -> eyre::Result<GetTxResponse> {
         self.json_get(&format!(
-            "{}/1/api/{api_key}/tx/{tx_id}",
+            "{}/1/api/{}/tx/{tx_id}",
             self.url,
-            api_key = api_key,
+            api_key.reveal()?,
             tx_id = tx_id
         ))
         .await

@@ -121,7 +121,7 @@ pub async fn purge_unsent_txs(
     Ok(())
 }
 
-#[tracing::instrument(skip(app))]
+#[tracing::instrument(skip(app, api_token))]
 pub async fn relayer_rpc(
     State(app): State<Arc<App>>,
     Path(api_token): Path<ApiKey>,

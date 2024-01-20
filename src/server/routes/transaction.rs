@@ -74,7 +74,7 @@ pub enum UnsentStatus {
     Unsent,
 }
 
-#[tracing::instrument(skip(app))]
+#[tracing::instrument(skip(app, api_token))]
 pub async fn send_tx(
     State(app): State<Arc<App>>,
     Path(api_token): Path<ApiKey>,
@@ -152,7 +152,7 @@ pub async fn get_txs(
     Ok(Json(txs))
 }
 
-#[tracing::instrument(skip(app))]
+#[tracing::instrument(skip(app, api_token))]
 pub async fn get_tx(
     State(app): State<Arc<App>>,
     Path((api_token, tx_id)): Path<(ApiKey, String)>,
