@@ -74,7 +74,7 @@ pub enum UnsentStatus {
     Unsent,
 }
 
-#[tracing::instrument(skip(app))]
+#[tracing::instrument(skip(app, api_token))]
 pub async fn send_tx(
     State(app): State<Arc<App>>,
     Path(api_token): Path<ApiKey>,
@@ -98,7 +98,7 @@ pub async fn send_tx(
             req.value,
             req.gas_limit,
             req.priority,
-            &api_token.relayer_id,
+            api_token.relayer_id(),
         )
         .await?;
 
@@ -120,13 +120,13 @@ pub async fn get_txs(
     let txs = match query.status {
         Some(GetTxResponseStatus::TxStatus(status)) => {
             app.db
-                .read_txs(&api_token.relayer_id, Some(Some(status)))
+                .read_txs(api_token.relayer_id(), Some(Some(status)))
                 .await?
         }
         Some(GetTxResponseStatus::Unsent(_)) => {
-            app.db.read_txs(&api_token.relayer_id, Some(None)).await?
+            app.db.read_txs(api_token.relayer_id(), Some(None)).await?
         }
-        None => app.db.read_txs(&api_token.relayer_id, None).await?,
+        None => app.db.read_txs(api_token.relayer_id(), None).await?,
     };
 
     let txs =
@@ -152,7 +152,7 @@ pub async fn get_txs(
     Ok(Json(txs))
 }
 
-#[tracing::instrument(skip(app))]
+#[tracing::instrument(skip(app, api_token))]
 pub async fn get_tx(
     State(app): State<Arc<App>>,
     Path((api_token, tx_id)): Path<(ApiKey, String)>,

@@ -15,8 +15,11 @@ async fn rpc_access() -> eyre::Result<()> {
     let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
 
-    let rpc_url =
-        format!("http://{}/1/api/{api_key}/rpc", service.local_addr());
+    let rpc_url = format!(
+        "http://{}/1/api/{}/rpc",
+        service.local_addr(),
+        api_key.reveal()?
+    );
 
     let provider = Provider::new(Http::new(rpc_url.parse::<Url>()?));
 
