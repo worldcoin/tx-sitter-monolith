@@ -13,10 +13,12 @@ use self::routes::relayer::{
     purge_unsent_txs, relayer_rpc, update_relayer,
 };
 use self::routes::transaction::{get_tx, get_txs, send_tx};
+use self::trace_layer::MatchedPathMakeSpan;
 use crate::app::App;
 
 mod middleware;
 pub mod routes;
+mod trace_layer;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
@@ -99,7 +101,10 @@ pub async fn spawn_server(
     let router = Router::new()
         .nest("/1", v1_routes)
         .route("/health", get(routes::health))
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(MatchedPathMakeSpan),
+        )
         .layer(axum::middleware::from_fn(middleware::log_response));
 
     let server = axum::Server::bind(&app.config.server.host)
