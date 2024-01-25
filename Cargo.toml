@@ -64,7 +64,7 @@ sqlx = { version = "0.7.2", features = [
 strum = { version = "0.25.0", features = ["derive"] }
 
 # Company
-telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", branch = "dzejkop/unnest-fields" }
+telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "ec8ba6d4da45fdb98f900d8d4c8e1a09186894b4" }
 thiserror = "1.0.50"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 toml = "0.8.8"
