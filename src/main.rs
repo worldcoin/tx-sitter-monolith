@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use config::FileFormat;
 use telemetry_batteries::metrics::statsd::StatsdBattery;
-use telemetry_batteries::metrics::MetricsBattery;
-use telemetry_batteries::tracing::batteries::datadog::DatadogBattery;
+use telemetry_batteries::tracing::datadog::DatadogBattery;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -59,11 +58,7 @@ async fn main() -> eyre::Result<()> {
     let config = settings.try_deserialize::<Config>()?;
 
     if config.service.datadog_enabled {
-        let datadog_battery =
-            DatadogBattery::new(None, "tx-sitter-monolith", None)
-                .with_location();
-
-        datadog_battery.init()?;
+        DatadogBattery::init(None, "tx-sitter-monolith", None, true);
     } else {
         tracing_subscriber::registry()
             .with(tracing_subscriber::fmt::layer().pretty().compact())
@@ -72,15 +67,13 @@ async fn main() -> eyre::Result<()> {
     }
 
     if config.service.statsd_enabled {
-        let statsd_battery = StatsdBattery::new(
+        StatsdBattery::init(
             "localhost",
             8125,
             5000,
             1024,
             Some("tx_sitter_monolith"),
         )?;
-
-        statsd_battery.init()?;
     }
 
     let service = Service::new(config).await?;
