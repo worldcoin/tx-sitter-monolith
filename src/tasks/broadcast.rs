@@ -109,33 +109,14 @@ async fn broadcast_relayer_txs(
             .fill_transaction(&mut typed_transaction, None)
             .await?;
 
-        tracing::debug!(tx_id = tx.id, "Simulating transaction");
-
-        // Simulate the transaction
-        match middleware.call(&typed_transaction, None).await {
-            Ok(_) => {
-                tracing::info!(
-                    tx_id = tx.id,
-                    "Transaction simulated successfully"
-                );
-            }
-            Err(err) => {
-                tracing::error!(tx_id = tx.id, error = ?err,  "Failed to simulate transaction");
-
-                // If we fail while broadcasting a tx with nonce `n`,
-                // it doesn't make sense to broadcast tx with nonce `n + 1`
-                return Ok(());
-            }
-        };
-
         // Get the raw signed tx and derive the tx hash
         let raw_signed_tx = middleware
             .signer()
             .raw_signed_tx(&typed_transaction)
             .await?;
-
         let tx_hash = H256::from(ethers::utils::keccak256(&raw_signed_tx));
 
+        tracing::debug!(tx_id = tx.id, "Saving transaction");
         app.db
             .insert_tx_broadcast(
                 &tx.id,
