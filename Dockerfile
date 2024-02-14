@@ -26,6 +26,7 @@ RUN mkdir -p ./src
 RUN mkdir -p ./crates/postgres-docker-utils/src
 
 # Copy only Cargo.toml for better caching
+COPY .cargo/config.toml .cargo/config.toml
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./crates/postgres-docker-utils/Cargo.toml ./crates/postgres-docker-utils/Cargo.toml
