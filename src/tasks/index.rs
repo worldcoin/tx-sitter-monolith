@@ -41,6 +41,7 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     }
 }
 
+#[tracing::instrument(skip(app, rpc, block))]
 pub async fn index_block(
     app: Arc<App>,
     chain_id: u64,
@@ -91,6 +92,7 @@ pub async fn index_block(
     Ok(())
 }
 
+#[tracing::instrument(skip(app, rpc, latest_block))]
 pub async fn backfill_to_block(
     app: Arc<App>,
     chain_id: u64,
@@ -203,41 +205,48 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 
 async fn update_relayer_nonces(
     relayers: &[RelayerInfo],
-    app: &Arc<App>,
+    app: &App,
     rpc: &Provider<Http>,
     chain_id: u64,
 ) -> Result<(), eyre::Error> {
     let mut futures = FuturesUnordered::new();
 
     for relayer in relayers {
-        let app = app.clone();
-
-        futures.push(async move {
-            let tx_count =
-                rpc.get_transaction_count(relayer.address.0, None).await?;
-
-            tracing::info!(
-                relayer_id = relayer.id,
-                nonce = ?tx_count,
-                relayer_address = ?relayer.address.0,
-                "Updating relayer nonce"
-            );
-
-            app.db
-                .update_relayer_nonce(
-                    chain_id,
-                    relayer.address.0,
-                    tx_count.as_u64(),
-                )
-                .await?;
-
-            Result::<(), eyre::Report>::Ok(())
-        })
+        futures.push(update_relayer_nonce(app, rpc, relayer, chain_id));
     }
 
     while let Some(result) = futures.next().await {
         result?;
     }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip(app, rpc, relayer), fields(relayer_id = relayer.id))]
+async fn update_relayer_nonce(
+    app: &App,
+    rpc: &Provider<Http>,
+    relayer: &RelayerInfo,
+    chain_id: u64,
+) -> eyre::Result<()> {
+    let tx_count = rpc.get_transaction_count(relayer.address.0, None).await?;
+
+    if tx_count.as_u64() == relayer.current_nonce {
+        return Ok(());
+    }
+
+    tracing::info!(
+        relayer_id = relayer.id,
+        current_nonce = %relayer.current_nonce,
+        nonce = %relayer.nonce,
+        new_current_nonce = %tx_count.as_u64(),
+        relayer_address = ?relayer.address.0,
+        "Updating relayer nonce"
+    );
+
+    app.db
+        .update_relayer_nonce(chain_id, relayer.address.0, tx_count.as_u64())
+        .await?;
 
     Ok(())
 }

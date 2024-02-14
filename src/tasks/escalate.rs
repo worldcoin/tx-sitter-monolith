@@ -12,6 +12,7 @@ use futures::StreamExt;
 use crate::app::App;
 use crate::broadcast_utils::should_send_relayer_transactions;
 use crate::db::TxForEscalation;
+use crate::types::RelayerInfo;
 
 pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
     loop {
@@ -38,6 +39,7 @@ pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
     }
 }
 
+#[tracing::instrument(skip(app, txs))]
 async fn escalate_relayer_txs(
     app: &App,
     relayer_id: String,
@@ -45,99 +47,105 @@ async fn escalate_relayer_txs(
 ) -> eyre::Result<()> {
     let relayer = app.db.get_relayer(&relayer_id).await?;
 
-    for tx in txs {
-        if !should_send_relayer_transactions(app, &relayer).await? {
-            tracing::warn!(
-                relayer_id = relayer.id,
-                "Skipping relayer escalations"
-            );
+    if txs.is_empty() {
+        tracing::info!("No transactions to escalate");
+    }
 
+    for tx in txs {
+        escalate_relayer_tx(app, &relayer, tx).await?;
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip(app, relayer, tx), fields(tx_id = tx.id))]
+async fn escalate_relayer_tx(
+    app: &App,
+    relayer: &RelayerInfo,
+    tx: TxForEscalation,
+) -> eyre::Result<()> {
+    if !should_send_relayer_transactions(app, relayer).await? {
+        tracing::warn!(relayer_id = relayer.id, "Skipping relayer escalations");
+
+        return Ok(());
+    }
+
+    tracing::info!(
+        tx_id = tx.id,
+        escalation_count = tx.escalation_count,
+        "Escalating transaction"
+    );
+
+    let escalation = tx.escalation_count + 1;
+
+    let middleware = app
+        .signer_middleware(tx.chain_id, tx.key_id.clone())
+        .await?;
+
+    let fees = app
+        .db
+        .get_latest_block_fees_by_chain_id(tx.chain_id)
+        .await?
+        .context("Missing block")?;
+
+    // Min increase of 20% on the priority fee required for a replacement tx
+    let factor = U256::from(100);
+    let increased_gas_price_percentage =
+        factor + U256::from(20 * (1 + escalation));
+
+    let initial_max_fee_per_gas = tx.initial_max_fee_per_gas.0;
+
+    let max_fee_per_gas_increase =
+        initial_max_fee_per_gas * increased_gas_price_percentage / factor;
+
+    let max_fee_per_gas = initial_max_fee_per_gas + max_fee_per_gas_increase;
+
+    let max_priority_fee_per_gas =
+        max_fee_per_gas - fees.fee_estimates.base_fee_per_gas;
+
+    let eip1559_tx = Eip1559TransactionRequest {
+        from: None,
+        to: Some(NameOrAddress::from(Address::from(tx.tx_to.0))),
+        gas: Some(tx.gas_limit.0),
+        value: Some(tx.value.0),
+        data: Some(tx.data.into()),
+        nonce: Some(tx.nonce.into()),
+        access_list: AccessList::default(),
+        max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
+        max_fee_per_gas: Some(max_fee_per_gas),
+        chain_id: Some(tx.chain_id.into()),
+    };
+
+    let pending_tx = middleware
+        .send_transaction(TypedTransaction::Eip1559(eip1559_tx), None)
+        .await;
+
+    let pending_tx = match pending_tx {
+        Ok(pending_tx) => pending_tx,
+        Err(err) => {
+            tracing::error!(tx_id = tx.id, error = ?err, "Failed to escalate transaction");
             return Ok(());
         }
+    };
 
-        tracing::info!(
-            tx_id = tx.id,
-            escalation_count = tx.escalation_count,
-            "Escalating transaction"
-        );
+    let tx_hash = pending_tx.tx_hash();
 
-        let escalation = tx.escalation_count + 1;
+    tracing::info!(
+        tx_id = tx.id,
+        ?tx_hash,
+        ?initial_max_fee_per_gas,
+        ?max_fee_per_gas_increase,
+        ?max_fee_per_gas,
+        ?max_priority_fee_per_gas,
+        ?pending_tx,
+        "Escalated transaction"
+    );
 
-        let middleware = app
-            .signer_middleware(tx.chain_id, tx.key_id.clone())
-            .await?;
+    app.db
+        .escalate_tx(&tx.id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
+        .await?;
 
-        let fees = app
-            .db
-            .get_latest_block_fees_by_chain_id(tx.chain_id)
-            .await?
-            .context("Missing block")?;
-
-        // Min increase of 20% on the priority fee required for a replacement tx
-        let factor = U256::from(100);
-        let increased_gas_price_percentage =
-            factor + U256::from(20 * (1 + escalation));
-
-        let initial_max_fee_per_gas = tx.initial_max_fee_per_gas.0;
-
-        let max_fee_per_gas_increase =
-            initial_max_fee_per_gas * increased_gas_price_percentage / factor;
-
-        let max_fee_per_gas =
-            initial_max_fee_per_gas + max_fee_per_gas_increase;
-
-        let max_priority_fee_per_gas =
-            max_fee_per_gas - fees.fee_estimates.base_fee_per_gas;
-
-        let eip1559_tx = Eip1559TransactionRequest {
-            from: None,
-            to: Some(NameOrAddress::from(Address::from(tx.tx_to.0))),
-            gas: Some(tx.gas_limit.0),
-            value: Some(tx.value.0),
-            data: Some(tx.data.into()),
-            nonce: Some(tx.nonce.into()),
-            access_list: AccessList::default(),
-            max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
-            max_fee_per_gas: Some(max_fee_per_gas),
-            chain_id: Some(tx.chain_id.into()),
-        };
-
-        let pending_tx = middleware
-            .send_transaction(TypedTransaction::Eip1559(eip1559_tx), None)
-            .await;
-
-        let pending_tx = match pending_tx {
-            Ok(pending_tx) => pending_tx,
-            Err(err) => {
-                tracing::error!(tx_id = tx.id, error = ?err, "Failed to escalate transaction");
-                continue;
-            }
-        };
-
-        let tx_hash = pending_tx.tx_hash();
-
-        tracing::info!(
-            tx_id = tx.id,
-            ?tx_hash,
-            ?initial_max_fee_per_gas,
-            ?max_fee_per_gas_increase,
-            ?max_fee_per_gas,
-            ?max_priority_fee_per_gas,
-            ?pending_tx,
-            "Escalated transaction"
-        );
-
-        app.db
-            .escalate_tx(
-                &tx.id,
-                tx_hash,
-                max_fee_per_gas,
-                max_priority_fee_per_gas,
-            )
-            .await?;
-
-        tracing::info!(tx_id = tx.id, "Escalated transaction saved");
-    }
+    tracing::info!(tx_id = tx.id, "Escalated transaction saved");
 
     Ok(())
 }
