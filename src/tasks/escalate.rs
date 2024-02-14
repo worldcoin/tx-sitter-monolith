@@ -16,10 +16,17 @@ use crate::types::RelayerInfo;
 
 pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
     loop {
+        tracing::info!("Escalating transactions");
+
         let txs_for_escalation = app
             .db
             .get_txs_for_escalation(app.config.service.escalation_interval)
             .await?;
+
+        tracing::info!(
+            "Got {} transactions to escalate",
+            txs_for_escalation.len()
+        );
 
         let txs_for_escalation = split_txs_per_relayer(txs_for_escalation);
 
