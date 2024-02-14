@@ -113,6 +113,12 @@ where
     }
 }
 
+impl From<Address> for AddressWrapper {
+    fn from(value: Address) -> Self {
+        Self(value)
+    }
+}
+
 impl<'r, DB> sqlx::Decode<'r, DB> for U256Wrapper
 where
     DB: Database,
@@ -155,6 +161,12 @@ where
         self.0.to_big_endian(&mut bytes);
 
         <[u8; 32] as sqlx::Encode<DB>>::encode_by_ref(&bytes, buf)
+    }
+}
+
+impl From<U256> for U256Wrapper {
+    fn from(value: U256) -> Self {
+        Self(value)
     }
 }
 
