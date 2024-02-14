@@ -89,11 +89,15 @@ async fn escalate_relayer_tx(
         .signer_middleware(tx.chain_id, tx.key_id.clone())
         .await?;
 
+    tracing::info!("Escalating transaction - got middleware");
+
     let fees = app
         .db
         .get_latest_block_fees_by_chain_id(tx.chain_id)
         .await?
         .context("Missing block")?;
+
+    tracing::info!("Escalating transaction - got block fees");
 
     // Min increase of 20% on the priority fee required for a replacement tx
     let factor = U256::from(100);
@@ -123,9 +127,13 @@ async fn escalate_relayer_tx(
         chain_id: Some(tx.chain_id.into()),
     };
 
+    tracing::info!("Escalating transaction - assembled tx");
+
     let pending_tx = middleware
         .send_transaction(TypedTransaction::Eip1559(eip1559_tx), None)
         .await;
+
+    tracing::info!("Escalating transaction - sent tx");
 
     let pending_tx = match pending_tx {
         Ok(pending_tx) => pending_tx,
@@ -134,6 +142,8 @@ async fn escalate_relayer_tx(
             return Ok(());
         }
     };
+
+    tracing::info!("Escalating transaction - got pending tx");
 
     let tx_hash = pending_tx.tx_hash();
 
