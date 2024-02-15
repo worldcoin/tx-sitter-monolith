@@ -108,15 +108,17 @@ async fn escalate_relayer_tx(
     let increased_gas_price_percentage =
         factor + U256::from(20 * (1 + escalation));
 
+    let initial_max_priority_fee_per_gas =
+        tx.initial_max_priority_fee_per_gas.0;
+
     let initial_max_fee_per_gas = tx.initial_max_fee_per_gas.0;
 
-    let max_fee_per_gas_increase =
-        initial_max_fee_per_gas * increased_gas_price_percentage / factor;
+    let max_priority_fee_per_gas = initial_max_priority_fee_per_gas
+        * increased_gas_price_percentage
+        / factor;
 
-    let max_fee_per_gas = initial_max_fee_per_gas + max_fee_per_gas_increase;
-
-    let max_priority_fee_per_gas =
-        max_fee_per_gas - fees.fee_estimates.base_fee_per_gas;
+    let max_fee_per_gas =
+        max_priority_fee_per_gas + fees.fee_estimates.base_fee_per_gas;
 
     let eip1559_tx = Eip1559TransactionRequest {
         from: None,
@@ -154,16 +156,16 @@ async fn escalate_relayer_tx(
     tracing::info!(
         tx_id = tx.id,
         ?tx_hash,
+        ?initial_max_priority_fee_per_gas,
         ?initial_max_fee_per_gas,
-        ?max_fee_per_gas_increase,
-        ?max_fee_per_gas,
         ?max_priority_fee_per_gas,
+        ?max_fee_per_gas,
         ?pending_tx,
         "Escalated transaction"
     );
 
     app.db
-        .escalate_tx(&tx.id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
+        .escalate_tx(&tx.id, tx_hash, max_fee_per_gas, max_fee_per_gas)
         .await?;
 
     tracing::info!(tx_id = tx.id, "Escalated transaction saved");
