@@ -24,7 +24,7 @@ impl Service {
 
         let task_runner = TaskRunner::new(app.clone());
         task_runner.add_task("Broadcast transactions", tasks::broadcast_txs);
-        task_runner.add_task("Escalate transactions", tasks::escalate_txs);
+        task_runner.add_task("Escalate transactions", tasks::escalate_txs_task);
         task_runner.add_task("Prune blocks", tasks::prune_blocks);
         task_runner.add_task("Prune transactions", tasks::prune_txs);
         task_runner.add_task("Finalize transactions", tasks::finalize_txs);

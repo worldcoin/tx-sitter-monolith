@@ -14,36 +14,40 @@ use crate::broadcast_utils::should_send_relayer_transactions;
 use crate::db::TxForEscalation;
 use crate::types::RelayerInfo;
 
-pub async fn escalate_txs(app: Arc<App>) -> eyre::Result<()> {
+pub async fn escalate_txs_task(app: Arc<App>) -> eyre::Result<()> {
     loop {
-        tracing::info!("Escalating transactions");
-
-        let txs_for_escalation = app
-            .db
-            .get_txs_for_escalation(app.config.service.escalation_interval)
-            .await?;
-
-        tracing::info!(
-            "Got {} transactions to escalate",
-            txs_for_escalation.len()
-        );
-
-        let txs_for_escalation = split_txs_per_relayer(txs_for_escalation);
-
-        let mut futures = FuturesUnordered::new();
-
-        for (relayer_id, txs) in txs_for_escalation {
-            futures.push(escalate_relayer_txs(&app, relayer_id, txs));
-        }
-
-        while let Some(result) = futures.next().await {
-            if let Err(err) = result {
-                tracing::error!(error = ?err, "Failed escalating txs");
-            }
-        }
+        escalate_txs(&app).await?;
 
         tokio::time::sleep(app.config.service.escalation_interval).await;
     }
+}
+
+#[tracing::instrument(skip(app))]
+async fn escalate_txs(app: &App) -> eyre::Result<()> {
+    tracing::info!("Escalating transactions");
+
+    let txs_for_escalation = app
+        .db
+        .get_txs_for_escalation(app.config.service.escalation_interval)
+        .await?;
+
+    tracing::info!("Got {} transactions to escalate", txs_for_escalation.len());
+
+    let txs_for_escalation = split_txs_per_relayer(txs_for_escalation);
+
+    let mut futures = FuturesUnordered::new();
+
+    for (relayer_id, txs) in txs_for_escalation {
+        futures.push(escalate_relayer_txs(&app, relayer_id, txs));
+    }
+
+    while let Some(result) = futures.next().await {
+        if let Err(err) = result {
+            tracing::error!(error = ?err, "Failed escalating txs");
+        }
+    }
+
+    Ok(())
 }
 
 #[tracing::instrument(skip(app, txs))]

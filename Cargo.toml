@@ -87,3 +87,6 @@ test-case = "3.1.0"
 [features]
 default = ["default-config"]
 default-config = []
+
+[profile.release]
+panic = "abort"

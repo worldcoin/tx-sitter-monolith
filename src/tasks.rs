@@ -7,7 +7,7 @@ pub mod metrics;
 pub mod prune;
 
 pub use self::broadcast::broadcast_txs;
-pub use self::escalate::escalate_txs;
+pub use self::escalate::escalate_txs_task;
 pub use self::finalize::finalize_txs;
 pub use self::handle_reorgs::{handle_hard_reorgs, handle_soft_reorgs};
 pub use self::index::index_chain;
