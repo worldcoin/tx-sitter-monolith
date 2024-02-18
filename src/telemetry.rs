@@ -18,11 +18,6 @@ pub fn get_subscriber(
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(env_filter));
 
-    // tracing_subscriber::registry()
-    //     .with(env_filter)
-    //     .with(fmt_layer)
-    //     .with(telemetry_layer).init()
-
     Registry::default()
         .with(fmt_layer)
         .with(telemetry_layer)
