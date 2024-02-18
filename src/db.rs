@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::instrument;
 
 use ethers::types::{Address, H256, U256};
 use sqlx::migrate::{MigrateDatabase, Migrator};
@@ -23,9 +24,11 @@ impl Database {
     pub async fn new(config: &DatabaseConfig) -> eyre::Result<Self> {
         let pool = loop {
             if !Postgres::database_exists(&config.connection_string).await? {
+                tracing::info!("Creating a new database at {}", &config.connection_string); // not sure
                 Postgres::create_database(&config.connection_string).await?;
             }
 
+            tracing::info!("Connecting the database at {}", &config.connection_string); // not sure
             let pool = Pool::connect(&config.connection_string).await?;
 
             if let Err(err) = MIGRATOR.run(&pool).await {
@@ -42,6 +45,7 @@ impl Database {
         Ok(Self { pool })
     }
 
+    #[instrument(skip(self))]
     pub async fn create_relayer(
         &self,
         id: &str,
@@ -67,6 +71,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn create_transaction(
         &self,
         tx_id: &str,
@@ -115,6 +120,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn get_unsent_txs(
         &self,
         max_inflight_txs: usize,
@@ -134,6 +140,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self))]
     pub async fn insert_tx_broadcast(
         &self,
         tx_id: &str,
@@ -180,6 +187,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn get_latest_block_fees_by_chain_id(
         &self,
         chain_id: u64,
@@ -207,6 +215,7 @@ impl Database {
         Ok(item.map(|json_fee_estimate| json_fee_estimate.0))
     }
 
+    #[instrument(skip(self))]
     pub async fn get_next_block_numbers(
         &self,
     ) -> eyre::Result<Vec<(u64, u64)>> {
@@ -230,6 +239,7 @@ impl Database {
             .collect())
     }
 
+    #[instrument(skip(self))]
     pub async fn has_blocks_for_chain(
         &self,
         chain_id: u64,
@@ -250,6 +260,7 @@ impl Database {
         Ok(row.try_get::<bool, _>(0)?)
     }
 
+    #[instrument(skip(self))]
     pub async fn save_block(
         &self,
         block_number: u64,
@@ -294,6 +305,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn update_transactions(
         &self,
         status: BlockTxStatus,
@@ -320,6 +332,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn fetch_txs_for_escalation(
         &self,
         escalation_interval: Duration,
@@ -344,6 +357,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self))]
     pub async fn escalate_tx(
         &self,
         tx_id: &str,
@@ -400,6 +414,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn read_tx(
         &self,
         tx_id: &str,
@@ -420,6 +435,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self))]
     pub async fn fetch_relayer_addresses(
         &self,
         chain_id: u64,
@@ -438,6 +454,7 @@ impl Database {
         Ok(items.into_iter().map(|(wrapper,)| wrapper.0).collect())
     }
 
+    #[instrument(skip(self))]
     pub async fn update_relayer_nonce(
         &self,
         chain_id: u64,

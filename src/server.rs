@@ -10,6 +10,7 @@ use eyre::Result;
 use hyper::server::conn::AddrIncoming;
 use middleware::AuthorizedRelayer;
 use thiserror::Error;
+use tracing::instrument;
 
 use self::data::{
     CreateRelayerRequest, CreateRelayerResponse, GetTxResponse, SendTxRequest,
@@ -57,6 +58,7 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[instrument(skip(app))]
 async fn send_tx(
     State(app): State<Arc<App>>,
     TypedHeader(authorized_relayer): TypedHeader<AuthorizedRelayer>,
@@ -86,6 +88,7 @@ async fn send_tx(
     Ok(Json(SendTxResponse { tx_id }))
 }
 
+#[instrument(skip(app))]
 async fn get_tx(
     State(app): State<Arc<App>>,
     Path(tx_id): Path<String>,
@@ -110,6 +113,7 @@ async fn get_tx(
     Ok(Json(get_tx_response))
 }
 
+#[instrument(skip(app))]
 async fn create_relayer(
     State(app): State<Arc<App>>,
     Json(req): Json<CreateRelayerRequest>,
@@ -131,6 +135,7 @@ async fn create_relayer(
     }))
 }
 
+#[instrument(skip(_app))]
 async fn get_relayer(
     State(_app): State<Arc<App>>,
     Path(_relayer_id): Path<String>,

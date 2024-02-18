@@ -13,6 +13,7 @@ use crate::server::ApiError;
 pub const AUTHORIZED_RELAYER: &str = "x-authorized-relayer";
 static HEADER_NAME: HeaderName = HeaderName::from_static(AUTHORIZED_RELAYER);
 
+#[derive(Debug, Serialize, Deserialize)] // not sure if it works
 pub enum AuthorizedRelayer {
     Named(String),
     Any,

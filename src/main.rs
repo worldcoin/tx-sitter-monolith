@@ -4,9 +4,7 @@ use clap::Parser;
 use config::FileFormat;
 use service::config::Config;
 use service::service::Service;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
+use service::telemetry;
 
 #[derive(Parser)]
 #[clap(rename_all = "kebab-case")]
@@ -28,10 +26,8 @@ async fn main() -> eyre::Result<()> {
         dotenv::from_path(path)?;
     }
 
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().pretty().compact())
-        .with(EnvFilter::from_default_env())
-        .init();
+    let subscriber = telemetry::get_subscriber("jaeger".into(), "info".into());
+    telemetry::init_subscriber(subscriber);
 
     let settings = config::Config::builder()
         .add_source(
