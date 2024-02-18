@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::instrument;
 
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::types::{Block, BlockNumber, H256, U256};
@@ -15,78 +16,88 @@ const BLOCK_FEE_HISTORY_SIZE: usize = 10;
 const TRAILING_BLOCK_OFFSET: u64 = 5;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];
 
+#[instrument(skip(app), name= "index_blocks")]
 pub async fn index_blocks(app: Arc<App>) -> eyre::Result<()> {
     loop {
-        let next_block_numbers = app.db.get_next_block_numbers().await?;
+        run_indexing(app.clone()).await?;
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
 
-        // TODO: Parallelize
-        for (block_number, chain_id) in next_block_numbers {
-            let chain_id = U256::from(chain_id);
-            let rpc = app
-                .rpcs
-                .get(&chain_id)
-                .context("Missing RPC for chain id")?;
+#[instrument(skip(app), name= "index_blocks_run")]
+async fn run_indexing(app: Arc<App>) -> eyre::Result<()> 
+{
+    let next_block_numbers = app.db.get_next_block_numbers().await?;
 
-            if let Some((block, fee_estimates)) =
-                fetch_block_with_fee_estimates(rpc, block_number).await?
-            {
+    // TODO: Parallelize
+    for (block_number, chain_id) in next_block_numbers {
+        let chain_id = U256::from(chain_id);
+        let rpc = app
+            .rpcs
+            .get(&chain_id)
+            .context("Missing RPC for chain id")?;
+
+        if let Some((block, fee_estimates)) =
+            fetch_block_with_fee_estimates(rpc, block_number).await?
+        {
+            app.db
+                .save_block(
+                    block_number,
+                    chain_id.as_u64(),
+                    &block.transactions,
+                    &fee_estimates,
+                    BlockTxStatus::Mined,
+                )
+               .await?;
+
+            let relayer_addresses =
+                app.db.fetch_relayer_addresses(chain_id.as_u64()).await?;
+
+            // TODO: Parallelize
+            for relayer_address in relayer_addresses {
+                let tx_count = rpc
+                    .get_transaction_count(relayer_address, None)
+                    .await?;
+
+                app.db
+                    .update_relayer_nonce(
+                        chain_id.as_u64(),
+                        relayer_address,
+                        tx_count.as_u64(),
+                    )
+                    .await?;
+            }
+
+            if block_number > TRAILING_BLOCK_OFFSET {
+                let (block, fee_estimates) =
+                    fetch_block_with_fee_estimates(
+                        rpc,
+                        block_number - TRAILING_BLOCK_OFFSET,
+                    )
+                    .await?
+                    .context("Missing trailing block")?;
+
                 app.db
                     .save_block(
                         block_number,
                         chain_id.as_u64(),
                         &block.transactions,
                         &fee_estimates,
-                        BlockTxStatus::Mined,
+                        BlockTxStatus::Finalized,
                     )
                     .await?;
-
-                let relayer_addresses =
-                    app.db.fetch_relayer_addresses(chain_id.as_u64()).await?;
-
-                // TODO: Parallelize
-                for relayer_address in relayer_addresses {
-                    let tx_count = rpc
-                        .get_transaction_count(relayer_address, None)
-                        .await?;
-
-                    app.db
-                        .update_relayer_nonce(
-                            chain_id.as_u64(),
-                            relayer_address,
-                            tx_count.as_u64(),
-                        )
-                        .await?;
-                }
-
-                if block_number > TRAILING_BLOCK_OFFSET {
-                    let (block, fee_estimates) =
-                        fetch_block_with_fee_estimates(
-                            rpc,
-                            block_number - TRAILING_BLOCK_OFFSET,
-                        )
-                        .await?
-                        .context("Missing trailing block")?;
-
-                    app.db
-                        .save_block(
-                            block_number,
-                            chain_id.as_u64(),
-                            &block.transactions,
-                            &fee_estimates,
-                            BlockTxStatus::Finalized,
-                        )
-                        .await?;
-                }
-            } else {
-                tokio::time::sleep(Duration::from_secs(5)).await;
             }
+        } else {
+            // tokio::time::sleep(Duration::from_secs(5)).await;
         }
-
-        app.db.update_transactions(BlockTxStatus::Mined).await?;
-        app.db.update_transactions(BlockTxStatus::Finalized).await?;
     }
+
+    app.db.update_transactions(BlockTxStatus::Mined).await?;
+    app.db.update_transactions(BlockTxStatus::Finalized).await?;
+    Ok(())
 }
 
+#[instrument(skip(rpc, block_id))]
 pub async fn fetch_block_with_fee_estimates(
     rpc: &Provider<Http>,
     block_id: impl Into<BlockNumber>,
@@ -108,6 +119,7 @@ pub async fn fetch_block_with_fee_estimates(
     Ok(Some((block, fee_estimates)))
 }
 
+#[instrument(skip(rpc, block_id))]
 pub async fn fetch_block(
     rpc: &Provider<Http>,
     block_id: impl Into<BlockNumber>,

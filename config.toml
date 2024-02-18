@@ -9,7 +9,7 @@ disable_auth = true
 rpcs = ["http://127.0.0.1:8545"]
 
 [database]
-connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"
+connection_string = "postgres://postgres:password@127.0.0.1:5431/database"
 
 [keys]
 kind = "local"

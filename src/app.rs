@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::instrument;
 
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
@@ -67,6 +68,7 @@ impl App {
     }
 }
 
+#[instrument(skip(config), name= "init_keys_source")]
 async fn init_keys_source(
     config: &Config,
 ) -> eyre::Result<Box<dyn KeysSource>> {
@@ -82,6 +84,7 @@ async fn init_keys_source(
     Ok(keys_source)
 }
 
+#[instrument(skip(config), name= "init_rpcs")]
 async fn init_rpcs(
     config: &Config,
 ) -> eyre::Result<HashMap<U256, Arc<Provider<Http>>>> {
@@ -97,6 +100,7 @@ async fn init_rpcs(
     Ok(providers)
 }
 
+#[instrument(skip(rpcs, db), name= "seed_initial_blocks")]
 async fn seed_initial_blocks(
     rpcs: &HashMap<U256, Arc<Provider<Http>>>,
     db: &Database,
