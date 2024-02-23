@@ -82,7 +82,7 @@ pub async fn index_block(
             "Tx mined"
         );
 
-        metrics::increment_counter!("tx_mined", &metric_labels);
+        metrics::counter!("tx_mined", &metric_labels).increment(1);
     }
 
     let relayers = app.db.get_relayers_by_chain_id(chain_id).await?;
@@ -171,16 +171,11 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             .await?;
 
         let labels = [("chain_id", chain_id.to_string())];
-        metrics::gauge!(
-            "gas_price",
-            gas_price.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR,
-            &labels
-        );
-        metrics::gauge!(
-            "base_fee_per_gas",
+        metrics::gauge!("gas_price", &labels)
+            .set(gas_price.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR);
+        metrics::gauge!("base_fee_per_gas", &labels).set(
             fee_estimates.base_fee_per_gas.as_u64() as f64
                 * GAS_PRICE_FOR_METRICS_FACTOR,
-            &labels
         );
 
         for (i, percentile) in FEE_PERCENTILES.iter().enumerate() {
@@ -188,12 +183,12 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 
             metrics::gauge!(
                 "percentile_fee",
-                percentile_fee.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR,
                 &[
                     ("chain_id", chain_id.to_string()),
                     ("percentile", percentile.to_string()),
                 ]
-            );
+            )
+            .set(percentile_fee.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR);
         }
 
         tokio::time::sleep(Duration::from_secs(
