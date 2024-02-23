@@ -102,6 +102,20 @@ impl Database {
             .await?;
         }
 
+        if let Some(max_queued_txs) = update.max_queued_txs {
+            sqlx::query(
+                r#"
+                UPDATE relayers
+                SET    max_queued_txs = $2
+                WHERE  id = $1
+                "#,
+            )
+            .bind(id)
+            .bind(max_queued_txs as i64)
+            .execute(tx.as_mut())
+            .await?;
+        }
+
         if let Some(gas_price_limits) = &update.gas_price_limits {
             sqlx::query(
                 r#"
@@ -180,6 +194,7 @@ impl Database {
                 nonce,
                 current_nonce,
                 max_inflight_txs,
+                max_queued_txs,
                 gas_price_limits,
                 enabled
             FROM relayers
@@ -1128,7 +1143,8 @@ mod tests {
             match Database::new(&DatabaseConfig::connection_string(&url)).await
             {
                 Ok(db) => return Ok((db, db_container)),
-                Err(_) => {
+                Err(err) => {
+                    eprintln!("Failed to connect to the database: {err:?}");
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -1263,6 +1279,7 @@ mod tests {
             &RelayerUpdate {
                 relayer_name: None,
                 max_inflight_txs: Some(10),
+                max_queued_txs: Some(20),
                 gas_price_limits: Some(vec![RelayerGasPriceLimit {
                     chain_id: 1,
                     value: U256Wrapper(U256::from(10_123u64)),
@@ -1282,6 +1299,7 @@ mod tests {
         assert_eq!(relayer.nonce, 0);
         assert_eq!(relayer.current_nonce, 0);
         assert_eq!(relayer.max_inflight_txs, 10);
+        assert_eq!(relayer.max_queued_txs, 20);
         assert_eq!(
             relayer.gas_price_limits.0,
             vec![RelayerGasPriceLimit {
