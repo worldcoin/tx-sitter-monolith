@@ -1,9 +1,39 @@
 use std::net::SocketAddr;
+use std::path::Path;
 use std::time::Duration;
 
+use config::FileFormat;
 use serde::{Deserialize, Serialize};
 
 use crate::api_key::ApiKey;
+
+pub fn load_config<'a>(
+    config_files: impl Iterator<Item = &'a Path>,
+) -> eyre::Result<Config> {
+    let mut settings = config::Config::builder();
+
+    for config_file in config_files {
+        settings = settings.add_source(
+            config::File::from(config_file).format(FileFormat::Toml),
+        );
+    }
+
+    let settings = settings
+        .add_source(
+            config::Environment::with_prefix("TX_SITTER").separator("__"),
+        )
+        .add_source(
+            config::Environment::with_prefix("TX_SITTER_EXT")
+                .separator("__")
+                .try_parsing(true)
+                .list_separator(","),
+        )
+        .build()?;
+
+    let config = settings.try_deserialize::<Config>()?;
+
+    Ok(config)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -261,5 +291,32 @@ mod tests {
         let toml = toml::to_string_pretty(&config).unwrap();
 
         assert_eq!(toml, WITH_DB_PARTS);
+    }
+
+    #[test]
+    fn env_config_test() {
+        std::env::set_var("TX_SITTER__DATABASE__KIND", "parts");
+        std::env::set_var("TX_SITTER__DATABASE__HOST", "dbHost");
+        std::env::set_var("TX_SITTER__DATABASE__PORT", "dbPort");
+        std::env::set_var("TX_SITTER__DATABASE__DATABASE", "dbName");
+        std::env::set_var("TX_SITTER__DATABASE__USERNAME", "dbUsername");
+        std::env::set_var("TX_SITTER__DATABASE__PASSWORD", "dbPassword");
+        std::env::set_var("TX_SITTER__SERVICE__ESCALATION_INTERVAL", "1m");
+        std::env::set_var("TX_SITTER__SERVICE__DATADOG_ENABLED", "true");
+        std::env::set_var("TX_SITTER__SERVICE__STATSD_ENABLED", "true");
+        std::env::set_var("TX_SITTER__SERVER__HOST", "0.0.0.0:8080");
+        std::env::set_var("TX_SITTER__SERVER__USERNAME", "authUsername");
+        std::env::set_var("TX_SITTER__SERVER__PASSWORD", "authPassword");
+        std::env::set_var("TX_SITTER__KEYS__KIND", "kms");
+
+        let config = load_config(std::iter::empty()).unwrap();
+
+        assert_eq!(config.service.statsd_enabled, true);
+        assert_eq!(config.service.datadog_enabled, true);
+        assert_eq!(config.service.escalation_interval, Duration::from_secs(60));
+        assert_eq!(
+            config.database.to_connection_string(),
+            "postgres://dbUsername:dbPassword@dbHost:dbPort/dbName"
+        );
     }
 }

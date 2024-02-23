@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use config::FileFormat;
 use telemetry_batteries::metrics::statsd::StatsdBattery;
 use telemetry_batteries::tracing::datadog::DatadogBattery;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
-use tx_sitter::config::Config;
+use tx_sitter::config::load_config;
 use tx_sitter::service::Service;
 
 #[derive(Parser)]
@@ -35,27 +34,7 @@ async fn main() -> eyre::Result<()> {
         dotenv::from_path(path)?;
     }
 
-    let mut settings = config::Config::builder();
-
-    for arg in &args.config {
-        settings = settings.add_source(
-            config::File::from(arg.as_ref()).format(FileFormat::Toml),
-        );
-    }
-
-    let settings = settings
-        .add_source(
-            config::Environment::with_prefix("TX_SITTER").separator("__"),
-        )
-        .add_source(
-            config::Environment::with_prefix("TX_SITTER_EXT")
-                .separator("__")
-                .try_parsing(true)
-                .list_separator(","),
-        )
-        .build()?;
-
-    let config = settings.try_deserialize::<Config>()?;
+    let config = load_config(args.config.iter().map(PathBuf::as_ref))?;
 
     if config.service.datadog_enabled {
         DatadogBattery::init(None, "tx-sitter-monolith", None, true);
