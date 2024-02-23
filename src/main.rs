@@ -55,6 +55,7 @@ async fn main() -> eyre::Result<()> {
         )?;
     }
 
+    tracing::info!(?config, "Starting service");
     let service = Service::new(config).await?;
     service.wait().await?;
 
