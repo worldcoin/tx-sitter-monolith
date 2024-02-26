@@ -8,6 +8,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use tx_sitter::config::load_config;
 use tx_sitter::service::Service;
+use tx_sitter::shutdown::spawn_await_shutdown_task;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -54,6 +55,8 @@ async fn main() -> eyre::Result<()> {
             Some("tx_sitter_monolith"),
         )?;
     }
+
+    spawn_await_shutdown_task();
 
     tracing::info!(?config, "Starting service");
     let service = Service::new(config).await?;

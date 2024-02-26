@@ -9,6 +9,7 @@ pub mod keys;
 pub mod serde_utils;
 pub mod server;
 pub mod service;
+pub mod shutdown;
 pub mod task_runner;
 pub mod tasks;
 pub mod types;
