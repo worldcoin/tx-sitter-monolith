@@ -157,6 +157,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_relayers(&self) -> eyre::Result<Vec<RelayerInfo>> {
         Ok(sqlx::query_as(
             r#"
@@ -178,6 +179,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_relayers_by_chain_id(
         &self,
         chain_id: u64,
@@ -205,6 +207,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_relayer(&self, id: &str) -> eyre::Result<RelayerInfo> {
         Ok(sqlx::query_as(
             r#"
@@ -238,10 +241,9 @@ impl Database {
             r#"
             SELECT COUNT(1)
             FROM transactions t
-            JOIN relayers r ON t.relayer_id = $1
             LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
-            WHERE s.tx_id IS NULL
-            OR    s.status = $2
+            WHERE t.relayer_id = $1
+            AND (s.tx_id IS NULL OR s.status = $2)
             "#,
         )
         .bind(relayer_id)
@@ -306,6 +308,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_unsent_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
         Ok(sqlx::query_as(
             r#"
@@ -370,6 +373,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_latest_block_number_without_fee_estimates(
         &self,
         chain_id: u64,
@@ -395,6 +399,7 @@ impl Database {
         Ok(block_number.map(|(n,)| n as u64))
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_latest_block_number(
         &self,
         chain_id: u64,
@@ -415,6 +420,7 @@ impl Database {
         Ok(block_number.map(|(n,)| n as u64))
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_latest_block_fees_by_chain_id(
         &self,
         chain_id: u64,
@@ -448,6 +454,7 @@ impl Database {
         }))
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn has_blocks_for_chain(
         &self,
         chain_id: u64,
@@ -748,6 +755,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_txs_for_escalation(
         &self,
         escalation_interval: Duration,
@@ -831,6 +839,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn read_tx(
         &self,
         tx_id: &str,
@@ -850,6 +859,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn read_txs(
         &self,
         relayer_id: &str,
@@ -986,6 +996,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_network_rpc(
         &self,
         chain_id: u64,
@@ -1007,6 +1018,7 @@ impl Database {
         Ok(row.0)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_network_chain_ids(&self) -> eyre::Result<Vec<u64>> {
         let items: Vec<(i64,)> = sqlx::query_as(
             r#"
@@ -1040,6 +1052,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn is_api_key_valid(
         &self,
         relayer_id: &str,
@@ -1063,6 +1076,7 @@ impl Database {
         Ok(is_valid)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_stats(&self, chain_id: u64) -> eyre::Result<NetworkStats> {
         let (pending_txs,): (i64,) = sqlx::query_as(
             r#"
