@@ -38,7 +38,7 @@ async fn escalate_txs(app: &App) -> eyre::Result<()> {
     let mut futures = FuturesUnordered::new();
 
     for (relayer_id, txs) in txs_for_escalation {
-        futures.push(escalate_relayer_txs(&app, relayer_id, txs));
+        futures.push(escalate_relayer_txs(app, relayer_id, txs));
     }
 
     while let Some(result) = futures.next().await {

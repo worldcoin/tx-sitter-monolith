@@ -311,8 +311,8 @@ mod tests {
 
         let config = load_config(std::iter::empty()).unwrap();
 
-        assert_eq!(config.service.statsd_enabled, true);
-        assert_eq!(config.service.datadog_enabled, true);
+        assert!(config.service.statsd_enabled);
+        assert!(config.service.datadog_enabled);
         assert_eq!(config.service.escalation_interval, Duration::from_secs(60));
         assert_eq!(
             config.database.to_connection_string(),
