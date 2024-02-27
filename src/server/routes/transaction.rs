@@ -101,7 +101,7 @@ pub async fn send_tx(
         .get_relayer_pending_txs(api_token.relayer_id())
         .await?;
 
-    if relayer_queued_tx_count >= relayer.max_queued_txs as usize {
+    if relayer_queued_tx_count > relayer.max_queued_txs as usize {
         return Err(ApiError::TooManyTransactions {
             max: relayer.max_queued_txs as usize,
             current: relayer_queued_tx_count,
