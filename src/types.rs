@@ -70,6 +70,36 @@ pub struct RelayerGasPriceLimit {
     pub chain_id: i64,
 }
 
+impl RelayerUpdate {
+    pub fn with_relayer_name(mut self, relayer_name: String) -> Self {
+        self.relayer_name = Some(relayer_name);
+        self
+    }
+
+    pub fn with_max_inflight_txs(mut self, max_inflight_txs: u64) -> Self {
+        self.max_inflight_txs = Some(max_inflight_txs);
+        self
+    }
+
+    pub fn with_max_queued_txs(mut self, max_queued_txs: u64) -> Self {
+        self.max_queued_txs = Some(max_queued_txs);
+        self
+    }
+
+    pub fn with_gas_price_limits(
+        mut self,
+        gas_price_limits: Vec<RelayerGasPriceLimit>,
+    ) -> Self {
+        self.gas_price_limits = Some(gas_price_limits);
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = Some(enabled);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ethers::types::{Address, U256};

@@ -8,6 +8,7 @@ use crate::server::routes::relayer::{
 use crate::server::routes::transaction::{
     GetTxResponse, SendTxRequest, SendTxResponse,
 };
+use crate::types::RelayerUpdate;
 
 pub struct TxSitterClient {
     client: reqwest::Client,
@@ -79,6 +80,18 @@ impl TxSitterClient {
     ) -> eyre::Result<CreateApiKeyResponse> {
         self.post(&format!("{}/1/admin/relayer/{relayer_id}/key", self.url,))
             .await
+    }
+
+    pub async fn update_relayer(
+        &self,
+        relayer_id: &str,
+        relayer_update: RelayerUpdate,
+    ) -> eyre::Result<()> {
+        self.json_post(
+            &format!("{}/1/admin/relayer/{relayer_id}", self.url),
+            relayer_update,
+        )
+        .await
     }
 
     pub async fn send_tx(

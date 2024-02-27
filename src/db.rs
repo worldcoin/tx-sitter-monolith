@@ -208,6 +208,29 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
+    pub async fn get_relayer_pending_txs(
+        &self,
+        relayer_id: &str,
+    ) -> eyre::Result<usize> {
+        let (tx_count,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM transactions t
+            JOIN relayers r ON t.relayer_id = $1
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE s.tx_id IS NULL
+            OR    s.status = $2
+            "#,
+        )
+        .bind(relayer_id)
+        .bind(TxStatus::Pending)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(tx_count as usize)
+    }
+
+    #[instrument(skip(self), level = "debug")]
     pub async fn create_transaction(
         &self,
         tx_id: &str,

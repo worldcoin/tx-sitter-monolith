@@ -37,6 +37,15 @@ pub enum ApiError {
     #[error("Missing tx")]
     MissingTx,
 
+    #[error("Relayer is disabled")]
+    RelayerDisabled,
+
+    #[error("Too many queued transactions, max: {max}, current: {current}")]
+    TooManyTransactions {
+        max: usize,
+        current: usize,
+    },
+
     #[error("Internal error {0}")]
     Eyre(#[from] eyre::Report),
 }
@@ -49,6 +58,8 @@ impl IntoResponse for ApiError {
             Self::Eyre(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::InvalidFormat => StatusCode::BAD_REQUEST,
             Self::MissingTx => StatusCode::NOT_FOUND,
+            Self::RelayerDisabled => StatusCode::FORBIDDEN,
+            Self::TooManyTransactions { .. } => StatusCode::TOO_MANY_REQUESTS,
         };
 
         let message = self.to_string();
