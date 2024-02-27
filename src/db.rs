@@ -74,7 +74,15 @@ impl Database {
     ) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        if let Some(name) = &update.relayer_name {
+        let RelayerUpdate {
+            relayer_name,
+            max_inflight_txs,
+            max_queued_txs,
+            gas_price_limits,
+            enabled,
+        } = update;
+
+        if let Some(name) = relayer_name {
             sqlx::query(
                 r#"
                 UPDATE relayers
@@ -88,7 +96,7 @@ impl Database {
             .await?;
         }
 
-        if let Some(max_inflight_txs) = update.max_inflight_txs {
+        if let Some(max_inflight_txs) = max_inflight_txs {
             sqlx::query(
                 r#"
                 UPDATE relayers
@@ -97,12 +105,12 @@ impl Database {
                 "#,
             )
             .bind(id)
-            .bind(max_inflight_txs as i64)
+            .bind(*max_inflight_txs as i64)
             .execute(tx.as_mut())
             .await?;
         }
 
-        if let Some(max_queued_txs) = update.max_queued_txs {
+        if let Some(max_queued_txs) = max_queued_txs {
             sqlx::query(
                 r#"
                 UPDATE relayers
@@ -111,12 +119,12 @@ impl Database {
                 "#,
             )
             .bind(id)
-            .bind(max_queued_txs as i64)
+            .bind(*max_queued_txs as i64)
             .execute(tx.as_mut())
             .await?;
         }
 
-        if let Some(gas_price_limits) = &update.gas_price_limits {
+        if let Some(gas_price_limits) = gas_price_limits {
             sqlx::query(
                 r#"
                 UPDATE relayers
@@ -126,6 +134,20 @@ impl Database {
             )
             .bind(id)
             .bind(Json(gas_price_limits))
+            .execute(tx.as_mut())
+            .await?;
+        }
+
+        if let Some(enabled) = enabled {
+            sqlx::query(
+                r#"
+                UPDATE relayers
+                SET    enabled = $2
+                WHERE  id = $1
+                "#,
+            )
+            .bind(id)
+            .bind(*enabled)
             .execute(tx.as_mut())
             .await?;
         }

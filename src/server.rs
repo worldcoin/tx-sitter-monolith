@@ -13,10 +13,10 @@ use self::routes::transaction::{get_tx, get_txs, send_tx};
 use self::trace_layer::MatchedPathMakeSpan;
 use crate::app::App;
 
+mod error;
 mod middleware;
 pub mod routes;
 mod trace_layer;
-mod error;
 
 pub use self::error::ApiError;
 
