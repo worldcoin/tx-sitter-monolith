@@ -47,17 +47,7 @@ async fn send_many_txs() -> eyre::Result<()> {
     }
 
     let expected_balance = value * num_transfers;
-    for _ in 0..50 {
-        let balance = provider.get_balance(ARBITRARY_ADDRESS, None).await?;
+    await_balance(&provider, expected_balance, ARBITRARY_ADDRESS).await?;
 
-        tracing::info!(?balance, ?expected_balance, "Checking balance");
-
-        if balance == expected_balance {
-            return Ok(());
-        } else {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    }
-
-    panic!("Transactions were not sent")
+    Ok(())
 }

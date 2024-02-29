@@ -18,12 +18,12 @@ async fn send_too_many_txs() -> eyre::Result<()> {
     let (_service, client) =
         ServiceBuilder::default().build(&anvil, &db_url).await?;
 
-    let CreateApiKeyResponse { api_key: _api_key } =
+    let CreateApiKeyResponse { api_key } =
         client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
 
     let CreateRelayerResponse {
         relayer_id: secondary_relayer_id,
-        address: _secondary_relayer_address,
+        address: secondary_relayer_address,
     } = client
         .create_relayer(&CreateRelayerRequest {
             name: "Secondary Relayer".to_string(),
@@ -87,6 +87,31 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         "Result {:?} should be too many transactions",
         result
     );
+
+    // Accumulate total value + gas budget
+    let send_value = value * (MAX_QUEUED_TXS + 1);
+    let total_required_value = send_value + parse_units("1", "ether")?;
+
+    client
+        .send_tx(
+            &api_key,
+            &SendTxRequest {
+                to: secondary_relayer_address,
+                value: total_required_value,
+                data: None,
+                gas_limit: U256::from(21_000),
+                priority: TransactionPriority::Regular,
+                tx_id: None,
+            },
+        )
+        .await?;
+
+    tracing::info!("Waiting for secondary relayer balance");
+    await_balance(&provider, total_required_value, secondary_relayer_address)
+        .await?;
+
+    tracing::info!("Waiting for queued up txs to be processed");
+    await_balance(&provider, send_value, ARBITRARY_ADDRESS).await?;
 
     Ok(())
 }
