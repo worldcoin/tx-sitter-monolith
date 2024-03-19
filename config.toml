@@ -1,15 +1,36 @@
 [service]
 escalation_interval = "1m"
+datadog_enabled = false
+statsd_enabled = false
+
+[service.predefined.network]
+chain_id = 31337
+name = "predefined"
+http_rpc = "http://127.0.0.1:8545"
+ws_rpc = "ws://127.0.0.1:8545"
+
+[service.predefined.relayer]
+id = "1b908a34-5dc1-4d2d-a146-5eb46e975830"
+name = "predefined"
+chain_id = 31337
+key_id = "d10607662a85424f02a33fb1e6d095bd0ac7154396ff09762e41f82ff2233aaa"
+api_key = "G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk="
 
 [server]
 host = "127.0.0.1:3000"
-disable_auth = true
-
-[rpc]
-rpcs = ["http://127.0.0.1:8545"]
+disable_auth = false
 
 [database]
+kind = "connection_string"
 connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"
+
+# [database]
+# kind = "parts"
+# host = "127.0.0.1"
+# port = "5432"
+# username = "postgres"
+# password = "postgres"
+# database = "database"
 
 [keys]
 kind = "local"
@@ -17,4 +38,3 @@ kind = "local"
 # Example KMS configuration
 # [keys]
 # kind = "kms"
-# region = "us-east-1"

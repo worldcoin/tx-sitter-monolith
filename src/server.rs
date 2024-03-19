@@ -1,142 +1,24 @@
 use std::sync::Arc;
 
-use axum::extract::{Json, Path, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::routing::{get, post, IntoMakeService};
-use axum::{Router, TypedHeader};
-use ethers_signers::Signer;
-use eyre::Result;
+use axum::Router;
 use hyper::server::conn::AddrIncoming;
-use middleware::AuthorizedRelayer;
-use thiserror::Error;
+use tower_http::validate_request::ValidateRequestHeaderLayer;
 
-use self::data::{
-    CreateRelayerRequest, CreateRelayerResponse, GetTxResponse, SendTxRequest,
-    SendTxResponse,
+use self::routes::relayer::{
+    create_relayer, create_relayer_api_key, get_relayer, get_relayers,
+    purge_unsent_txs, relayer_rpc, update_relayer,
 };
+use self::routes::transaction::{get_tx, get_txs, send_tx};
+use self::trace_layer::MatchedPathMakeSpan;
 use crate::app::App;
 
-pub mod data;
+mod error;
 mod middleware;
+pub mod routes;
+mod trace_layer;
 
-#[derive(Debug, Error)]
-pub enum ApiError {
-    #[error("Invalid key encoding")]
-    KeyEncoding,
-
-    #[error("Invalid key length")]
-    KeyLength,
-
-    #[error("Unauthorized")]
-    Unauthorized,
-
-    #[error("Invalid format")]
-    InvalidFormat,
-
-    #[error("Missing tx")]
-    MissingTx,
-
-    #[error("Internal error {0}")]
-    Eyre(#[from] eyre::Report),
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> axum::response::Response {
-        let status_code = match self {
-            Self::KeyLength | Self::KeyEncoding => StatusCode::BAD_REQUEST,
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Eyre(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::InvalidFormat => StatusCode::BAD_REQUEST,
-            Self::MissingTx => StatusCode::NOT_FOUND,
-        };
-
-        let message = self.to_string();
-
-        (status_code, message).into_response()
-    }
-}
-
-async fn send_tx(
-    State(app): State<Arc<App>>,
-    TypedHeader(authorized_relayer): TypedHeader<AuthorizedRelayer>,
-    Json(req): Json<SendTxRequest>,
-) -> Result<Json<SendTxResponse>, ApiError> {
-    if !authorized_relayer.is_authorized(&req.relayer_id) {
-        return Err(ApiError::Unauthorized);
-    }
-
-    let tx_id = if let Some(id) = req.tx_id {
-        id
-    } else {
-        uuid::Uuid::new_v4().to_string()
-    };
-
-    app.db
-        .create_transaction(
-            &tx_id,
-            req.to,
-            req.data.as_ref().map(|d| &d[..]).unwrap_or(&[]),
-            req.value,
-            req.gas_limit,
-            &req.relayer_id,
-        )
-        .await?;
-
-    Ok(Json(SendTxResponse { tx_id }))
-}
-
-async fn get_tx(
-    State(app): State<Arc<App>>,
-    Path(tx_id): Path<String>,
-) -> Result<Json<GetTxResponse>, ApiError> {
-    let tx = app.db.read_tx(&tx_id).await?.ok_or(ApiError::MissingTx)?;
-
-    let get_tx_response = GetTxResponse {
-        tx_id: tx.tx_id,
-        to: tx.to.0,
-        data: if tx.data.is_empty() {
-            None
-        } else {
-            Some(tx.data.into())
-        },
-        value: tx.value.0,
-        gas_limit: tx.gas_limit.0,
-        nonce: tx.nonce,
-        tx_hash: tx.tx_hash.map(|h| h.0),
-        status: tx.status,
-    };
-
-    Ok(Json(get_tx_response))
-}
-
-async fn create_relayer(
-    State(app): State<Arc<App>>,
-    Json(req): Json<CreateRelayerRequest>,
-) -> Result<Json<CreateRelayerResponse>, ApiError> {
-    let (key_id, signer) = app.keys_source.new_signer().await?;
-
-    let address = signer.address();
-
-    let relayer_id = uuid::Uuid::new_v4();
-    let relayer_id = relayer_id.to_string();
-
-    app.db
-        .create_relayer(&relayer_id, &req.name, req.chain_id, &key_id, address)
-        .await?;
-
-    Ok(Json(CreateRelayerResponse {
-        relayer_id,
-        address,
-    }))
-}
-
-async fn get_relayer(
-    State(_app): State<Arc<App>>,
-    Path(_relayer_id): Path<String>,
-) -> &'static str {
-    "Hello, World!"
-}
+pub use self::error::ApiError;
 
 pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
     let server = spawn_server(app).await?;
@@ -151,27 +33,41 @@ pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
 pub async fn spawn_server(
     app: Arc<App>,
 ) -> eyre::Result<axum::Server<AddrIncoming, IntoMakeService<Router>>> {
-    let tx_routes = Router::new()
-        .route("/send", post(send_tx))
-        .route("/:tx_id", get(get_tx))
-        .layer(axum::middleware::from_fn_with_state(
-            app.clone(),
-            middleware::auth,
-        ))
+    let api_routes = Router::new()
+        .route("/:api_token/tx", post(send_tx))
+        .route("/:api_token/tx/:tx_id", get(get_tx))
+        .route("/:api_token/txs", get(get_txs))
+        .route("/:api_token/rpc", post(relayer_rpc))
         .with_state(app.clone());
 
-    let relayer_routes = Router::new()
-        .route("/create", post(create_relayer))
-        .route("/:relayer_id", get(get_relayer))
+    let mut admin_routes = Router::new()
+        .route("/relayer", post(create_relayer))
+        .route("/relayer/:relayer_id/reset", post(purge_unsent_txs))
+        .route("/relayers", get(get_relayers))
+        .route(
+            "/relayer/:relayer_id",
+            post(update_relayer).get(get_relayer),
+        )
+        .route("/relayer/:relayer_id/key", post(create_relayer_api_key))
+        .route("/network/:chain_id", post(routes::network::create_network))
         .with_state(app.clone());
 
-    // let network_routes = Router::new()
-    //     .route("/");
+    if let Some((username, password)) = app.config.server.credentials() {
+        admin_routes = admin_routes
+            .layer(ValidateRequestHeaderLayer::basic(username, password));
+    }
+
+    let v1_routes = Router::new()
+        .nest("/api", api_routes)
+        .nest("/admin", admin_routes);
 
     let router = Router::new()
-        .nest("/1/tx", tx_routes)
-        .nest("/1/relayer", relayer_routes)
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .nest("/1", v1_routes)
+        .route("/health", get(routes::health))
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(MatchedPathMakeSpan),
+        )
         .layer(axum::middleware::from_fn(middleware::log_response));
 
     let server = axum::Server::bind(&app.config.server.host)

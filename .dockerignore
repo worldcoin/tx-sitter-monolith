@@ -1,0 +1,6 @@
+target/
+.git
+README.md
+TODO.md
+manual_test.nu
+config.toml

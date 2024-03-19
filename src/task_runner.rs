@@ -2,24 +2,28 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::Future;
-
-use crate::app::App;
+use tokio::task::JoinHandle;
 
 const FAILURE_MONITORING_PERIOD: Duration = Duration::from_secs(60);
 
-pub struct TaskRunner {
-    app: Arc<App>,
+pub struct TaskRunner<T> {
+    app: Arc<T>,
 }
 
-impl TaskRunner {
-    pub fn new(app: Arc<App>) -> Self {
+impl<T> TaskRunner<T> {
+    pub fn new(app: Arc<T>) -> Self {
         Self { app }
     }
+}
 
-    pub fn add_task<S, C, F>(&self, label: S, task: C)
+impl<T> TaskRunner<T>
+where
+    T: Send + Sync + 'static,
+{
+    pub fn add_task<S, C, F>(&self, label: S, task: C) -> JoinHandle<()>
     where
         S: ToString,
-        C: Fn(Arc<App>) -> F + Send + Sync + 'static,
+        C: Fn(Arc<T>) -> F + Send + Sync + 'static,
         F: Future<Output = eyre::Result<()>> + Send + 'static,
     {
         let app = self.app.clone();
@@ -29,12 +33,12 @@ impl TaskRunner {
             let mut failures = vec![];
 
             loop {
-                tracing::info!(label, "Running task");
+                tracing::info!(task_label = label, "Running task");
 
                 let result = task(app.clone()).await;
 
                 if let Err(err) = result {
-                    tracing::error!(label, error = ?err, "Task failed");
+                    tracing::error!(task_label = label, error = ?err, "Task failed");
 
                     failures.push(Instant::now());
                     let backoff = determine_backoff(&failures);
@@ -43,11 +47,11 @@ impl TaskRunner {
 
                     prune_failures(&mut failures);
                 } else {
-                    tracing::info!(label, "Task finished");
+                    tracing::info!(task_label = label, "Task finished");
                     break;
                 }
             }
-        });
+        })
     }
 }
 
