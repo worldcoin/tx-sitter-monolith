@@ -1,29 +1,47 @@
 #![allow(dead_code)] // Needed because this module is imported as module by many test crates
 
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
 use ethers::core::k256::ecdsa::SigningKey;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
-use ethers::signers::LocalWallet;
-use ethers::types::{Address, Eip1559TransactionRequest, H160, U256};
-use ethers_signers::Signer;
-use fake_rpc::DoubleAnvil;
+use ethers::signers::{LocalWallet, Signer};
+use ethers::types::{Address, H160, U256};
 use postgres_docker_utils::DockerContainerGuard;
-use service::config::{
-    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, RpcConfig,
-    ServerConfig, TxSitterConfig,
-};
-use service::service::Service;
-use tokio::task::JoinHandle;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 pub type AppMiddleware = SignerMiddleware<Arc<Provider<Http>>, LocalWallet>;
+
+mod anvil_builder;
+mod service_builder;
+
+pub use self::anvil_builder::AnvilBuilder;
+pub use self::service_builder::ServiceBuilder;
+
+#[allow(unused_imports)]
+pub mod prelude {
+    pub use std::time::Duration;
+
+    pub use ethers::prelude::{Http, Provider};
+    pub use ethers::providers::Middleware;
+    pub use ethers::types::{Eip1559TransactionRequest, H256, U256};
+    pub use ethers::utils::parse_units;
+    pub use futures::stream::FuturesUnordered;
+    pub use futures::StreamExt;
+    pub use tx_sitter::api_key::ApiKey;
+    pub use tx_sitter::client::TxSitterClient;
+    pub use tx_sitter::server::routes::relayer::{
+        CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
+    };
+    pub use tx_sitter::server::routes::transaction::SendTxRequest;
+    pub use url::Url;
+
+    pub use super::*;
+}
 
 pub const DEFAULT_ANVIL_ACCOUNT: Address = H160(hex_literal::hex!(
     "f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
@@ -33,23 +51,18 @@ pub const DEFAULT_ANVIL_PRIVATE_KEY: &[u8] = &hex_literal::hex!(
     "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 );
 
+pub const SECONDARY_ANVIL_PRIVATE_KEY: &[u8] = &hex_literal::hex!(
+    "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+);
+
 pub const ARBITRARY_ADDRESS: Address = H160(hex_literal::hex!(
     "1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
 ));
 
 pub const DEFAULT_ANVIL_CHAIN_ID: u64 = 31337;
+pub const DEFAULT_ANVIL_BLOCK_TIME: u64 = 2;
 
-pub struct DoubleAnvilHandle {
-    pub double_anvil: Arc<DoubleAnvil>,
-    local_addr: SocketAddr,
-    server_handle: JoinHandle<eyre::Result<()>>,
-}
-
-impl DoubleAnvilHandle {
-    pub fn local_addr(&self) -> String {
-        self.local_addr.to_string()
-    }
-}
+pub const DEFAULT_RELAYER_ID: &str = "1b908a34-5dc1-4d2d-a146-5eb46e975830";
 
 pub fn setup_tracing() {
     tracing_subscriber::registry()
@@ -58,7 +71,7 @@ pub fn setup_tracing() {
             EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())
                 // Logging from fake_rpc can get very messy so we set it to warn only
-                .parse_lossy("info,fake_rpc=warn"),
+                .parse_lossy("info,tx_sitter=debug,fake_rpc=warn"),
         )
         .init();
 }
@@ -71,79 +84,11 @@ pub async fn setup_db() -> eyre::Result<(String, DockerContainerGuard)> {
     Ok((url, db_container))
 }
 
-pub async fn setup_double_anvil() -> eyre::Result<DoubleAnvilHandle> {
-    let (double_anvil, server) = fake_rpc::serve(0).await;
-
-    let local_addr = server.local_addr();
-
-    let server_handle = tokio::spawn(async move {
-        server.await?;
-        Ok(())
-    });
-
-    let middleware = setup_middleware(
-        format!("http://{local_addr}"),
-        DEFAULT_ANVIL_PRIVATE_KEY,
-    )
-    .await?;
-
-    // We need to seed some transactions so we can get fee estimates on the first block
-    middleware
-        .send_transaction(
-            Eip1559TransactionRequest {
-                to: Some(DEFAULT_ANVIL_ACCOUNT.into()),
-                value: Some(U256::from(100u64)),
-                ..Default::default()
-            },
-            None,
-        )
-        .await?
-        .await?;
-
-    Ok(DoubleAnvilHandle {
-        double_anvil,
-        local_addr,
-        server_handle,
-    })
-}
-
-pub async fn setup_service(
-    rpc_url: &str,
-    db_connection_url: &str,
-    escalation_interval: Duration,
-) -> eyre::Result<Service> {
-    println!("rpc_url.to_string() = {}", rpc_url);
-
-    let config = Config {
-        service: TxSitterConfig {
-            escalation_interval,
-        },
-        server: ServerConfig {
-            host: SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(127, 0, 0, 1),
-                0,
-            )),
-            disable_auth: true,
-        },
-        rpc: RpcConfig {
-            rpcs: vec![format!("http://{}", rpc_url.to_string())],
-        },
-        database: DatabaseConfig {
-            connection_string: db_connection_url.to_string(),
-        },
-        keys: KeysConfig::Local(LocalKeysConfig {}),
-    };
-
-    let service = Service::new(config).await?;
-
-    Ok(service)
-}
-
 pub async fn setup_middleware(
     rpc_url: impl AsRef<str>,
     private_key: &[u8],
 ) -> eyre::Result<AppMiddleware> {
-    let provider = Provider::<Http>::new(rpc_url.as_ref().parse()?);
+    let provider = setup_provider(rpc_url).await?;
 
     let wallet = LocalWallet::from(SigningKey::from_slice(private_key)?)
         .with_chain_id(provider.get_chainid().await?.as_u64());
@@ -151,4 +96,32 @@ pub async fn setup_middleware(
     let middleware = SignerMiddleware::new(Arc::new(provider), wallet);
 
     Ok(middleware)
+}
+
+pub async fn setup_provider(
+    rpc_url: impl AsRef<str>,
+) -> eyre::Result<Provider<Http>> {
+    let provider = Provider::<Http>::new(rpc_url.as_ref().parse()?);
+
+    Ok(provider)
+}
+
+pub async fn await_balance(
+    provider: &Provider<Http>,
+    expected_balance: U256,
+    address: Address,
+) -> eyre::Result<()> {
+    for _ in 0..50 {
+        let balance = provider.get_balance(address, None).await?;
+
+        tracing::info!(?balance, ?expected_balance, "Checking balance");
+
+        if balance >= expected_balance {
+            return Ok(());
+        } else {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    eyre::bail!("Balance did not reach expected value");
 }

@@ -6,7 +6,6 @@ use aws_sdk_kms::operation::get_public_key::{
 };
 use aws_sdk_kms::operation::sign::{SignError, SignOutput};
 use aws_sdk_kms::types::{MessageType, SigningAlgorithmSpec};
-use aws_smithy_types::body::SdkBody;
 use aws_smithy_types::Blob;
 use ethers::core::k256::ecdsa::{
     Error as K256Error, Signature as KSig, VerifyingKey,
@@ -15,7 +14,6 @@ use ethers::core::types::transaction::eip2718::TypedTransaction;
 use ethers::core::types::transaction::eip712::Eip712;
 use ethers::core::types::{Address, Signature as EthSig, H256};
 use ethers::core::utils::hash_message;
-use hyper::Response;
 use tracing::{debug, instrument, trace};
 
 mod utils;
@@ -34,7 +32,7 @@ use utils::{apply_eip155, verifying_key_to_address};
 /// use rusoto_core::Client;
 /// use rusoto_kms::{Kms, KmsClient};
 ///
-/// user ethers_signers::Signer;
+/// user ethers::signers::Signer;
 ///
 /// let client = Client::new_with(
 ///     EnvironmentProvider::default(),
@@ -81,9 +79,9 @@ impl std::fmt::Display for AwsSigner {
 #[derive(thiserror::Error, Debug)]
 pub enum AwsSignerError {
     #[error("{0}")]
-    SignError(#[from] SdkError<SignError, Response<SdkBody>>),
+    SignError(#[from] SdkError<SignError>),
     #[error("{0}")]
-    GetPublicKeyError(#[from] SdkError<GetPublicKeyError, Response<SdkBody>>),
+    GetPublicKeyError(#[from] SdkError<GetPublicKeyError>),
     #[error("{0}")]
     K256(#[from] K256Error),
     #[error("{0}")]
@@ -114,7 +112,7 @@ impl From<spki::Error> for AwsSignerError {
 async fn request_get_pubkey<T>(
     kms: &aws_sdk_kms::Client,
     key_id: T,
-) -> Result<GetPublicKeyOutput, SdkError<GetPublicKeyError, Response<SdkBody>>>
+) -> Result<GetPublicKeyOutput, SdkError<GetPublicKeyError>>
 where
     T: AsRef<str>,
 {
@@ -130,7 +128,7 @@ async fn request_sign_digest<T>(
     kms: &aws_sdk_kms::Client,
     key_id: T,
     digest: [u8; 32],
-) -> Result<SignOutput, SdkError<SignError, Response<SdkBody>>>
+) -> Result<SignOutput, SdkError<SignError>>
 where
     T: AsRef<str>,
 {
@@ -143,7 +141,9 @@ where
         .signing_algorithm(SigningAlgorithmSpec::EcdsaSha256)
         .send()
         .await;
+
     trace!("{:?}", &resp);
+
     resp
 }
 
@@ -310,6 +310,7 @@ impl ethers::signers::Signer for AwsSigner {
 
 #[cfg(test)]
 mod tests {
+    use aws_config::BehaviorVersion;
     use aws_credential_types::Credentials;
     use aws_sdk_kms::Client as KmsClient;
     use aws_types::region::Region;
@@ -324,7 +325,7 @@ mod tests {
 
         let credentials =
             Credentials::from_keys(access_key, secret_access_key, None);
-        let config = aws_config::from_env()
+        let config = aws_config::defaults(BehaviorVersion::latest())
             .credentials_provider(credentials)
             .region(Region::new("us-west-1"))
             .load()
@@ -335,7 +336,7 @@ mod tests {
 
     #[allow(dead_code)]
     async fn env_client() -> KmsClient {
-        let config = aws_config::from_env()
+        let config = aws_config::defaults(BehaviorVersion::latest())
             .region(Region::new("us-west-1"))
             .load()
             .await;

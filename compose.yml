@@ -1,0 +1,44 @@
+version: '3'
+services:
+  tx-sitter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - db
+      - blockchain
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - TX_SITTER__SERVICE__ESCALATION_INTERVAL=1m
+      - TX_SITTER__DATABASE__KIND=connection_string
+      - TX_SITTER__DATABASE__CONNECTION_STRING=postgres://postgres:postgres@db:5432/tx-sitter?sslmode=disable
+      - TX_SITTER__KEYS__KIND=local
+      - TX_SITTER__SERVICE__PREDEFINED__NETWORK__CHAIN_ID=31337
+      - TX_SITTER__SERVICE__PREDEFINED__NETWORK__NAME=Anvil
+      - TX_SITTER__SERVICE__PREDEFINED__NETWORK__HTTP_RPC=http://blockchain:8545
+      - TX_SITTER__SERVICE__PREDEFINED__NETWORK__WS_RPC=ws://blockchain:8545
+      - TX_SITTER__SERVICE__PREDEFINED__RELAYER__ID=1b908a34-5dc1-4d2d-a146-5eb46e975830
+      - TX_SITTER__SERVICE__PREDEFINED__RELAYER__NAME=Relayer
+      - TX_SITTER__SERVICE__PREDEFINED__RELAYER__CHAIN_ID=31337
+      - TX_SITTER__SERVICE__PREDEFINED__RELAYER__KEY_ID=d10607662a85424f02a33fb1e6d095bd0ac7154396ff09762e41f82ff2233aaa
+      - TX_SITTER__SERVICE__PREDEFINED__RELAYER__API_KEY=G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsnllwU9D3Z4D8gOt04M0QNH
+      - TX_SITTER__SERVER__HOST=0.0.0.0:3000
+      - TX_SITTER__SERVER__DISABLE_AUTH=true
+      - RUST_LOG=info
+
+  db:
+    hostname: db
+    image: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+
+  blockchain:
+    hostname: blockchain
+    image: ghcr.io/foundry-rs/foundry:latest
+    ports:
+      - "8545:8545"
+    command: ["anvil --block-time 2"]
