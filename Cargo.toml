@@ -22,7 +22,7 @@ aws-types = "1.0.1"
 postgres-docker-utils = { path = "crates/postgres-docker-utils" }
 
 # Company
-telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", branch = "dzejkop/fix-connection-issues" }
+telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "e0891328b29d9f85df037633feccca2f74a291a6" }
 
 ## External
 async-trait = "0.1.74"
