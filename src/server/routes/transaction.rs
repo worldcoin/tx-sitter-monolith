@@ -90,6 +90,24 @@ pub async fn send_tx(
         uuid::Uuid::new_v4().to_string()
     };
 
+    let relayer = app.db.get_relayer(api_token.relayer_id()).await?;
+
+    if !relayer.enabled {
+        return Err(ApiError::RelayerDisabled);
+    }
+
+    let relayer_queued_tx_count = app
+        .db
+        .get_relayer_pending_txs(api_token.relayer_id())
+        .await?;
+
+    if relayer_queued_tx_count > relayer.max_queued_txs as usize {
+        return Err(ApiError::TooManyTransactions {
+            max: relayer.max_queued_txs as usize,
+            current: relayer_queued_tx_count,
+        });
+    }
+
     app.db
         .create_transaction(
             &tx_id,

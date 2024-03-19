@@ -1,12 +1,13 @@
 #![allow(dead_code)] // Needed because this module is imported as module by many test crates
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use ethers::core::k256::ecdsa::SigningKey;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{LocalWallet, Signer};
-use ethers::types::{Address, H160};
+use ethers::types::{Address, H160, U256};
 use postgres_docker_utils::DockerContainerGuard;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -103,4 +104,24 @@ pub async fn setup_provider(
     let provider = Provider::<Http>::new(rpc_url.as_ref().parse()?);
 
     Ok(provider)
+}
+
+pub async fn await_balance(
+    provider: &Provider<Http>,
+    expected_balance: U256,
+    address: Address,
+) -> eyre::Result<()> {
+    for _ in 0..50 {
+        let balance = provider.get_balance(address, None).await?;
+
+        tracing::info!(?balance, ?expected_balance, "Checking balance");
+
+        if balance >= expected_balance {
+            return Ok(());
+        } else {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    eyre::bail!("Balance did not reach expected value");
 }

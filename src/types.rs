@@ -42,6 +42,8 @@ pub struct RelayerInfo {
     pub current_nonce: u64,
     #[sqlx(try_from = "i64")]
     pub max_inflight_txs: u64,
+    #[sqlx(try_from = "i64")]
+    pub max_queued_txs: u64,
     pub gas_price_limits: Json<Vec<RelayerGasPriceLimit>>,
     pub enabled: bool,
 }
@@ -54,6 +56,8 @@ pub struct RelayerUpdate {
     #[serde(default)]
     pub max_inflight_txs: Option<u64>,
     #[serde(default)]
+    pub max_queued_txs: Option<u64>,
+    #[serde(default)]
     pub gas_price_limits: Option<Vec<RelayerGasPriceLimit>>,
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -64,6 +68,36 @@ pub struct RelayerUpdate {
 pub struct RelayerGasPriceLimit {
     pub value: U256Wrapper,
     pub chain_id: i64,
+}
+
+impl RelayerUpdate {
+    pub fn with_relayer_name(mut self, relayer_name: String) -> Self {
+        self.relayer_name = Some(relayer_name);
+        self
+    }
+
+    pub fn with_max_inflight_txs(mut self, max_inflight_txs: u64) -> Self {
+        self.max_inflight_txs = Some(max_inflight_txs);
+        self
+    }
+
+    pub fn with_max_queued_txs(mut self, max_queued_txs: u64) -> Self {
+        self.max_queued_txs = Some(max_queued_txs);
+        self
+    }
+
+    pub fn with_gas_price_limits(
+        mut self,
+        gas_price_limits: Vec<RelayerGasPriceLimit>,
+    ) -> Self {
+        self.gas_price_limits = Some(gas_price_limits);
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = Some(enabled);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +117,7 @@ mod tests {
             nonce: 0,
             current_nonce: 0,
             max_inflight_txs: 0,
+            max_queued_txs: 0,
             gas_price_limits: Json(vec![RelayerGasPriceLimit {
                 value: U256Wrapper(U256::zero()),
                 chain_id: 1,
@@ -102,6 +137,7 @@ mod tests {
               "nonce": 0,
               "currentNonce": 0,
               "maxInflightTxs": 0,
+              "maxQueuedTxs": 0,
               "gasPriceLimits": [
                 {
                   "value": "0x0",

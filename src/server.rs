@@ -1,11 +1,8 @@
 use std::sync::Arc;
 
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::routing::{get, post, IntoMakeService};
 use axum::Router;
 use hyper::server::conn::AddrIncoming;
-use thiserror::Error;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 
 use self::routes::relayer::{
@@ -16,46 +13,12 @@ use self::routes::transaction::{get_tx, get_txs, send_tx};
 use self::trace_layer::MatchedPathMakeSpan;
 use crate::app::App;
 
+mod error;
 mod middleware;
 pub mod routes;
 mod trace_layer;
 
-#[derive(Debug, Error)]
-pub enum ApiError {
-    #[error("Invalid key encoding")]
-    KeyEncoding,
-
-    #[error("Invalid key length")]
-    KeyLength,
-
-    #[error("Unauthorized")]
-    Unauthorized,
-
-    #[error("Invalid format")]
-    InvalidFormat,
-
-    #[error("Missing tx")]
-    MissingTx,
-
-    #[error("Internal error {0}")]
-    Eyre(#[from] eyre::Report),
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> axum::response::Response {
-        let status_code = match self {
-            Self::KeyLength | Self::KeyEncoding => StatusCode::BAD_REQUEST,
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Eyre(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::InvalidFormat => StatusCode::BAD_REQUEST,
-            Self::MissingTx => StatusCode::NOT_FOUND,
-        };
-
-        let message = self.to_string();
-
-        (status_code, message).into_response()
-    }
-}
+pub use self::error::ApiError;
 
 pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
     let server = spawn_server(app).await?;

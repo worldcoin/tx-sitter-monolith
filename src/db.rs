@@ -74,7 +74,15 @@ impl Database {
     ) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        if let Some(name) = &update.relayer_name {
+        let RelayerUpdate {
+            relayer_name,
+            max_inflight_txs,
+            max_queued_txs,
+            gas_price_limits,
+            enabled,
+        } = update;
+
+        if let Some(name) = relayer_name {
             sqlx::query(
                 r#"
                 UPDATE relayers
@@ -88,7 +96,7 @@ impl Database {
             .await?;
         }
 
-        if let Some(max_inflight_txs) = update.max_inflight_txs {
+        if let Some(max_inflight_txs) = max_inflight_txs {
             sqlx::query(
                 r#"
                 UPDATE relayers
@@ -97,12 +105,26 @@ impl Database {
                 "#,
             )
             .bind(id)
-            .bind(max_inflight_txs as i64)
+            .bind(*max_inflight_txs as i64)
             .execute(tx.as_mut())
             .await?;
         }
 
-        if let Some(gas_price_limits) = &update.gas_price_limits {
+        if let Some(max_queued_txs) = max_queued_txs {
+            sqlx::query(
+                r#"
+                UPDATE relayers
+                SET    max_queued_txs = $2
+                WHERE  id = $1
+                "#,
+            )
+            .bind(id)
+            .bind(*max_queued_txs as i64)
+            .execute(tx.as_mut())
+            .await?;
+        }
+
+        if let Some(gas_price_limits) = gas_price_limits {
             sqlx::query(
                 r#"
                 UPDATE relayers
@@ -116,11 +138,26 @@ impl Database {
             .await?;
         }
 
+        if let Some(enabled) = enabled {
+            sqlx::query(
+                r#"
+                UPDATE relayers
+                SET    enabled = $2
+                WHERE  id = $1
+                "#,
+            )
+            .bind(id)
+            .bind(*enabled)
+            .execute(tx.as_mut())
+            .await?;
+        }
+
         tx.commit().await?;
 
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_relayers(&self) -> eyre::Result<Vec<RelayerInfo>> {
         Ok(sqlx::query_as(
             r#"
@@ -142,6 +179,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_relayers_by_chain_id(
         &self,
         chain_id: u64,
@@ -157,6 +195,7 @@ impl Database {
                 nonce,
                 current_nonce,
                 max_inflight_txs,
+                max_queued_txs,
                 gas_price_limits,
                 enabled
             FROM relayers
@@ -168,6 +207,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_relayer(&self, id: &str) -> eyre::Result<RelayerInfo> {
         Ok(sqlx::query_as(
             r#"
@@ -180,6 +220,7 @@ impl Database {
                 nonce,
                 current_nonce,
                 max_inflight_txs,
+                max_queued_txs,
                 gas_price_limits,
                 enabled
             FROM relayers
@@ -189,6 +230,28 @@ impl Database {
         .bind(id)
         .fetch_one(&self.pool)
         .await?)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_relayer_pending_txs(
+        &self,
+        relayer_id: &str,
+    ) -> eyre::Result<usize> {
+        let (tx_count,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM transactions t
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE t.relayer_id = $1
+            AND (s.tx_id IS NULL OR s.status = $2)
+            "#,
+        )
+        .bind(relayer_id)
+        .bind(TxStatus::Pending)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(tx_count as usize)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -245,6 +308,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_unsent_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
         Ok(sqlx::query_as(
             r#"
@@ -309,6 +373,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_latest_block_number_without_fee_estimates(
         &self,
         chain_id: u64,
@@ -334,6 +399,7 @@ impl Database {
         Ok(block_number.map(|(n,)| n as u64))
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_latest_block_number(
         &self,
         chain_id: u64,
@@ -354,6 +420,7 @@ impl Database {
         Ok(block_number.map(|(n,)| n as u64))
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_latest_block_fees_by_chain_id(
         &self,
         chain_id: u64,
@@ -387,6 +454,7 @@ impl Database {
         }))
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn has_blocks_for_chain(
         &self,
         chain_id: u64,
@@ -687,6 +755,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_txs_for_escalation(
         &self,
         escalation_interval: Duration,
@@ -770,6 +839,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn read_tx(
         &self,
         tx_id: &str,
@@ -789,6 +859,7 @@ impl Database {
         .await?)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn read_txs(
         &self,
         relayer_id: &str,
@@ -925,6 +996,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_network_rpc(
         &self,
         chain_id: u64,
@@ -946,6 +1018,7 @@ impl Database {
         Ok(row.0)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_network_chain_ids(&self) -> eyre::Result<Vec<u64>> {
         let items: Vec<(i64,)> = sqlx::query_as(
             r#"
@@ -979,6 +1052,7 @@ impl Database {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn is_api_key_valid(
         &self,
         relayer_id: &str,
@@ -1002,6 +1076,7 @@ impl Database {
         Ok(is_valid)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_stats(&self, chain_id: u64) -> eyre::Result<NetworkStats> {
         let (pending_txs,): (i64,) = sqlx::query_as(
             r#"
@@ -1128,7 +1203,8 @@ mod tests {
             match Database::new(&DatabaseConfig::connection_string(&url)).await
             {
                 Ok(db) => return Ok((db, db_container)),
-                Err(_) => {
+                Err(err) => {
+                    eprintln!("Failed to connect to the database: {err:?}");
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -1263,6 +1339,7 @@ mod tests {
             &RelayerUpdate {
                 relayer_name: None,
                 max_inflight_txs: Some(10),
+                max_queued_txs: Some(20),
                 gas_price_limits: Some(vec![RelayerGasPriceLimit {
                     chain_id: 1,
                     value: U256Wrapper(U256::from(10_123u64)),
@@ -1282,6 +1359,7 @@ mod tests {
         assert_eq!(relayer.nonce, 0);
         assert_eq!(relayer.current_nonce, 0);
         assert_eq!(relayer.max_inflight_txs, 10);
+        assert_eq!(relayer.max_queued_txs, 20);
         assert_eq!(
             relayer.gas_price_limits.0,
             vec![RelayerGasPriceLimit {

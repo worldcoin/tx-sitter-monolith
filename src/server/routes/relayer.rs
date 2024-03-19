@@ -83,10 +83,10 @@ pub async fn update_relayer(
     State(app): State<Arc<App>>,
     Path(relayer_id): Path<String>,
     Json(req): Json<RelayerUpdate>,
-) -> Result<(), ApiError> {
+) -> Result<Json<()>, ApiError> {
     app.db.update_relayer(&relayer_id, &req).await?;
 
-    Ok(())
+    Ok(Json(()))
 }
 
 #[tracing::instrument(skip(app))]
@@ -115,10 +115,10 @@ pub async fn get_relayer(
 pub async fn purge_unsent_txs(
     State(app): State<Arc<App>>,
     Path(relayer_id): Path<String>,
-) -> Result<(), ApiError> {
+) -> Result<Json<()>, ApiError> {
     app.db.purge_unsent_txs(&relayer_id).await?;
 
-    Ok(())
+    Ok(Json(()))
 }
 
 #[tracing::instrument(skip(app, api_token))]
