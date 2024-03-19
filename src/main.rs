@@ -37,14 +37,19 @@ async fn main() -> eyre::Result<()> {
 
     let config = load_config(args.config.iter().map(PathBuf::as_ref))?;
 
-    if config.service.datadog_enabled {
-        DatadogBattery::init(None, "tx-sitter-monolith", None, true);
+    let _shutdown_handle = if config.service.datadog_enabled {
+        let shutdown_handle =
+            DatadogBattery::init(None, "tx-sitter-monolith", None, true);
+
+        Some(shutdown_handle)
     } else {
         tracing_subscriber::registry()
             .with(tracing_subscriber::fmt::layer().pretty().compact())
             .with(EnvFilter::from_default_env())
             .init();
-    }
+
+        None
+    };
 
     if config.service.statsd_enabled {
         StatsdBattery::init(

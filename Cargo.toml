@@ -22,7 +22,7 @@ aws-types = "1.0.1"
 postgres-docker-utils = { path = "crates/postgres-docker-utils" }
 
 # Company
-telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "ec8ba6d4da45fdb98f900d8d4c8e1a09186894b4" }
+telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "e0891328b29d9f85df037633feccca2f74a291a6" }
 
 ## External
 async-trait = "0.1.74"
@@ -46,7 +46,7 @@ itertools = "0.12.0"
 metrics = "0.22.1"
 num-bigint = "0.4.4"
 rand = "0.8.5"
-reqwest = { version = "0.11.13", default-features = false, features = [
+reqwest = { version = "0.11.24", default-features = false, features = [
     "rustls-tls",
 ] }
 serde = "1.0.136"
