@@ -41,4 +41,5 @@ services:
     image: ghcr.io/foundry-rs/foundry:latest
     ports:
       - "8545:8545"
-    command: ["anvil --block-time 2"]
+    command: ["anvil --block-time 2 --host 0.0.0.0"]
+
