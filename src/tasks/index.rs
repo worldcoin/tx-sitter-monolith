@@ -25,10 +25,12 @@ pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
         let ws_rpc = app.ws_provider(chain_id).await?;
         let rpc = app.http_provider(chain_id).await?;
 
+        tracing::info!("Subscribing to new blocks");
         // Subscribe to new block with the WS client which uses an unbounded receiver, buffering the stream
         let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
 
         // Get the first block from the stream, backfilling any missing blocks from the latest block in the db to the chain head
+        tracing::info!("Backfilling blocks");
         if let Some(latest_block) = blocks_stream.next().await {
             backfill_to_block(app.clone(), chain_id, &rpc, latest_block)
                 .await?;

@@ -170,6 +170,7 @@ impl Database {
                 nonce,
                 current_nonce,
                 max_inflight_txs,
+                max_queued_txs,
                 gas_price_limits,
                 enabled
             FROM relayers
