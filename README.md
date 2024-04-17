@@ -54,3 +54,4 @@ Therefore I recommend [cargo-nextest](https://nexte.st/) as it runs all the test
 cargo nextest run --workspace
 ```
 can be used instead.
+
