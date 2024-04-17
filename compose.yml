@@ -43,3 +43,28 @@ services:
       - "8545:8545"
     command: ["anvil --block-time 2 --host 0.0.0.0"]
 
+  # blockchain:
+  #   image: ethereum/client-go:alltools-stable
+  #   hostname: blockchain
+  #   command: >
+  #     geth --datadir /root/datadir --dev --http --ws
+  #     --http.api eth,web3,net,debug
+  #     --http.addr "0.0.0.0"
+  #     --ws.addr "0.0.0.0"
+  #     --ws.port 8545
+  #     --http.vhosts "*"
+  #     --http.corsdomain "https://remix.ethereum.org"
+  #     --rpc.gascap 0
+  #     --rpc.txfeecap 0
+  #     --vmdebug
+  #   volumes:
+  #     - geth_datadir:/root/datadir
+  #   ports:
+  #     - "30303:30303"
+  #     - "8545:8545"
+  #   stdin_open: true
+  #   tty: true
+  #   restart: unless-stopped
+
+# volumes:
+#   geth_datadir:
