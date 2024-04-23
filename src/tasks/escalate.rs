@@ -89,17 +89,22 @@ async fn escalate_relayer_tx(
 
     let escalation = tx.escalation_count + 1;
 
+    println!("----  Escalating transaction");
+
     let middleware = app
         .signer_middleware(tx.chain_id, tx.key_id.clone())
         .await?;
 
     tracing::info!("Escalating transaction - got middleware");
+    println!("----  got middleware");
 
     let fees = app
         .db
         .get_latest_block_fees_by_chain_id(tx.chain_id)
         .await?
         .context("Missing block")?;
+
+    println!("----  FEES: {:?}", fees);
 
     tracing::info!("Escalating transaction - got block fees");
 
