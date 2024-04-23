@@ -2,7 +2,7 @@ use ethers::core::k256::ecdsa::SigningKey;
 use ethers::signers::Wallet;
 
 use super::universal_signer::UniversalSigner;
-use super::KeysSource;
+use super::{KeysSource, NewKeysSource, NewUniversalSigner};
 use crate::config::LocalKeysConfig;
 
 pub struct LocalKeys {
@@ -41,6 +41,43 @@ impl KeysSource for LocalKeys {
         let signer = Wallet::from(signing_key);
 
         Ok(UniversalSigner::Local(signer))
+    }
+}
+
+pub struct NewLocalKeys {
+    rng: rand::rngs::OsRng,
+}
+
+impl NewLocalKeys {
+    pub fn new(_config: &LocalKeysConfig) -> Self {
+        Self {
+            rng: rand::rngs::OsRng,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl NewKeysSource for NewLocalKeys {
+    async fn new_signer(&self) -> eyre::Result<(String, NewUniversalSigner)> {
+        let signing_key = SigningKey::random(&mut self.rng.clone());
+
+        let key_id = signing_key.to_bytes().to_vec();
+        let key_id = hex::encode(key_id);
+
+        let signer = alloy::signers::wallet::Wallet::from(signing_key);
+
+        Ok((key_id, NewUniversalSigner::Local(signer)))
+    }
+
+    async fn load_signer(
+        &self,
+        id: String,
+    ) -> eyre::Result<NewUniversalSigner> {
+        let signing_key = signing_key_from_hex(&id)?;
+
+        let signer = alloy::signers::wallet::Wallet::from(signing_key);
+
+        Ok(NewUniversalSigner::Local(signer))
     }
 }
 

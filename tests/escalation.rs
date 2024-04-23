@@ -62,7 +62,7 @@ async fn await_balance(
         if balance == value {
             return Ok(());
         } else {
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 
