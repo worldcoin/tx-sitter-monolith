@@ -263,6 +263,7 @@ impl Database {
         value: U256,
         gas_limit: U256,
         priority: TransactionPriority,
+        binaries: Option<Vec<Vec<u8>>>,
         relayer_id: &str,
     ) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
@@ -288,8 +289,8 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO transactions (id, tx_to, data, value, gas_limit, priority, relayer_id, nonce)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO transactions (id, tx_to, data, value, gas_limit, priority, relayer_id, nonce, binaries)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         "#,
         )
         .bind(tx_id)
@@ -300,6 +301,7 @@ impl Database {
         .bind(priority)
         .bind(relayer_id)
         .bind(nonce)
+        .bind(binaries.map(|b| b))
         .execute(tx.as_mut())
         .await?;
 
@@ -312,7 +314,7 @@ impl Database {
     pub async fn get_unsent_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT     r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.priority, t.nonce, r.key_id, r.chain_id
+            SELECT     r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.priority, t.nonce, t.binaries, r.key_id, r.chain_id
             FROM       transactions t
             LEFT JOIN  sent_transactions s ON (t.id = s.tx_id)
             INNER JOIN relayers r ON (t.relayer_id = r.id)
@@ -763,7 +765,7 @@ impl Database {
         Ok(sqlx::query_as(
             r#"
             SELECT r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce,
-                   r.key_id, r.chain_id,
+                   t.binaries, r.key_id, r.chain_id,
                    s.initial_max_fee_per_gas, s.initial_max_priority_fee_per_gas, s.escalation_count
             FROM   transactions t
             JOIN   sent_transactions s ON t.id = s.tx_id
@@ -847,7 +849,7 @@ impl Database {
         Ok(sqlx::query_as(
             r#"
             SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
-                   h.tx_hash, s.status
+                   t.binaries, h.tx_hash, s.status
             FROM transactions t
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
@@ -873,7 +875,7 @@ impl Database {
         Ok(sqlx::query_as(
             r#"
             SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
-                   h.tx_hash, s.status
+                   t. binaries, h.tx_hash, s.status
             FROM transactions t
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
@@ -1405,12 +1407,13 @@ mod tests {
         let value = U256::from(0);
         let gas_limit = U256::from(0);
         let priority = TransactionPriority::Regular;
+        let binaries = None;
 
         let tx = db.read_tx(tx_id).await?;
         assert!(tx.is_none(), "Tx has not been sent yet");
 
         db.create_transaction(
-            tx_id, to, data, value, gas_limit, priority, relayer_id,
+            tx_id, to, data, value, gas_limit, priority, binaries, relayer_id,
         )
         .await?;
 
@@ -1423,6 +1426,7 @@ mod tests {
         assert_eq!(tx.gas_limit.0, gas_limit);
         assert_eq!(tx.nonce, 0);
         assert_eq!(tx.tx_hash, None);
+        assert_eq!(tx.binaries, None);
 
         let unsent_txs = db.read_txs(relayer_id, None).await?;
         assert_eq!(unsent_txs.len(), 1, "1 unsent tx");

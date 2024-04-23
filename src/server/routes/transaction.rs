@@ -25,6 +25,8 @@ pub struct SendTxRequest {
     pub priority: TransactionPriority,
     #[serde(default)]
     pub tx_id: Option<String>,
+    #[serde(default, with = "crate::serde_utils::base64_binary")]
+    pub binaries: Option<Vec<Vec<u8>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +118,7 @@ pub async fn send_tx(
             req.value,
             req.gas_limit,
             req.priority,
+            req.binaries,
             api_token.relayer_id(),
         )
         .await?;
