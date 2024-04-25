@@ -59,7 +59,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
                     gas_limit: U256::from(21_000),
                     priority: TransactionPriority::Regular,
                     tx_id: None,
-                    binaries: None,
+                    blobs: None,
                 },
             )
             .await?;
@@ -76,7 +76,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
                 gas_limit: U256::from(21_000),
                 priority: TransactionPriority::Regular,
                 tx_id: None,
-                binaries: None,
+                blobs: None,
             },
         )
         .await;
@@ -104,7 +104,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
                 gas_limit: U256::from(21_000),
                 priority: TransactionPriority::Regular,
                 tx_id: None,
-                binaries: None,
+                blobs: None,
             },
         )
         .await?;

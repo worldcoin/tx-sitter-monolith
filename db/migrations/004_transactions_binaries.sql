@@ -1,1 +1,1 @@
-ALTER TABLE transactions ADD COLUMN binaries BYTEA[]
+ALTER TABLE transactions ADD COLUMN blobs BYTEA[]

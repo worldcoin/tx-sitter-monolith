@@ -3,15 +3,15 @@ use base64::Engine as _;
 use serde::Deserialize;
 
 pub fn serialize<S>(
-    binaries: &Option<Vec<Vec<u8>>>,
+    blobs: &Option<Vec<Vec<u8>>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    match binaries {
-        Some(binaries) => {
-            let base64_vec: Vec<String> = binaries
+    match blobs {
+        Some(blobs) => {
+            let base64_vec: Vec<String> = blobs
                 .iter()
                 .map(|binary| general_purpose::STANDARD.encode(binary))
                 .collect();
