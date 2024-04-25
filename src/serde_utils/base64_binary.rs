@@ -33,15 +33,53 @@ where
 
     match base64_strings {
         Some(base64_vec) => {
-            let decoded_vec: Vec<Vec<u8>> = base64_vec
+            let decoded_vec: Result<Vec<Vec<u8>>, _> = base64_vec
                 .into_iter()
                 .map(|base64_str| {
-                    general_purpose::STANDARD.decode(base64_str).unwrap()
+                    general_purpose::STANDARD
+                        .decode(base64_str)
+                        .map_err(serde::de::Error::custom)
                 })
                 .collect();
 
-            Ok(Some(decoded_vec))
+            Ok(Some(decoded_vec?))
         }
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+    use serde_json;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Test {
+        #[serde(with = "super")]
+        blobs: Option<Vec<Vec<u8>>>,
+    }
+
+    #[test]
+    fn test_deserialize_with_valid_input() {
+        let blobs =
+            Some(["Hello", "world!"].map(|b| b.as_bytes().to_vec()).to_vec());
+        let test = Test {
+            blobs: blobs.clone(),
+        };
+
+        let s = serde_json::to_string(&test).unwrap();
+
+        let test: Test = serde_json::from_str(&s).unwrap();
+        assert_eq!(test.blobs, blobs);
+    }
+
+    #[test]
+    fn test_deserialize_with_null_input() {
+        let test = Test { blobs: None };
+
+        let s = serde_json::to_string(&test).unwrap();
+
+        let test: Test = serde_json::from_str(&s).unwrap();
+        assert_eq!(test.blobs, None);
     }
 }
