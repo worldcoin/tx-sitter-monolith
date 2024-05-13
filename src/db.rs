@@ -53,6 +53,7 @@ impl Database {
             r#"
             INSERT INTO relayers (id, name, chain_id, key_id, address)
             VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT DO NOTHING
         "#,
         )
         .bind(id)
@@ -969,6 +970,7 @@ impl Database {
             r#"
             INSERT INTO networks (chain_id, name)
             VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
             "#,
         )
         .bind(chain_id as i64)
@@ -982,6 +984,7 @@ impl Database {
             VALUES
                 ($1, $2, $3),
                 ($1, $4, $5)
+            ON CONFLICT DO NOTHING
             "#,
         )
         .bind(chain_id as i64)
@@ -1043,6 +1046,7 @@ impl Database {
             r#"
             INSERT INTO api_keys (relayer_id, key_hash)
             VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
             "#,
         )
         .bind(relayer_id)
