@@ -61,7 +61,7 @@ pub async fn create_relayer(
     State(app): State<Arc<App>>,
     Json(req): Json<CreateRelayerRequest>,
 ) -> Result<Json<CreateRelayerResponse>, ApiError> {
-    let (key_id, signer) = app.keys_source.new_signer().await?;
+    let (key_id, signer) = app.keys_source.new_signer(&req.name).await?;
 
     let address = signer.address();
 

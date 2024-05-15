@@ -1,5 +1,6 @@
 use aws_config::BehaviorVersion;
-use aws_sdk_kms::types::{KeySpec, KeyUsageType};
+use aws_sdk_kms::types::{KeySpec, KeyUsageType, Tag};
+use ethers::signers::Signer;
 use eyre::{Context, ContextCompat};
 
 use super::{KeysSource, UniversalSigner};
@@ -23,12 +24,22 @@ impl KmsKeys {
 
 #[async_trait::async_trait]
 impl KeysSource for KmsKeys {
-    async fn new_signer(&self) -> eyre::Result<(String, UniversalSigner)> {
+    async fn new_signer(
+        &self,
+        meta_name: &str,
+    ) -> eyre::Result<(String, UniversalSigner)> {
         let kms_key = self
             .kms_client
             .create_key()
             .key_spec(KeySpec::EccSecgP256K1)
             .key_usage(KeyUsageType::SignVerify)
+            .tags(
+                Tag::builder()
+                    .tag_key("CreatedBy")
+                    .tag_value("tx-sitter")
+                    .build()?,
+            )
+            .description(format!("Key of relayer {meta_name}"))
             .send()
             .await
             .context("AWS Error")?;
@@ -42,6 +53,31 @@ impl KeysSource for KmsKeys {
             1, // TODO: get chain id from provider
         )
         .await?;
+
+        let address = signer.address();
+
+        self.kms_client
+            .update_alias()
+            .target_key_id(key_id.clone())
+            .alias_name(format!("{meta_name}-{:?}", address));
+
+        self.kms_client
+            .tag_resource()
+            .key_id(key_id.clone())
+            .tags(
+                Tag::builder()
+                    .tag_key("RelayerName")
+                    .tag_value(meta_name)
+                    .build()?,
+            )
+            .tags(
+                Tag::builder()
+                    .tag_key("RelayerAddress")
+                    .tag_value(format!("{:?}", address))
+                    .build()?,
+            )
+            .send()
+            .await?;
 
         Ok((key_id, UniversalSigner::Aws(signer)))
     }
