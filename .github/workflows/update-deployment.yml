@@ -16,7 +16,7 @@ jobs:
         uses: peter-evans/repository-dispatch@v2
         with:
           token: ${{ secrets.GIT_HUB_TOKEN }}
-          repository: worldcoin/signup-sequencer-deploy
+          repository: worldcoin/tx-sitter-monolith-deploy
           event-type: update-dev
           client-payload: |
             {
