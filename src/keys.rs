@@ -9,7 +9,10 @@ pub use universal_signer::UniversalSigner;
 #[async_trait::async_trait]
 pub trait KeysSource: Send + Sync + 'static {
     /// Returns a key id and signer
-    async fn new_signer(&self) -> eyre::Result<(String, UniversalSigner)>;
+    async fn new_signer(
+        &self,
+        meta_name: &str,
+    ) -> eyre::Result<(String, UniversalSigner)>;
 
     /// Loads the key using the provided id
     async fn load_signer(&self, id: String) -> eyre::Result<UniversalSigner>;

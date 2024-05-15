@@ -19,7 +19,10 @@ impl LocalKeys {
 
 #[async_trait::async_trait]
 impl KeysSource for LocalKeys {
-    async fn new_signer(&self) -> eyre::Result<(String, UniversalSigner)> {
+    async fn new_signer(
+        &self,
+        _meta_name: &str,
+    ) -> eyre::Result<(String, UniversalSigner)> {
         let signing_key = SigningKey::random(&mut self.rng.clone());
 
         let key_id = signing_key.to_bytes().to_vec();
@@ -56,7 +59,7 @@ mod tests {
     async fn local_roundtrip() -> eyre::Result<()> {
         let keys_source = LocalKeys::new(&LocalKeysConfig::default());
 
-        let (id, signer) = keys_source.new_signer().await?;
+        let (id, signer) = keys_source.new_signer("meta name").await?;
 
         let address = signer.address();
 
