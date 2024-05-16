@@ -23,7 +23,10 @@ pub struct App {
 
 impl App {
     pub async fn new(config: Config) -> eyre::Result<Self> {
+        tracing::info!("Initializing keys source");
         let keys_source = init_keys_source(&config).await?;
+
+        tracing::info!("Initializing db");
         let db = Database::new(&config.database).await?;
 
         Ok(Self {

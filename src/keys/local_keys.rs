@@ -11,6 +11,8 @@ pub struct LocalKeys {
 
 impl LocalKeys {
     pub fn new(_config: &LocalKeysConfig) -> Self {
+        tracing::info!("Initializing local keys source");
+
         Self {
             rng: rand::rngs::OsRng,
         }
