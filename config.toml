@@ -1,7 +1,5 @@
 [service]
 escalation_interval = "1m"
-datadog_enabled = false
-statsd_enabled = false
 
 [service.predefined.network]
 chain_id = 31337

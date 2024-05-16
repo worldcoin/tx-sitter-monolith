@@ -31,8 +31,10 @@ impl Service {
         task_runner.add_task("Handle soft reorgs", tasks::handle_soft_reorgs);
         task_runner.add_task("Handle hard reorgs", tasks::handle_hard_reorgs);
 
-        if app.config.service.statsd_enabled {
-            task_runner.add_task("Emit metrics", tasks::emit_metrics);
+        if let Some(telemetry_config) = app.config.service.telemetry.as_ref() {
+            if telemetry_config.metrics.is_some() {
+                task_runner.add_task("Emit metrics", tasks::emit_metrics);
+            }
         }
 
         for chain_id in chain_ids {

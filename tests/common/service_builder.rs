@@ -58,8 +58,7 @@ impl ServiceBuilder {
                 escalation_interval: self.escalation_interval,
                 soft_reorg_interval: self.soft_reorg_interval,
                 hard_reorg_interval: self.hard_reorg_interval,
-                datadog_enabled: false,
-                statsd_enabled: false,
+                telemetry: None,
                 predefined: Some(Predefined {
                     network: PredefinedNetwork {
                         chain_id: DEFAULT_ANVIL_CHAIN_ID,

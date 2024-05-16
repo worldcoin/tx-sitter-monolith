@@ -50,28 +50,23 @@ pub struct TxSitterConfig {
     #[serde(with = "humantime_serde")]
     pub escalation_interval: Duration,
 
-    #[serde(with = "humantime_serde", default = "default_soft_reorg_interval")]
+    #[serde(
+        with = "humantime_serde",
+        default = "default::soft_reorg_interval"
+    )]
     pub soft_reorg_interval: Duration,
 
-    #[serde(with = "humantime_serde", default = "default_hard_reorg_interval")]
+    #[serde(
+        with = "humantime_serde",
+        default = "default::hard_reorg_interval"
+    )]
     pub hard_reorg_interval: Duration,
-
-    #[serde(default)]
-    pub datadog_enabled: bool,
-
-    #[serde(default)]
-    pub statsd_enabled: bool,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predefined: Option<Predefined>,
-}
 
-const fn default_soft_reorg_interval() -> Duration {
-    Duration::from_secs(60)
-}
-
-const fn default_hard_reorg_interval() -> Duration {
-    Duration::from_secs(60 * 60)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +181,59 @@ impl KeysConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryConfig {
+    // Service name - used for logging, metrics and tracing
+    pub service_name: String,
+    // Traces
+    pub traces_endpoint: Option<String>,
+    // Metrics
+    pub metrics: Option<MetricsConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    #[serde(default = "default::metrics::host")]
+    pub host: String,
+    #[serde(default = "default::metrics::port")]
+    pub port: u16,
+    #[serde(default = "default::metrics::queue_size")]
+    pub queue_size: usize,
+    #[serde(default = "default::metrics::buffer_size")]
+    pub buffer_size: usize,
+    pub prefix: String,
+}
+
+mod default {
+    use super::*;
+
+    pub fn soft_reorg_interval() -> Duration {
+        Duration::from_secs(60)
+    }
+
+    pub fn hard_reorg_interval() -> Duration {
+        Duration::from_secs(60 * 60)
+    }
+
+    pub mod metrics {
+        pub fn host() -> String {
+            "127.0.0.1".to_string()
+        }
+
+        pub fn port() -> u16 {
+            8125
+        }
+
+        pub fn queue_size() -> usize {
+            5000
+        }
+
+        pub fn buffer_size() -> usize {
+            256
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use indoc::indoc;
@@ -197,8 +245,6 @@ mod tests {
         escalation_interval = "1h"
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
-        datadog_enabled = false
-        statsd_enabled = false
 
         [server]
         host = "127.0.0.1:3000"
@@ -216,8 +262,6 @@ mod tests {
         escalation_interval = "1h"
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
-        datadog_enabled = false
-        statsd_enabled = false
 
         [server]
         host = "127.0.0.1:3000"
@@ -239,11 +283,10 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
-                soft_reorg_interval: default_soft_reorg_interval(),
-                hard_reorg_interval: default_hard_reorg_interval(),
-                datadog_enabled: false,
-                statsd_enabled: false,
+                soft_reorg_interval: default::soft_reorg_interval(),
+                hard_reorg_interval: default::hard_reorg_interval(),
                 predefined: None,
+                telemetry: None,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
@@ -267,11 +310,10 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
-                soft_reorg_interval: default_soft_reorg_interval(),
-                hard_reorg_interval: default_hard_reorg_interval(),
-                datadog_enabled: false,
-                statsd_enabled: false,
+                soft_reorg_interval: default::soft_reorg_interval(),
+                hard_reorg_interval: default::hard_reorg_interval(),
                 predefined: None,
+                telemetry: None,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
@@ -302,8 +344,10 @@ mod tests {
         std::env::set_var("TX_SITTER__DATABASE__USERNAME", "dbUsername");
         std::env::set_var("TX_SITTER__DATABASE__PASSWORD", "dbPassword");
         std::env::set_var("TX_SITTER__SERVICE__ESCALATION_INTERVAL", "1m");
-        std::env::set_var("TX_SITTER__SERVICE__DATADOG_ENABLED", "true");
-        std::env::set_var("TX_SITTER__SERVICE__STATSD_ENABLED", "true");
+        std::env::set_var(
+            "TX_SITTER__SERVICE__TELEMETRY__SERVICE_NAME",
+            "tx-sitter",
+        );
         std::env::set_var("TX_SITTER__SERVER__HOST", "0.0.0.0:8080");
         std::env::set_var("TX_SITTER__SERVER__USERNAME", "authUsername");
         std::env::set_var("TX_SITTER__SERVER__PASSWORD", "authPassword");
@@ -311,8 +355,10 @@ mod tests {
 
         let config = load_config(std::iter::empty()).unwrap();
 
-        assert!(config.service.statsd_enabled);
-        assert!(config.service.datadog_enabled);
+        assert_eq!(
+            config.service.telemetry.as_ref().unwrap().service_name,
+            "tx-sitter"
+        );
         assert_eq!(config.service.escalation_interval, Duration::from_secs(60));
         assert_eq!(
             config.database.to_connection_string(),
