@@ -19,6 +19,7 @@ pub struct UnsentTx {
     pub priority: TransactionPriority,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
+    pub blobs: Option<Vec<Vec<u8>>>,
     pub key_id: String,
     #[sqlx(try_from = "i64")]
     pub chain_id: u64,
@@ -34,6 +35,7 @@ pub struct TxForEscalation {
     pub gas_limit: U256Wrapper,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
+    pub blobs: Option<Vec<Vec<u8>>>,
     pub key_id: String,
     #[sqlx(try_from = "i64")]
     pub chain_id: u64,
@@ -52,6 +54,7 @@ pub struct ReadTxData {
     pub gas_limit: U256Wrapper,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
+    pub blobs: Option<Vec<Vec<u8>>>,
 
     // Sent tx data
     pub tx_hash: Option<H256Wrapper>,
