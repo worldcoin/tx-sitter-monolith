@@ -9,8 +9,8 @@ members = ["crates/*"]
 
 [dependencies]
 ## AWS
-aws-config = { version = "1.0.1" }
-aws-credential-types = { version = "1.0.1", features = [
+aws-config = { version = "1.4.0", features = ["behavior-version-latest"] }
+aws-credential-types = { version = "1.2.0", features = [
     "hardcoded-credentials",
 ] }
 aws-sdk-kms = "1.26.0"
