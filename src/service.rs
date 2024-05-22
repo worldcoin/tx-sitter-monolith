@@ -20,8 +20,10 @@ impl Service {
     pub async fn new(config: Config) -> eyre::Result<Self> {
         let app = Arc::new(App::new(config).await?);
 
+        tracing::info!("Getting network chain ids");
         let chain_ids = app.db.get_network_chain_ids().await?;
 
+        tracing::info!("Spawning tasks");
         let task_runner = TaskRunner::new(app.clone());
         task_runner.add_task("Broadcast transactions", tasks::broadcast_txs);
         task_runner.add_task("Escalate transactions", tasks::escalate_txs_task);
