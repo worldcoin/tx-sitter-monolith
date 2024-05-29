@@ -13,12 +13,14 @@ pub struct KmsKeys {
 
 impl KmsKeys {
     pub async fn new(_config: &KmsKeysConfig) -> eyre::Result<Self> {
-        tracing::info!("Initializing KMS keys source");
-
+        tracing::info!("Initializing AWS client - loading config");
         let aws_config =
             aws_config::load_defaults(BehaviorVersion::latest()).await;
 
+        tracing::info!(?aws_config, "Initializing KMS client");
         let kms_client = aws_sdk_kms::Client::new(&aws_config);
+
+        tracing::info!("Initialized KMS client");
 
         Ok(Self { kms_client })
     }
