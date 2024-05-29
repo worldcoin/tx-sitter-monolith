@@ -30,13 +30,17 @@ impl Database {
         let connection_string = config.to_connection_string();
 
         if !Postgres::database_exists(&connection_string).await? {
+            tracing::info!("Creating database");
             Postgres::create_database(&connection_string).await?;
         }
 
+        tracing::info!("Connecting to the database");
         let pool = Pool::connect(&connection_string).await?;
 
+        tracing::info!("Running migrations");
         MIGRATOR.run(&pool).await?;
 
+        tracing::info!("Database initialized");
         Ok(Self { pool })
     }
 
