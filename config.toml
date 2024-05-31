@@ -17,6 +17,7 @@ api_key = "G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk="
 [server]
 host = "127.0.0.1:3000"
 disable_auth = false
+server_address = "http://localhost:3000"
 
 [database]
 kind = "connection_string"

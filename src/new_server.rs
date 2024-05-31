@@ -4,7 +4,7 @@ use std::sync::Arc;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::web::LocalAddr;
 use poem::Route;
-use poem_openapi::{OpenApi, OpenApiService};
+use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
 
 use crate::app::App;
 
@@ -20,8 +20,19 @@ impl ConsumerApi {}
 
 struct ServiceApi;
 
+#[derive(ApiResponse)]
+enum ServiceResponse {
+    #[oai(status = 200)]
+    Healthy,
+}
+
 #[OpenApi]
-impl ServiceApi {}
+impl ServiceApi {
+    #[oai(path = "/", method = "get")]
+    async fn health(&self) -> ServiceResponse {
+        ServiceResponse::Healthy
+    }
+}
 
 pub struct ServerHandle {
     pub local_addrs: Vec<LocalAddr>,
@@ -40,11 +51,15 @@ impl ServerHandle {
 }
 
 pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
-    let api_service = OpenApiService::new(
+    let mut api_service = OpenApiService::new(
         (AdminApi, ConsumerApi, ServiceApi),
         "Tx Sitter",
         version::version!(),
     );
+
+    if let Some(server_address) = app.config.server.server_address.as_ref() {
+        api_service = api_service.server(server_address.clone());
+    }
 
     let router = Route::new()
         .nest("/explorer", api_service.rapidoc())
