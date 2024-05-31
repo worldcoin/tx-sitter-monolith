@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::routing::{get, post, IntoMakeService};
 use axum::Router;
 use hyper::server::conn::AddrIncoming;
+use poem_openapi::OpenApi;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 
 use self::routes::relayer::{
@@ -20,8 +21,8 @@ mod trace_layer;
 
 pub use self::error::ApiError;
 
-pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
-    let server = spawn_server(app).await?;
+pub async fn _serve(app: Arc<App>) -> eyre::Result<()> {
+    let server = _spawn_server(app).await?;
 
     tracing::info!("Listening on {}", server.local_addr());
 
@@ -30,7 +31,7 @@ pub async fn serve(app: Arc<App>) -> eyre::Result<()> {
     Ok(())
 }
 
-pub async fn spawn_server(
+pub async fn _spawn_server(
     app: Arc<App>,
 ) -> eyre::Result<axum::Server<AddrIncoming, IntoMakeService<Router>>> {
     let api_routes = Router::new()

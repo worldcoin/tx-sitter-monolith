@@ -13,7 +13,7 @@ use crate::tasks;
 pub struct Service {
     _app: Arc<App>,
     local_addr: SocketAddr,
-    server_handle: JoinHandle<Result<(), hyper::Error>>,
+    server_handle: JoinHandle<eyre::Result<()>>,
 }
 
 impl Service {
@@ -43,12 +43,9 @@ impl Service {
             Self::spawn_chain_tasks(&task_runner, chain_id)?;
         }
 
-        let server = crate::server::spawn_server(app.clone()).await?;
+        let server = crate::new_server::spawn_server(app.clone()).await?;
         let local_addr = server.local_addr();
-        let server_handle = tokio::spawn(async move {
-            server.await?;
-            Ok(())
-        });
+        let server_handle = server.server_handle;
 
         initialize_predefined_values(&app).await?;
 
