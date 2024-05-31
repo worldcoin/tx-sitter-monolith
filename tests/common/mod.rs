@@ -70,8 +70,7 @@ pub fn setup_tracing() {
         .with(
             EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())
-                // Logging from fake_rpc can get very messy so we set it to warn only
-                .parse_lossy("info,tx_sitter=debug,fake_rpc=warn"),
+                .parse_lossy("info,tx_sitter=debug"),
         )
         .init();
 }

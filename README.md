@@ -1,6 +1,17 @@
 # Tx Sitter Monolith
 
-A monolithized version of the [tx-sitter](https://github.com/worldcoin/tx-sitter-aws/).
+An easy to run transaction relayer.
+
+## Quickstart
+Copy `.env.example` to `.env` or set `RUST_LOG=info,service=debug` to have logging.
+
+1. Spin up the database `docker run --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres`
+2. Spin up a chain `anvil --chain-id 31337 --block-time 2`
+3. Start the service `cargo run`
+
+This will use the `config.toml` configuration.
+
+If you have [nushell](https://www.nushell.sh/) installed, `nu manual_test.nu` can be run to execute a basic test.
 
 ## Configuration
 The Tx Sitter can be configured in 2 ways:
@@ -30,17 +41,6 @@ The Tx Sitter can be configured in 2 ways:
     TX_SITTER__DATABASE__CONNECTION_STRING="postgres://postgres:postgres@127.0.0.1:5432/database"
     TX_SITTER__KEYS__KIND="local"
     ```
-
-## Testing locally
-Copy `.env.example` to `.env` or set `RUST_LOG=info,service=debug` to have logging.
-
-1. Spin up the database `docker run --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres`
-2. Spin up the chain `anvil --chain-id 31337 --block-time 2`
-3. Start the service `cargo run`
-
-This will use the `config.toml` configuration.
-
-If you have [nushell](https://www.nushell.sh/) installed, `nu manual_test.nu` can be run to execute a basic test.
 
 ## Running tests
 While you obviously can run tests with
