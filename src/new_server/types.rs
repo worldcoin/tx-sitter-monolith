@@ -11,6 +11,7 @@ pub struct AddressWrapper(pub Address);
 pub struct CreateRelayerRequest {
     /// New relayer name
     pub name: String,
+    /// The chain id of the relayer
     pub chain_id: u64,
 }
 
@@ -18,6 +19,11 @@ pub struct CreateRelayerRequest {
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
 pub struct CreateRelayerResponse {
+    /// ID of the created relayer
     pub relayer_id: String,
-    pub address: AddressWrapper,
+    // TODO: Make type safe
+    /// Address of the created relayer
+    ///
+    /// Hex encoded, example "0x1234...5678"
+    pub address: String,
 }

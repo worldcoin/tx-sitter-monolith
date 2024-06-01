@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use ethers::signers::Signer;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::web::{Data, LocalAddr};
 use poem::{EndpointExt, Route};
@@ -13,9 +14,13 @@ mod types;
 
 struct AdminApi;
 
+#[derive(ApiResponse)]
 enum CreateRelayerResponse {
     #[oai(status = 200)]
-    CreateRelayerResponse(types::CreateRelayerResponse),
+    RelayerCreated(Json<types::CreateRelayerResponse>),
+
+    #[oai(status = 500)]
+    InternalServerError(PlainText<String>),
 }
 
 #[OpenApi(prefix_path = "/1/admin/")]
@@ -25,24 +30,50 @@ impl AdminApi {
         &self,
         app: Data<&Arc<App>>,
         req: Json<types::CreateRelayerRequest>,
-    ) -> PlainText<String> {
-        let (key_id, signer) = app.keys_source.new_signer(&req.name).await?;
+    ) -> CreateRelayerResponse {
+        let (key_id, signer) = match app.keys_source.new_signer(&req.name).await
+        {
+            Ok(signer) => signer,
+            Err(e) => {
+                tracing::error!("Failed to create signer: {:?}", e);
+                return CreateRelayerResponse::InternalServerError(PlainText(
+                    "Failed to create signer".to_string(),
+                ));
+            }
+        };
 
         let address = signer.address();
 
         let relayer_id = uuid::Uuid::new_v4();
         let relayer_id = relayer_id.to_string();
 
-        app.db
-            .create_relayer(&relayer_id, &req.name, req.chain_id, &key_id, address)
-            .await?;
+        let result = app
+            .db
+            .create_relayer(
+                &relayer_id,
+                &req.name,
+                req.chain_id,
+                &key_id,
+                address,
+            )
+            .await;
 
-        Ok(Json(CreateRelayerResponse {
-            relayer_id,
-            address,
-        }))
+        match result {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::error!("Failed to create relayer: {:?}", e);
+                return CreateRelayerResponse::InternalServerError(PlainText(
+                    "Failed to create relayer".to_string(),
+                ));
+            }
+        }
 
-        PlainText(format!("All good: {:#?}", req))
+        CreateRelayerResponse::RelayerCreated(Json(
+            types::CreateRelayerResponse {
+                relayer_id,
+                address: format!("{address:?}"),
+            },
+        ))
     }
 }
 
