@@ -2,20 +2,53 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use poem::listener::{Acceptor, Listener, TcpListener};
-use poem::web::LocalAddr;
-use poem::Route;
+use poem::web::{Data, LocalAddr};
+use poem::{EndpointExt, Route};
+use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
 
 use crate::app::App;
 
+mod types;
+
 struct AdminApi;
 
-#[OpenApi]
-impl AdminApi {}
+enum CreateRelayerResponse {
+    #[oai(status = 200)]
+    CreateRelayerResponse(types::CreateRelayerResponse),
+}
+
+#[OpenApi(prefix_path = "/1/admin/")]
+impl AdminApi {
+    #[oai(path = "/relayer", method = "post")]
+    async fn create_relayer(
+        &self,
+        app: Data<&Arc<App>>,
+        req: Json<types::CreateRelayerRequest>,
+    ) -> PlainText<String> {
+        let (key_id, signer) = app.keys_source.new_signer(&req.name).await?;
+
+        let address = signer.address();
+
+        let relayer_id = uuid::Uuid::new_v4();
+        let relayer_id = relayer_id.to_string();
+
+        app.db
+            .create_relayer(&relayer_id, &req.name, req.chain_id, &key_id, address)
+            .await?;
+
+        Ok(Json(CreateRelayerResponse {
+            relayer_id,
+            address,
+        }))
+
+        PlainText(format!("All good: {:#?}", req))
+    }
+}
 
 struct ConsumerApi;
 
-#[OpenApi]
+#[OpenApi(prefix_path = "/1/api/")]
 impl ConsumerApi {}
 
 struct ServiceApi;
@@ -65,7 +98,8 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
         .nest("/explorer", api_service.rapidoc())
         .nest("/schema.json", api_service.spec_endpoint())
         .nest("/schema.yml", api_service.spec_endpoint_yaml())
-        .nest("/", api_service);
+        .nest("/", api_service)
+        .data(app.clone());
 
     let listener = TcpListener::bind(app.config.server.host);
     let acceptor = listener.into_acceptor().await?;
