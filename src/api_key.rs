@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::str::FromStr;
 
 use base64::Engine;
+use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
+use poem_openapi::types::{ParseFromJSON, ToJSON};
 use rand::rngs::OsRng;
 use rand::Rng;
 use serde::Serialize;
@@ -118,6 +120,59 @@ impl FromStr for ApiKey {
         let secret = ApiSecret(buffer[UUID_LEN..].into());
 
         Ok(Self { relayer_id, secret })
+    }
+}
+
+impl poem_openapi::types::Type for ApiKey {
+    const IS_REQUIRED: bool = true;
+
+    type RawValueType = ApiKey;
+
+    type RawElementValueType = ApiKey;
+
+    fn name() -> std::borrow::Cow<'static, str> {
+        "string(api-key)".into()
+    }
+
+    fn schema_ref() -> MetaSchemaRef {
+        let mut schema_ref = MetaSchema::new_with_format("string", "api-key");
+
+        schema_ref.example = Some(serde_json::Value::String(
+            "MyDwh6wBRyOAkrA-ANOGjViioo3fXMa53nbdLhezV4s=".to_string(),
+        ));
+        schema_ref.title = Some("Api Key".to_string());
+        schema_ref.description = Some("Base64 encoded API key");
+
+        MetaSchemaRef::Inline(Box::new(schema_ref))
+    }
+
+    fn as_raw_value(&self) -> Option<&Self::RawValueType> {
+        Some(self)
+    }
+
+    fn raw_element_iter<'a>(
+        &'a self,
+    ) -> Box<dyn Iterator<Item = &'a Self::RawElementValueType> + 'a> {
+        Box::new(self.as_raw_value().into_iter())
+    }
+}
+
+impl ParseFromJSON for ApiKey {
+    fn parse_from_json(
+        value: Option<serde_json::Value>,
+    ) -> poem_openapi::types::ParseResult<Self> {
+        // TODO: Better error handling
+        let value = value
+            .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
+
+        serde_json::from_value(value)
+            .map_err(|_| poem_openapi::types::ParseError::expected_input())
+    }
+}
+
+impl ToJSON for ApiKey {
+    fn to_json(&self) -> Option<serde_json::Value> {
+        serde_json::to_value(self).ok()
     }
 }
 

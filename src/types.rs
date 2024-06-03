@@ -53,8 +53,9 @@ pub struct RelayerInfo {
 }
 
 
-#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default, Object)]
 #[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
 pub struct RelayerUpdate {
     #[serde(default)]
     pub relayer_name: Option<String>,
@@ -70,6 +71,7 @@ pub struct RelayerUpdate {
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Object)]
 #[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
 pub struct RelayerGasPriceLimit {
     pub value: U256Wrapper,
     pub chain_id: i64,

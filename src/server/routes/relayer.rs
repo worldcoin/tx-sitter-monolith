@@ -4,6 +4,7 @@ use axum::extract::{Json, Path, State};
 use ethers::signers::Signer;
 use ethers::types::Address;
 use eyre::Result;
+use poem_openapi::Object;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -50,8 +51,9 @@ pub enum JsonRpcVersion {
     V2,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
 pub struct CreateApiKeyResponse {
     pub api_key: ApiKey,
 }

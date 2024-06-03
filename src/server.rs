@@ -41,15 +41,15 @@ pub async fn _spawn_server(
         .with_state(app.clone());
 
     let mut admin_routes = Router::new()
-        .route("/relayer", post(create_relayer))
-        .route("/relayer/:relayer_id/reset", post(purge_unsent_txs))
-        .route("/relayers", get(get_relayers))
+        .route("/relayer", post(create_relayer)) // done
+        .route("/relayer/:relayer_id/reset", post(purge_unsent_txs)) // done
+        .route("/relayers", get(get_relayers)) // done
         .route(
             "/relayer/:relayer_id",
-            post(update_relayer).get(get_relayer),
+            post(update_relayer).get(get_relayer), // done
         )
-        .route("/relayer/:relayer_id/key", post(create_relayer_api_key))
-        .route("/network/:chain_id", post(routes::network::create_network))
+        .route("/relayer/:relayer_id/key", post(create_relayer_api_key)) // done
+        .route("/network/:chain_id", post(routes::network::create_network)) // done
         .with_state(app.clone());
 
     if let Some((username, password)) = app.config.server.credentials() {

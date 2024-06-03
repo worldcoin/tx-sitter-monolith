@@ -11,15 +11,15 @@ use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
 use url::Url;
 
+use crate::api_key::ApiKey;
 use crate::app::App;
+use crate::server::routes::relayer::CreateApiKeyResponse;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
     CreateRelayerRequest, CreateRelayerResponse, NetworkInfo, NewNetworkInfo,
-    RelayerInfo,
+    RelayerInfo, RelayerUpdate,
 };
-
-pub mod types;
 
 struct AdminApi;
 
@@ -37,6 +37,7 @@ enum AdminResponse {
 
 #[OpenApi(prefix_path = "/1/admin/")]
 impl AdminApi {
+    /// Create Relayer
     #[oai(path = "/relayer", method = "post")]
     async fn create_relayer(
         &self,
@@ -86,6 +87,7 @@ impl AdminApi {
         }))
     }
 
+    /// Get Relayers
     #[oai(path = "/relayers", method = "get")]
     async fn get_relayers(
         &self,
@@ -96,20 +98,81 @@ impl AdminApi {
         Ok(Json(relayer_info))
     }
 
+    /// Get Relayer
     #[oai(path = "/relayer/:relayer_id", method = "get")]
-    async fn update_relayer(&self, app: Data<&Arc<App>>) -> AdminResponse {
-        todo!()
+    async fn get_relayer(
+        &self,
+        app: Data<&Arc<App>>,
+        Path(relayer_id): Path<String>,
+    ) -> Result<Json<RelayerInfo>> {
+        let relayer_info =
+            app.db.get_relayer(&relayer_id).await.map_err(|err| {
+                poem::error::Error::from_string(
+                    err.to_string(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            })?;
+
+        Ok(Json(relayer_info))
     }
 
+    /// Update Relayer
+    #[oai(path = "/relayer/:relayer_id", method = "post")]
+    async fn update_relayer(
+        &self,
+        app: Data<&Arc<App>>,
+        Path(relayer_id): Path<String>,
+        Json(req): Json<RelayerUpdate>,
+    ) -> Result<()> {
+        app.db
+            .update_relayer(&relayer_id, &req)
+            .await
+            .map_err(|err| {
+                poem::error::Error::from_string(
+                    err.to_string(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            })?;
+
+        Ok(())
+    }
+
+    /// Reset Relayer transactions
+    ///
+    /// Purges unsent transactions, useful for unstucking the relayer
     #[oai(path = "/relayer/:relayer_id/reset", method = "post")]
     async fn purge_unsent_txs(
         &self,
         app: Data<&Arc<App>>,
         Path(relayer_id): Path<String>,
-    ) -> AdminResponse {
-        todo!()
+    ) -> Result<()> {
+        app.db.purge_unsent_txs(&relayer_id).await.map_err(|err| {
+            poem::error::Error::from_string(
+                err.to_string(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        })?;
+
+        Ok(())
     }
 
+    /// Create Relayer API Key
+    #[oai(path = "/relayer/:relayer_id/key", method = "post")]
+    async fn create_relayer_api_key(
+        &self,
+        app: Data<&Arc<App>>,
+        Path(relayer_id): Path<String>,
+    ) -> Result<Json<CreateApiKeyResponse>> {
+        let api_key = ApiKey::random(&relayer_id);
+
+        app.db
+            .create_api_key(&relayer_id, api_key.api_key_secret_hash())
+            .await?;
+
+        Ok(Json(CreateApiKeyResponse { api_key }))
+    }
+
+    /// Create Network
     #[oai(path = "/network/:chain_id", method = "post")]
     async fn create_network(
         &self,
@@ -153,6 +216,7 @@ impl AdminApi {
         Ok(())
     }
 
+    /// Get Networks
     #[oai(path = "/networks", method = "get")]
     async fn list_networks(
         &self,
