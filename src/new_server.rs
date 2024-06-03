@@ -7,8 +7,9 @@ use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::web::{Data, LocalAddr};
 use poem::{EndpointExt, Result, Route};
 use poem_openapi::param::Path;
-use poem_openapi::payload::{Json, PlainText};
+use poem_openapi::payload::Json;
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
+use security::BasicAuth;
 use url::Url;
 
 use crate::api_key::ApiKey;
@@ -21,19 +22,9 @@ use crate::types::{
     RelayerInfo, RelayerUpdate,
 };
 
+mod security;
+
 struct AdminApi;
-
-#[derive(ApiResponse)]
-enum AdminResponse {
-    #[oai(status = 200)]
-    RelayerCreated(Json<CreateRelayerResponse>),
-
-    #[oai(status = 200)]
-    NetworkCreated,
-
-    #[oai(status = 500)]
-    InternalServerError(PlainText<String>),
-}
 
 #[OpenApi(prefix_path = "/1/admin/")]
 impl AdminApi {
@@ -41,16 +32,21 @@ impl AdminApi {
     #[oai(path = "/relayer", method = "post")]
     async fn create_relayer(
         &self,
-        app: Data<&Arc<App>>,
-        req: Json<CreateRelayerRequest>,
-    ) -> AdminResponse {
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
+        Json(req): Json<CreateRelayerRequest>,
+    ) -> Result<Json<CreateRelayerResponse>> {
+        basic_auth.validate(app).await?;
+
         let (key_id, signer) = match app.keys_source.new_signer(&req.name).await
         {
             Ok(signer) => signer,
             Err(e) => {
                 tracing::error!("Failed to create signer: {:?}", e);
-                return AdminResponse::InternalServerError(PlainText(
+
+                return Err(poem::error::Error::from_string(
                     "Failed to create signer".to_string(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
                 ));
             }
         };
@@ -75,13 +71,15 @@ impl AdminApi {
             Ok(()) => {}
             Err(e) => {
                 tracing::error!("Failed to create relayer: {:?}", e);
-                return AdminResponse::InternalServerError(PlainText(
+
+                return Err(poem::error::Error::from_string(
                     "Failed to create relayer".to_string(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
                 ));
             }
         }
 
-        AdminResponse::RelayerCreated(Json(CreateRelayerResponse {
+        Ok(Json(CreateRelayerResponse {
             relayer_id,
             address: address.into(),
         }))
@@ -91,8 +89,11 @@ impl AdminApi {
     #[oai(path = "/relayers", method = "get")]
     async fn get_relayers(
         &self,
-        app: Data<&Arc<App>>,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
     ) -> Result<Json<Vec<RelayerInfo>>> {
+        basic_auth.validate(app).await?;
+
         let relayer_info = app.db.get_relayers().await?;
 
         Ok(Json(relayer_info))
@@ -102,9 +103,12 @@ impl AdminApi {
     #[oai(path = "/relayer/:relayer_id", method = "get")]
     async fn get_relayer(
         &self,
-        app: Data<&Arc<App>>,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
         Path(relayer_id): Path<String>,
     ) -> Result<Json<RelayerInfo>> {
+        basic_auth.validate(app).await?;
+
         let relayer_info =
             app.db.get_relayer(&relayer_id).await.map_err(|err| {
                 poem::error::Error::from_string(
@@ -120,10 +124,13 @@ impl AdminApi {
     #[oai(path = "/relayer/:relayer_id", method = "post")]
     async fn update_relayer(
         &self,
-        app: Data<&Arc<App>>,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
         Path(relayer_id): Path<String>,
         Json(req): Json<RelayerUpdate>,
     ) -> Result<()> {
+        basic_auth.validate(app).await?;
+
         app.db
             .update_relayer(&relayer_id, &req)
             .await
@@ -143,9 +150,12 @@ impl AdminApi {
     #[oai(path = "/relayer/:relayer_id/reset", method = "post")]
     async fn purge_unsent_txs(
         &self,
-        app: Data<&Arc<App>>,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
         Path(relayer_id): Path<String>,
     ) -> Result<()> {
+        basic_auth.validate(app).await?;
+
         app.db.purge_unsent_txs(&relayer_id).await.map_err(|err| {
             poem::error::Error::from_string(
                 err.to_string(),
@@ -160,9 +170,12 @@ impl AdminApi {
     #[oai(path = "/relayer/:relayer_id/key", method = "post")]
     async fn create_relayer_api_key(
         &self,
-        app: Data<&Arc<App>>,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
         Path(relayer_id): Path<String>,
     ) -> Result<Json<CreateApiKeyResponse>> {
+        basic_auth.validate(app).await?;
+
         let api_key = ApiKey::random(&relayer_id);
 
         app.db
@@ -176,10 +189,13 @@ impl AdminApi {
     #[oai(path = "/network/:chain_id", method = "post")]
     async fn create_network(
         &self,
-        app: Data<&Arc<App>>,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
         Path(chain_id): Path<u64>,
         Json(network): Json<NewNetworkInfo>,
     ) -> Result<()> {
+        basic_auth.validate(app).await?;
+
         let http_url: Url = network
             .http_rpc
             .parse::<Url>()
@@ -220,8 +236,11 @@ impl AdminApi {
     #[oai(path = "/networks", method = "get")]
     async fn list_networks(
         &self,
-        app: Data<&Arc<App>>,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
     ) -> Result<Json<Vec<NetworkInfo>>> {
+        basic_auth.validate(app).await?;
+
         let networks = app.db.get_networks().await.map_err(|err| {
             poem::error::Error::from_string(
                 err.to_string(),
@@ -248,6 +267,7 @@ enum ServiceResponse {
 
 #[OpenApi]
 impl ServiceApi {
+    /// Health
     #[oai(path = "/", method = "get")]
     async fn health(&self) -> ServiceResponse {
         ServiceResponse::Healthy
