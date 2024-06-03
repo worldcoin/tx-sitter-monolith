@@ -1,5 +1,6 @@
 use poem_openapi::Object;
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
@@ -10,8 +11,15 @@ pub struct NewNetworkInfo {
     pub ws_rpc: String,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, FromRow, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
 pub struct NetworkInfo {
-
+    #[sqlx(try_from = "i64")]
+    pub chain_id: u64,
+    pub name: String,
+    pub http_rpc: String,
+    pub ws_rpc: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]

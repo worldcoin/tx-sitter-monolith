@@ -98,7 +98,7 @@ async fn initialize_predefined_values(
     tracing::warn!("Running with predefined values is not recommended in a production environment");
 
     app.db
-        .create_network(
+        .upsert_network(
             predefined.network.chain_id,
             &predefined.network.name,
             &predefined.network.http_rpc,

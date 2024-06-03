@@ -9,13 +9,14 @@ use poem::{Endpoint, EndpointExt, Result, Route};
 use poem_openapi::param::Path;
 use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
+use types::NetworkInfo;
 use url::Url;
 
 use crate::app::App;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 
-mod types;
+pub mod types;
 
 struct AdminApi;
 
@@ -100,7 +101,7 @@ impl AdminApi {
             .map_err(|err| poem::error::BadRequest(err))?;
 
         app.db
-            .create_network(
+            .upsert_network(
                 chain_id,
                 &network.name,
                 http_url.as_str(),
@@ -129,8 +130,15 @@ impl AdminApi {
     async fn list_networks(
         &self,
         app: Data<&Arc<App>>,
-    ) -> Result<Json<Vec<String>>> {
-        Ok(Json(vec![]))
+    ) -> Result<Json<Vec<NetworkInfo>>> {
+        let networks = app.db.get_networks().await.map_err(|err| {
+            poem::error::Error::from_string(
+                err.to_string(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        })?;
+
+        Ok(Json(networks))
     }
 }
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Json, Path, State};
 use eyre::Result;
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use url::Url;
 
 use crate::app::App;
@@ -18,7 +19,7 @@ pub struct NewNetworkInfo {
     pub ws_rpc: String,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkInfo {
     pub chain_id: u64,
@@ -44,7 +45,7 @@ pub async fn create_network(
     })?;
 
     app.db
-        .create_network(
+        .upsert_network(
             chain_id,
             &network.name,
             http_url.as_str(),

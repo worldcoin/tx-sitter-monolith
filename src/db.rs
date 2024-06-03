@@ -11,6 +11,7 @@ use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
+use crate::new_server::types::NetworkInfo;
 use crate::types::{RelayerInfo, RelayerUpdate, TransactionPriority};
 
 pub mod data;
@@ -963,7 +964,7 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn create_network(
+    pub async fn upsert_network(
         &self,
         chain_id: u64,
         name: &str,
@@ -976,7 +977,8 @@ impl Database {
             r#"
             INSERT INTO networks (chain_id, name)
             VALUES ($1, $2)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (chain_id) DO UPDATE
+            SET name = EXCLUDED.name
             "#,
         )
         .bind(chain_id as i64)
@@ -988,14 +990,27 @@ impl Database {
             r#"
             INSERT INTO rpcs (chain_id, url, kind)
             VALUES
-                ($1, $2, $3),
-                ($1, $4, $5)
-            ON CONFLICT DO NOTHING
+                ($1, $2, $3)
+            ON CONFLICT (chain_id, kind) DO UPDATE
+            SET url = EXCLUDED.url
             "#,
         )
         .bind(chain_id as i64)
         .bind(http_rpc)
         .bind(RpcKind::Http)
+        .execute(tx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO rpcs (chain_id, url, kind)
+            VALUES
+                ($1, $2, $3)
+            ON CONFLICT (chain_id, kind) DO UPDATE
+            SET url = EXCLUDED.url
+            "#,
+        )
+        .bind(chain_id as i64)
         .bind(ws_rpc)
         .bind(RpcKind::Ws)
         .execute(tx.as_mut())
@@ -1040,6 +1055,20 @@ impl Database {
         .await?;
 
         Ok(items.into_iter().map(|(x,)| x as u64).collect())
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_networks(&self) -> eyre::Result<Vec<NetworkInfo>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
+            FROM   networks
+            INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
+            INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1255,7 +1284,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();
@@ -1314,7 +1343,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();
@@ -1391,7 +1420,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();
