@@ -1,8 +1,10 @@
+use poem_openapi::Object;
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
-use sqlx::types::Json;
+use wrappers::address::AddressWrapper;
+use wrappers::u256::U256Wrapper;
 
-use crate::db::data::{AddressWrapper, U256Wrapper};
+pub mod wrappers;
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type)]
 #[serde(rename_all = "camelCase")]
@@ -27,8 +29,9 @@ impl TransactionPriority {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, FromRow)]
+#[derive(Deserialize, Serialize, Debug, Clone, FromRow, Object)]
 #[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
 pub struct RelayerInfo {
     pub id: String,
     pub name: String,
@@ -44,9 +47,11 @@ pub struct RelayerInfo {
     pub max_inflight_txs: u64,
     #[sqlx(try_from = "i64")]
     pub max_queued_txs: u64,
-    pub gas_price_limits: Json<Vec<RelayerGasPriceLimit>>,
+    #[sqlx(json)]
+    pub gas_price_limits: Vec<RelayerGasPriceLimit>,
     pub enabled: bool,
 }
+
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -63,12 +68,54 @@ pub struct RelayerUpdate {
     pub enabled: Option<bool>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Object)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayerGasPriceLimit {
     pub value: U256Wrapper,
     pub chain_id: i64,
 }
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct NewNetworkInfo {
+    pub name: String,
+    pub http_rpc: String,
+    pub ws_rpc: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, FromRow, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct NetworkInfo {
+    #[sqlx(try_from = "i64")]
+    pub chain_id: u64,
+    pub name: String,
+    pub http_rpc: String,
+    pub ws_rpc: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct CreateRelayerRequest {
+    /// New relayer name
+    pub name: String,
+    /// The chain id of the relayer
+    pub chain_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct CreateRelayerResponse {
+    /// ID of the created relayer
+    pub relayer_id: String,
+    // TODO: Make type safe
+    /// Address of the created relayer
+    pub address: AddressWrapper,
+}
+
 
 impl RelayerUpdate {
     pub fn with_relayer_name(mut self, relayer_name: String) -> Self {
@@ -118,10 +165,10 @@ mod tests {
             current_nonce: 0,
             max_inflight_txs: 0,
             max_queued_txs: 0,
-            gas_price_limits: Json(vec![RelayerGasPriceLimit {
+            gas_price_limits: vec![RelayerGasPriceLimit {
                 value: U256Wrapper(U256::zero()),
                 chain_id: 1,
-            }]),
+            }],
             enabled: true,
         };
 

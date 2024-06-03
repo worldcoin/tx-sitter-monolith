@@ -5,16 +5,19 @@ use ethers::signers::Signer;
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::web::{Data, LocalAddr};
-use poem::{Endpoint, EndpointExt, Result, Route};
+use poem::{EndpointExt, Result, Route};
 use poem_openapi::param::Path;
 use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
-use types::NetworkInfo;
 use url::Url;
 
 use crate::app::App;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
+use crate::types::{
+    CreateRelayerRequest, CreateRelayerResponse, NetworkInfo, NewNetworkInfo,
+    RelayerInfo,
+};
 
 pub mod types;
 
@@ -23,7 +26,7 @@ struct AdminApi;
 #[derive(ApiResponse)]
 enum AdminResponse {
     #[oai(status = 200)]
-    RelayerCreated(Json<types::CreateRelayerResponse>),
+    RelayerCreated(Json<CreateRelayerResponse>),
 
     #[oai(status = 200)]
     NetworkCreated,
@@ -38,7 +41,7 @@ impl AdminApi {
     async fn create_relayer(
         &self,
         app: Data<&Arc<App>>,
-        req: Json<types::CreateRelayerRequest>,
+        req: Json<CreateRelayerRequest>,
     ) -> AdminResponse {
         let (key_id, signer) = match app.keys_source.new_signer(&req.name).await
         {
@@ -77,10 +80,34 @@ impl AdminApi {
             }
         }
 
-        AdminResponse::RelayerCreated(Json(types::CreateRelayerResponse {
+        AdminResponse::RelayerCreated(Json(CreateRelayerResponse {
             relayer_id,
-            address: format!("{address:?}"),
+            address: address.into(),
         }))
+    }
+
+    #[oai(path = "/relayers", method = "get")]
+    async fn get_relayers(
+        &self,
+        app: Data<&Arc<App>>,
+    ) -> Result<Json<Vec<RelayerInfo>>> {
+        let relayer_info = app.db.get_relayers().await?;
+
+        Ok(Json(relayer_info))
+    }
+
+    #[oai(path = "/relayer/:relayer_id", method = "get")]
+    async fn update_relayer(&self, app: Data<&Arc<App>>) -> AdminResponse {
+        todo!()
+    }
+
+    #[oai(path = "/relayer/:relayer_id/reset", method = "post")]
+    async fn purge_unsent_txs(
+        &self,
+        app: Data<&Arc<App>>,
+        Path(relayer_id): Path<String>,
+    ) -> AdminResponse {
+        todo!()
     }
 
     #[oai(path = "/network/:chain_id", method = "post")]
@@ -88,7 +115,7 @@ impl AdminApi {
         &self,
         app: Data<&Arc<App>>,
         Path(chain_id): Path<u64>,
-        Json(network): Json<types::NewNetworkInfo>,
+        Json(network): Json<NewNetworkInfo>,
     ) -> Result<()> {
         let http_url: Url = network
             .http_rpc

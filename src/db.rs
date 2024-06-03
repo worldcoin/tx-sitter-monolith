@@ -11,8 +11,7 @@ use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
-use crate::new_server::types::NetworkInfo;
-use crate::types::{RelayerInfo, RelayerUpdate, TransactionPriority};
+use crate::types::{RelayerInfo, NetworkInfo, RelayerUpdate, TransactionPriority};
 
 pub mod data;
 
@@ -1230,7 +1229,7 @@ mod tests {
     use postgres_docker_utils::DockerContainerGuard;
 
     use super::*;
-    use crate::db::data::U256Wrapper;
+    use crate::types::wrappers::u256::U256Wrapper;
     use crate::types::RelayerGasPriceLimit;
 
     async fn setup_db() -> eyre::Result<(Database, DockerContainerGuard)> {
@@ -1372,7 +1371,7 @@ mod tests {
         assert_eq!(relayer.nonce, 0);
         assert_eq!(relayer.current_nonce, 0);
         assert_eq!(relayer.max_inflight_txs, 5);
-        assert_eq!(relayer.gas_price_limits.0, vec![]);
+        assert_eq!(relayer.gas_price_limits, vec![]);
 
         db.update_relayer(
             relayer_id,
@@ -1401,7 +1400,7 @@ mod tests {
         assert_eq!(relayer.max_inflight_txs, 10);
         assert_eq!(relayer.max_queued_txs, 20);
         assert_eq!(
-            relayer.gas_price_limits.0,
+            relayer.gas_price_limits,
             vec![RelayerGasPriceLimit {
                 chain_id: 1,
                 value: U256Wrapper(U256::from(10_123u64)),
