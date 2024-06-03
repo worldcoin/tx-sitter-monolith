@@ -1,9 +1,18 @@
-use ethers::types::Address;
 use poem_openapi::Object;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddressWrapper(pub Address);
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct NewNetworkInfo {
+    pub name: String,
+    pub http_rpc: String,
+    pub ws_rpc: String,
+}
+
+pub struct NetworkInfo {
+
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]

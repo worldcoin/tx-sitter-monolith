@@ -3,7 +3,6 @@ use std::sync::Arc;
 use axum::routing::{get, post, IntoMakeService};
 use axum::Router;
 use hyper::server::conn::AddrIncoming;
-use poem_openapi::OpenApi;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 
 use self::routes::relayer::{

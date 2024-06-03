@@ -3616,6 +3616,7 @@ dependencies = [
  "bytes",
  "chrono",
  "cookie",
+ "eyre",
  "futures-util",
  "headers 0.4.0",
  "http 1.1.0",

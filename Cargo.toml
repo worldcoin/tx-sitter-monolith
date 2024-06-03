@@ -45,7 +45,7 @@ hyper = "0.14.27"
 itertools = "0.12.0"
 metrics = "0.22.1"
 num-bigint = "0.4.4"
-poem = "3"
+poem = { version = "3", features = ["eyre06"] }
 poem-openapi = { version = "5", features = [
     "openapi-explorer",
     "rapidoc",

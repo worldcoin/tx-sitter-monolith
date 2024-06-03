@@ -2,22 +2,30 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ethers::signers::Signer;
+use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::web::{Data, LocalAddr};
-use poem::{EndpointExt, Route};
+use poem::{Endpoint, EndpointExt, Result, Route};
+use poem_openapi::param::Path;
 use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
+use url::Url;
 
 use crate::app::App;
+use crate::service::Service;
+use crate::task_runner::TaskRunner;
 
 mod types;
 
 struct AdminApi;
 
 #[derive(ApiResponse)]
-enum CreateRelayerResponse {
+enum AdminResponse {
     #[oai(status = 200)]
     RelayerCreated(Json<types::CreateRelayerResponse>),
+
+    #[oai(status = 200)]
+    NetworkCreated,
 
     #[oai(status = 500)]
     InternalServerError(PlainText<String>),
@@ -30,13 +38,13 @@ impl AdminApi {
         &self,
         app: Data<&Arc<App>>,
         req: Json<types::CreateRelayerRequest>,
-    ) -> CreateRelayerResponse {
+    ) -> AdminResponse {
         let (key_id, signer) = match app.keys_source.new_signer(&req.name).await
         {
             Ok(signer) => signer,
             Err(e) => {
                 tracing::error!("Failed to create signer: {:?}", e);
-                return CreateRelayerResponse::InternalServerError(PlainText(
+                return AdminResponse::InternalServerError(PlainText(
                     "Failed to create signer".to_string(),
                 ));
             }
@@ -62,18 +70,67 @@ impl AdminApi {
             Ok(()) => {}
             Err(e) => {
                 tracing::error!("Failed to create relayer: {:?}", e);
-                return CreateRelayerResponse::InternalServerError(PlainText(
+                return AdminResponse::InternalServerError(PlainText(
                     "Failed to create relayer".to_string(),
                 ));
             }
         }
 
-        CreateRelayerResponse::RelayerCreated(Json(
-            types::CreateRelayerResponse {
-                relayer_id,
-                address: format!("{address:?}"),
-            },
-        ))
+        AdminResponse::RelayerCreated(Json(types::CreateRelayerResponse {
+            relayer_id,
+            address: format!("{address:?}"),
+        }))
+    }
+
+    #[oai(path = "/network/:chain_id", method = "post")]
+    async fn create_network(
+        &self,
+        app: Data<&Arc<App>>,
+        Path(chain_id): Path<u64>,
+        Json(network): Json<types::NewNetworkInfo>,
+    ) -> Result<()> {
+        let http_url: Url = network
+            .http_rpc
+            .parse::<Url>()
+            .map_err(|err| poem::error::BadRequest(err))?;
+
+        let ws_url: Url = network
+            .ws_rpc
+            .parse::<Url>()
+            .map_err(|err| poem::error::BadRequest(err))?;
+
+        app.db
+            .create_network(
+                chain_id,
+                &network.name,
+                http_url.as_str(),
+                ws_url.as_str(),
+            )
+            .await
+            .map_err(|err| {
+                poem::error::Error::from_string(
+                    err.to_string(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            })?;
+
+        let task_runner = TaskRunner::new(app.clone());
+        Service::spawn_chain_tasks(&task_runner, chain_id).map_err(|err| {
+            poem::error::Error::from_string(
+                err.to_string(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        })?;
+
+        Ok(())
+    }
+
+    #[oai(path = "/networks", method = "get")]
+    async fn list_networks(
+        &self,
+        app: Data<&Arc<App>>,
+    ) -> Result<Json<Vec<String>>> {
+        Ok(Json(vec![]))
     }
 }
 
