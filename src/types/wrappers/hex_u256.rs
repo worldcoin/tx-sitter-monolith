@@ -81,11 +81,9 @@ impl poem_openapi::types::Type for HexU256 {
             "0x0".to_string(),
         ));
         schema_ref.title = Some("Hex U256".to_string());
-        schema_ref.description = Some("A 256-bit unsigned integer. Supports hex and decimal encoding");
+        schema_ref.description = Some("A hex encoded 256-bit unsigned integer");
 
-        MetaSchemaRef::Inline(Box::new(MetaSchema::new_with_format(
-            "u256", "hex",
-        )))
+        MetaSchemaRef::Inline(Box::new(schema_ref))
     }
 
     fn as_raw_value(&self) -> Option<&Self::RawValueType> {

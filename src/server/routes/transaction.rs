@@ -17,8 +17,10 @@ use crate::types::TransactionPriority;
 pub struct SendTxRequest {
     pub to: Address,
     pub value: DecimalU256,
+    /// Transaction data
     #[serde(default)]
     pub data: Option<Bytes>,
+    /// Transaction gas limit
     pub gas_limit: DecimalU256,
     #[serde(default)]
     pub priority: TransactionPriority,

@@ -2,6 +2,7 @@ use poem_openapi::{Enum, Object};
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
 use wrappers::address::AddressWrapper;
+use wrappers::decimal_u256::DecimalU256;
 use wrappers::hex_bytes::HexBytes;
 use wrappers::hex_u256::HexU256;
 
@@ -124,11 +125,13 @@ pub struct CreateRelayerResponse {
 #[oai(rename_all = "camelCase")]
 pub struct SendTxRequest {
     pub to: AddressWrapper,
-    pub value: HexU256,
+    /// Transaction value
+    pub value: DecimalU256,
     #[serde(default)]
     #[oai(default)]
     pub data: Option<HexBytes>,
-    pub gas_limit: HexU256,
+    /// Transaction gas limit
+    pub gas_limit: DecimalU256,
     #[serde(default)]
     #[oai(default)]
     pub priority: TransactionPriority,
