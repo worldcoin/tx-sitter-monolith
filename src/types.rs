@@ -155,6 +155,15 @@ pub struct SendTxResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
+pub struct GetTxQuery {
+    #[serde(default)]
+    #[oai(default)]
+    pub status: Option<Option<TxStatus>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
 pub struct GetTxResponse {
     pub tx_id: String,
     pub to: AddressWrapper,

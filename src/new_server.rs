@@ -6,7 +6,7 @@ use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::web::{Data, LocalAddr};
 use poem::{EndpointExt, Result, Route};
-use poem_openapi::param::Path;
+use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::Json;
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
 use security::BasicAuth;
@@ -18,8 +18,7 @@ use crate::server::routes::relayer::CreateApiKeyResponse;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
-    CreateRelayerRequest, CreateRelayerResponse, GetTxResponse, NetworkInfo,
-    NewNetworkInfo, RelayerInfo, RelayerUpdate, SendTxRequest, SendTxResponse,
+    CreateRelayerRequest, CreateRelayerResponse, GetTxQuery, GetTxResponse, NetworkInfo, NewNetworkInfo, RelayerInfo, RelayerUpdate, SendTxRequest, SendTxResponse, TxStatus
 };
 
 mod security;
@@ -352,10 +351,41 @@ impl RelayerApi {
         &self,
         Data(app): Data<&Arc<App>>,
         Path(api_token): Path<ApiKey>,
-    ) -> Result<()> {
+        /// Optional tx status to filter by
+        Query(status): Query<Option<TxStatus>>,
+        /// Fetch unsent txs, overrides the status query
+        #[oai(default = "default_false")]
+        Query(unsent): Query<bool>,
+    ) -> Result<Json<Vec<GetTxResponse>>> {
         api_token.validate(app).await?;
 
-        Ok(())
+        let txs = if unsent {
+            app.db.read_txs(api_token.relayer_id(), Some(None)).await?
+        } else if let Some(status) = status {
+            app.db.read_txs(api_token.relayer_id(), Some(Some(status))).await?
+        } else {
+            app.db.read_txs(api_token.relayer_id(), None).await?
+        };
+
+        let txs =
+            txs.into_iter()
+                .map(|tx| GetTxResponse {
+                    tx_id: tx.tx_id,
+                    to: tx.to,
+                    data: if tx.data.is_empty() {
+                        None
+                    } else {
+                        Some(tx.data.into())
+                    },
+                    value: tx.value.into(),
+                    gas_limit: tx.gas_limit.into(),
+                    nonce: tx.nonce,
+                    tx_hash: tx.tx_hash,
+                    status: tx.status,
+                })
+                .collect();
+
+        Ok(Json(txs))
     }
 
     /// Relayer RPC
@@ -369,6 +399,10 @@ impl RelayerApi {
 
         Ok(())
     }
+}
+
+fn default_false() -> bool {
+    false
 }
 
 struct ServiceApi;
