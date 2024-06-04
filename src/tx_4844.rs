@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use alloy::consensus::{SidecarBuilder, SimpleCoder};
-    use alloy::eips::eip4844::{DATA_GAS_PER_BLOB, MAX_BLOBS_PER_BLOCK};
+    use alloy::eips::eip4844::DATA_GAS_PER_BLOB;
     use alloy::network::TransactionBuilder;
     use alloy::node_bindings::Anvil;
     use alloy::providers::{Provider, ProviderBuilder};
