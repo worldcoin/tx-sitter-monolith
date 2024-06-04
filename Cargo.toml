@@ -26,7 +26,6 @@ telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries"
 
 ## External
 async-trait = "0.1.74"
-axum = { version = "0.6.20", features = ["headers"] }
 base64 = "0.21.5"
 bigdecimal = "0.4.2"
 chrono = "0.4"
@@ -73,7 +72,6 @@ strum = { version = "0.25.0", features = ["derive"] }
 thiserror = "1.0.50"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 toml = "0.8.8"
-tower-http = { version = "0.4.4", features = ["trace", "auth"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = [
     "env-filter",
@@ -85,6 +83,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 url = "2.4.1"
 uuid = { version = "0.8", features = ["v4"] }
 version = "3.0.0"
+regex = "1.10.4"
 
 [dev-dependencies]
 indoc = "2.0.3"

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ethers::types::U256;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
 use poem_openapi::types::{ParseFromJSON, ToJSON};
@@ -23,9 +25,9 @@ impl<'de> Deserialize<'de> for DecimalU256 {
     where
         D: serde::Deserializer<'de>,
     {
-        let s: &str = serde::Deserialize::deserialize(deserializer)?;
+        let s: Cow<str> = serde::Deserialize::deserialize(deserializer)?;
 
-        let u256 = U256::from_dec_str(s).map_err(serde::de::Error::custom)?;
+        let u256 = U256::from_dec_str(&s).map_err(serde::de::Error::custom)?;
 
         Ok(Self(u256))
     }
@@ -90,18 +92,17 @@ impl poem_openapi::types::Type for DecimalU256 {
     type RawElementValueType = Self;
 
     fn name() -> std::borrow::Cow<'static, str> {
-        "string(u256)".into()
+        "string(decimal-u256)".into()
     }
 
     fn schema_ref() -> MetaSchemaRef {
-        let mut schema_ref = MetaSchema::new_with_format("u256", "decimal");
+        let mut schema_ref =
+            MetaSchema::new_with_format("string", "decimal-u256");
 
         schema_ref.example = Some(serde_json::Value::String("0".to_string()));
         schema_ref.default = Some(serde_json::Value::String("0".to_string()));
         schema_ref.title = Some("Decimal U256".to_string());
-        schema_ref.description = Some(
-            "A decimal 256-bit unsigned integer",
-        );
+        schema_ref.description = Some("A decimal 256-bit unsigned integer");
 
         MetaSchemaRef::Inline(Box::new(schema_ref))
     }
@@ -125,16 +126,19 @@ impl ParseFromJSON for DecimalU256 {
         let value = value
             .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
 
-        let inner = serde_json::from_value(value)
-            .map_err(|_| poem_openapi::types::ParseError::expected_input())?;
+        let value = serde_json::from_value(value).map_err(|err| {
+            tracing::error!("Error deserializing DecimalU256: {:?}", err);
 
-        Ok(Self(inner))
+            poem_openapi::types::ParseError::expected_input()
+        })?;
+
+        Ok(value)
     }
 }
 
 impl ToJSON for DecimalU256 {
     fn to_json(&self) -> Option<serde_json::Value> {
-        serde_json::to_value(self.0).ok()
+        serde_json::to_value(self).ok()
     }
 }
 
@@ -146,10 +150,15 @@ mod tests {
 
     #[test_case("10", 10)]
     #[test_case("255", 255)]
+    #[test_case("10000000000000000000", 10000000000000000000)]
     fn deserialize_string(s: &str, v: u64) {
         let s = format!("\"{s}\"");
         let actual: DecimalU256 = serde_json::from_str(&s).unwrap();
 
         assert_eq!(actual.0, U256::from(v));
+
+        let reserialized = serde_json::to_string(&actual).unwrap();
+
+        assert_eq!(reserialized, s);
     }
 }

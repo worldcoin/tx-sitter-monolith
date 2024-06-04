@@ -8,9 +8,13 @@ use wrappers::h256::H256Wrapper;
 use wrappers::hex_bytes::HexBytes;
 use wrappers::hex_u256::HexU256;
 
+use crate::api_key::ApiKey;
+
 pub mod wrappers;
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type, Enum)]
+#[derive(
+    Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type, Enum,
+)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
 #[sqlx(type_name = "transaction_priority", rename_all = "camelCase")]
@@ -57,7 +61,6 @@ pub struct RelayerInfo {
     pub enabled: bool,
 }
 
-
 #[derive(Deserialize, Serialize, Debug, Clone, Default, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
@@ -80,6 +83,13 @@ pub struct RelayerUpdate {
 pub struct RelayerGasPriceLimit {
     pub value: HexU256,
     pub chain_id: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct CreateApiKeyResponse {
+    pub api_key: ApiKey,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, Object)]
@@ -122,7 +132,7 @@ pub struct CreateRelayerResponse {
     pub address: AddressWrapper,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
 pub struct SendTxRequest {
@@ -156,15 +166,6 @@ pub struct SendTxResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
-pub struct GetTxQuery {
-    #[serde(default)]
-    #[oai(default)]
-    pub status: Option<Option<TxStatus>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Object)]
-#[serde(rename_all = "camelCase")]
-#[oai(rename_all = "camelCase")]
 pub struct GetTxResponse {
     pub tx_id: String,
     pub to: AddressWrapper,
@@ -183,7 +184,7 @@ pub struct GetTxResponse {
 }
 
 #[derive(
-    Debug, Clone, Serialize, Deserialize, Copy, PartialEq, Eq, sqlx::Type, Enum
+    Debug, Clone, Serialize, Deserialize, Copy, PartialEq, Eq, sqlx::Type, Enum,
 )]
 #[sqlx(rename_all = "camelCase")]
 #[sqlx(type_name = "tx_status")]
@@ -266,6 +267,7 @@ impl RelayerUpdate {
 #[cfg(test)]
 mod tests {
     use ethers::types::{Address, U256};
+    use ethers::utils::parse_units;
 
     use super::*;
 
@@ -308,6 +310,39 @@ mod tests {
                 }
               ],
               "enabled": true
+            }
+        "#};
+
+        assert_eq!(json.trim(), expected.trim());
+    }
+
+    #[test]
+    fn send_tx_request() {
+        let value: U256 = parse_units("1", "ether").unwrap().into();
+
+        let request = SendTxRequest {
+            to: AddressWrapper(Address::zero()),
+            value: value.into(),
+            data: Some(HexBytes::from(vec![0])),
+            gas_limit: U256::zero().into(),
+            priority: TransactionPriority::Regular,
+            tx_id: Some("tx_id".to_string()),
+            blobs: Some(vec![vec![0]]),
+        };
+
+        let json = serde_json::to_string_pretty(&request).unwrap();
+
+        let expected = indoc::indoc! {r#"
+            {
+              "to": "0x0000000000000000000000000000000000000000",
+              "value": "1000000000000000000",
+              "data": "0x00",
+              "gasLimit": "0",
+              "priority": "regular",
+              "txId": "tx_id",
+              "blobs": [
+                "AA=="
+              ]
             }
         "#};
 

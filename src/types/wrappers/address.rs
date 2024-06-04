@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::database::HasValueRef;
 use sqlx::Database;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AddressWrapper(pub Address);
 
@@ -86,15 +86,32 @@ impl ParseFromJSON for AddressWrapper {
         let value = value
             .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
 
-        let inner = serde_json::from_value(value)
+        let value = serde_json::from_value(value)
             .map_err(|_| poem_openapi::types::ParseError::expected_input())?;
 
-        Ok(Self(inner))
+        Ok(value)
     }
 }
 
 impl ToJSON for AddressWrapper {
     fn to_json(&self) -> Option<serde_json::Value> {
-        serde_json::to_value(self.0).ok()
+        serde_json::to_value(self).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ethers::types::H160;
+    use hex_literal::hex;
+
+    use super::*;
+
+    #[test]
+    fn deserialize() {
+        let address: AddressWrapper = serde_json::from_str(r#""1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2""#).unwrap();
+
+        let expected = H160(hex!("1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"));
+
+        assert_eq!(address.0, expected);
     }
 }

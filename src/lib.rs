@@ -7,7 +7,6 @@ pub mod config;
 pub mod db;
 pub mod keys;
 pub mod serde_utils;
-pub mod server;
 pub mod new_server;
 pub mod service;
 pub mod shutdown;

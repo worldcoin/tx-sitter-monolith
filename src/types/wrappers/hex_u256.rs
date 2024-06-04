@@ -68,11 +68,11 @@ impl poem_openapi::types::Type for HexU256 {
     type RawElementValueType = Self;
 
     fn name() -> std::borrow::Cow<'static, str> {
-        "string(u256)".into()
+        "string(hex-u256)".into()
     }
 
     fn schema_ref() -> MetaSchemaRef {
-        let mut schema_ref = MetaSchema::new_with_format("u256", "hex");
+        let mut schema_ref = MetaSchema::new_with_format("string", "hex-u256");
 
         schema_ref.example = Some(serde_json::Value::String(
             "0xff".to_string(),
@@ -105,16 +105,16 @@ impl ParseFromJSON for HexU256 {
         let value = value
             .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
 
-        let inner = serde_json::from_value(value)
+        let value = serde_json::from_value(value)
             .map_err(|_| poem_openapi::types::ParseError::expected_input())?;
 
-        Ok(Self(inner))
+        Ok(value)
     }
 }
 
 impl ToJSON for HexU256 {
     fn to_json(&self) -> Option<serde_json::Value> {
-        serde_json::to_value(self.0).ok()
+        serde_json::to_value(self).ok()
     }
 }
 

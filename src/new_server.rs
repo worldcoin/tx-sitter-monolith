@@ -4,6 +4,7 @@ use std::sync::Arc;
 use ethers::signers::Signer;
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
+use poem::middleware::Cors;
 use poem::web::{Data, LocalAddr};
 use poem::{EndpointExt, Result, Route};
 use poem_openapi::param::{Path, Query};
@@ -15,16 +16,16 @@ use url::Url;
 
 use crate::api_key::ApiKey;
 use crate::app::App;
-use crate::server::routes::relayer::CreateApiKeyResponse;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
-    CreateRelayerRequest, CreateRelayerResponse, GetTxQuery, GetTxResponse,
-    NetworkInfo, NewNetworkInfo, RelayerInfo, RelayerUpdate, RpcRequest,
-    SendTxRequest, SendTxResponse, TxStatus,
+    CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
+    GetTxResponse, NetworkInfo, NewNetworkInfo, RelayerInfo, RelayerUpdate,
+    RpcRequest, SendTxRequest, SendTxResponse, TxStatus,
 };
 
 mod security;
+mod trace_middleware;
 
 struct AdminApi;
 
@@ -268,6 +269,8 @@ impl RelayerApi {
     ) -> Result<Json<SendTxResponse>> {
         api_token.validate(app).await?;
 
+        tracing::info!(?req, "Send tx");
+
         let tx_id = if let Some(id) = req.tx_id {
             id
         } else {
@@ -475,10 +478,13 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
     }
 
     let router = Route::new()
-        .nest("/explorer", api_service.rapidoc())
+        .nest("/rapidoc", api_service.rapidoc())
+        .nest("/swagger", api_service.swagger_ui())
         .nest("/schema.json", api_service.spec_endpoint())
         .nest("/schema.yml", api_service.spec_endpoint_yaml())
         .nest("/", api_service)
+        .with(Cors::new())
+        .with(trace_middleware::TraceMiddleware)
         .data(app.clone());
 
     let listener = TcpListener::bind(app.config.server.host);

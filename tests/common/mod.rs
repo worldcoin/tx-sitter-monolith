@@ -34,10 +34,10 @@ pub mod prelude {
     pub use futures::StreamExt;
     pub use tx_sitter::api_key::ApiKey;
     pub use tx_sitter::client::TxSitterClient;
-    pub use tx_sitter::server::routes::relayer::{
+    pub use tx_sitter::types::{
         CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
+        SendTxRequest,
     };
-    pub use tx_sitter::server::routes::transaction::SendTxRequest;
     pub use url::Url;
 
     pub use super::*;
@@ -113,7 +113,7 @@ pub async fn await_balance(
     for _ in 0..50 {
         let balance = provider.get_balance(address, None).await?;
 
-        tracing::info!(?balance, ?expected_balance, "Checking balance");
+        tracing::info!(?address, ?balance, ?expected_balance, "Checking balance");
 
         if balance >= expected_balance {
             return Ok(());

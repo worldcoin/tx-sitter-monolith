@@ -19,6 +19,7 @@ async fn send_many_txs() -> eyre::Result<()> {
 
     // Send a transaction
     let value: U256 = parse_units("10", "ether")?.into();
+
     let num_transfers = 10;
 
     let mut tasks = FuturesUnordered::new();
@@ -29,7 +30,7 @@ async fn send_many_txs() -> eyre::Result<()> {
                 .send_tx(
                     &api_key,
                     &SendTxRequest {
-                        to: ARBITRARY_ADDRESS,
+                        to: ARBITRARY_ADDRESS.into(),
                         value: value.into(),
                         gas_limit: U256::from(21_000).into(),
                         ..Default::default()
