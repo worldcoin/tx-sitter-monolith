@@ -19,7 +19,7 @@ use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
     CreateRelayerRequest, CreateRelayerResponse, NetworkInfo, NewNetworkInfo,
-    RelayerInfo, RelayerUpdate,
+    RelayerInfo, RelayerUpdate, SendTxResponse,
 };
 
 mod security;
@@ -252,10 +252,101 @@ impl AdminApi {
     }
 }
 
-struct ConsumerApi;
+struct RelayerApi;
 
 #[OpenApi(prefix_path = "/1/api/")]
-impl ConsumerApi {}
+impl RelayerApi {
+    /// Send Transaction
+    #[oai(path = "/:api_token/tx", method = "post")]
+    async fn send_tx(
+        &self,
+        Data(app): Data<&Arc<App>>,
+        Path(api_token): Path<ApiKey>,
+        // Json(req): Json<SendTxRequest>,
+    ) -> Result<Json<SendTxResponse>> {
+        api_token.validate(app).await?;
+
+        // let tx_id = if let Some(id) = req.tx_id {
+        //     id
+        // } else {
+        //     uuid::Uuid::new_v4().to_string()
+        // };
+
+        // let relayer = app.db.get_relayer(api_token.relayer_id()).await?;
+
+        // if !relayer.enabled {
+        //     return Err(ApiError::RelayerDisabled);
+        // }
+
+        // let relayer_queued_tx_count = app
+        //     .db
+        //     .get_relayer_pending_txs(api_token.relayer_id())
+        //     .await?;
+
+        // if relayer_queued_tx_count > relayer.max_queued_txs as usize {
+        //     return Err(ApiError::TooManyTransactions {
+        //         max: relayer.max_queued_txs as usize,
+        //         current: relayer_queued_tx_count,
+        //     });
+        // }
+
+        // app.db
+        //     .create_transaction(
+        //         &tx_id,
+        //         req.to,
+        //         req.data.as_ref().map(|d| &d[..]).unwrap_or(&[]),
+        //         req.value,
+        //         req.gas_limit,
+        //         req.priority,
+        //         req.blobs,
+        //         api_token.relayer_id(),
+        //     )
+        //     .await?;
+
+        // tracing::info!(tx_id, "Transaction created");
+
+        // Ok(Json(SendTxResponse { tx_id }))
+
+        todo!()
+    }
+
+    /// Get Transaction
+    #[oai(path = "/:api_token/tx/:tx_id", method = "get")]
+    async fn get_tx(
+        &self,
+        Data(app): Data<&Arc<App>>,
+        Path(api_token): Path<ApiKey>,
+        Path(tx_id): Path<String>,
+    ) -> Result<Json<SendTxResponse>> {
+        api_token.validate(app).await?;
+
+        todo!()
+    }
+
+    /// Get Transactions
+    #[oai(path = "/:api_token/txs", method = "get")]
+    async fn get_txs(
+        &self,
+        Data(app): Data<&Arc<App>>,
+        Path(api_token): Path<ApiKey>,
+    ) -> Result<()> {
+        api_token.validate(app).await?;
+
+        Ok(())
+    }
+
+    /// Relayer RPC
+    #[oai(path = "/:api_token/rpc", method = "post")]
+    async fn relayer_rpc(
+        &self,
+        Data(app): Data<&Arc<App>>,
+        Path(api_token): Path<ApiKey>,
+    ) -> Result<()> {
+        api_token.validate(app).await?;
+
+        Ok(())
+    }
+}
 
 struct ServiceApi;
 
@@ -292,7 +383,7 @@ impl ServerHandle {
 
 pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
     let mut api_service = OpenApiService::new(
-        (AdminApi, ConsumerApi, ServiceApi),
+        (AdminApi, RelayerApi, ServiceApi),
         "Tx Sitter",
         version::version!(),
     );

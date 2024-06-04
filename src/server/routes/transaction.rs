@@ -9,18 +9,17 @@ use crate::api_key::ApiKey;
 use crate::app::App;
 use crate::db::TxStatus;
 use crate::server::ApiError;
+use crate::types::wrappers::decimal_u256::DecimalU256;
 use crate::types::TransactionPriority;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendTxRequest {
     pub to: Address,
-    #[serde(with = "crate::serde_utils::decimal_u256")]
-    pub value: U256,
+    pub value: DecimalU256,
     #[serde(default)]
     pub data: Option<Bytes>,
-    #[serde(with = "crate::serde_utils::decimal_u256")]
-    pub gas_limit: U256,
+    pub gas_limit: DecimalU256,
     #[serde(default)]
     pub priority: TransactionPriority,
     #[serde(default)]
@@ -49,10 +48,8 @@ pub struct GetTxResponse {
     pub to: Address,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Bytes>,
-    #[serde(with = "crate::serde_utils::decimal_u256")]
-    pub value: U256,
-    #[serde(with = "crate::serde_utils::decimal_u256")]
-    pub gas_limit: U256,
+    pub value: DecimalU256,
+    pub gas_limit: DecimalU256,
     pub nonce: u64,
 
     // Sent tx data
@@ -115,8 +112,8 @@ pub async fn send_tx(
             &tx_id,
             req.to,
             req.data.as_ref().map(|d| &d[..]).unwrap_or(&[]),
-            req.value,
-            req.gas_limit,
+            req.value.0,
+            req.gas_limit.0,
             req.priority,
             req.blobs,
             api_token.relayer_id(),
@@ -160,8 +157,8 @@ pub async fn get_txs(
                 } else {
                     Some(tx.data.into())
                 },
-                value: tx.value.0,
-                gas_limit: tx.gas_limit.0,
+                value: tx.value.into(),
+                gas_limit: tx.gas_limit.into(),
                 nonce: tx.nonce,
                 tx_hash: tx.tx_hash.map(|h| h.0),
                 status: tx.status.map(GetTxResponseStatus::TxStatus).unwrap_or(
@@ -192,8 +189,8 @@ pub async fn get_tx(
         } else {
             Some(tx.data.into())
         },
-        value: tx.value.0,
-        gas_limit: tx.gas_limit.0,
+        value: tx.value.into(),
+        gas_limit: tx.gas_limit.into(),
         nonce: tx.nonce,
         tx_hash: tx.tx_hash.map(|h| h.0),
         status: tx

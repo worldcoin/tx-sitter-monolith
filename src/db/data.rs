@@ -7,7 +7,7 @@ use sqlx::Database;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::types::wrappers::address::AddressWrapper;
-use crate::types::wrappers::u256::U256Wrapper;
+use crate::types::wrappers::hex_u256::HexU256;
 use crate::types::TransactionPriority;
 
 #[derive(Debug, Clone, FromRow)]
@@ -16,8 +16,8 @@ pub struct UnsentTx {
     pub id: String,
     pub tx_to: AddressWrapper,
     pub data: Vec<u8>,
-    pub value: U256Wrapper,
-    pub gas_limit: U256Wrapper,
+    pub value: HexU256,
+    pub gas_limit: HexU256,
     pub priority: TransactionPriority,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
@@ -33,16 +33,16 @@ pub struct TxForEscalation {
     pub id: String,
     pub tx_to: AddressWrapper,
     pub data: Vec<u8>,
-    pub value: U256Wrapper,
-    pub gas_limit: U256Wrapper,
+    pub value: HexU256,
+    pub gas_limit: HexU256,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
     pub blobs: Option<Vec<Vec<u8>>>,
     pub key_id: String,
     #[sqlx(try_from = "i64")]
     pub chain_id: u64,
-    pub initial_max_fee_per_gas: U256Wrapper,
-    pub initial_max_priority_fee_per_gas: U256Wrapper,
+    pub initial_max_fee_per_gas: HexU256,
+    pub initial_max_priority_fee_per_gas: HexU256,
     #[sqlx(try_from = "i64")]
     pub escalation_count: usize,
 }
@@ -52,8 +52,8 @@ pub struct ReadTxData {
     pub tx_id: String,
     pub to: AddressWrapper,
     pub data: Vec<u8>,
-    pub value: U256Wrapper,
-    pub gas_limit: U256Wrapper,
+    pub value: HexU256,
+    pub gas_limit: HexU256,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
     pub blobs: Option<Vec<Vec<u8>>>,

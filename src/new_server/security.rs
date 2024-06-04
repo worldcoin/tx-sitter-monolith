@@ -1,6 +1,7 @@
 use poem::Result;
 use poem_openapi::{auth, SecurityScheme};
 
+use crate::api_key::ApiKey;
 use crate::app::App;
 
 #[derive(SecurityScheme)]
@@ -18,6 +19,28 @@ impl BasicAuth {
                     poem::http::StatusCode::UNAUTHORIZED,
                 ));
             }
+        }
+
+        Ok(())
+    }
+}
+
+impl ApiKey {
+    pub async fn validate(&self, app: impl AsRef<App>) -> Result<()> {
+        let app = app.as_ref();
+
+        let is_authorized = app.is_authorized(self).await.map_err(|err| {
+            poem::error::Error::from_string(
+                err.to_string(),
+                poem::http::StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        })?;
+
+        if !is_authorized {
+            return Err(poem::error::Error::from_string(
+                "Unauthorized".to_string(),
+                poem::http::StatusCode::UNAUTHORIZED,
+            ));
         }
 
         Ok(())

@@ -2,7 +2,7 @@ use poem_openapi::Object;
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
 use wrappers::address::AddressWrapper;
-use wrappers::u256::U256Wrapper;
+use wrappers::hex_u256::HexU256;
 
 pub mod wrappers;
 
@@ -73,7 +73,7 @@ pub struct RelayerUpdate {
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
 pub struct RelayerGasPriceLimit {
-    pub value: U256Wrapper,
+    pub value: HexU256,
     pub chain_id: i64,
 }
 
@@ -118,6 +118,29 @@ pub struct CreateRelayerResponse {
     pub address: AddressWrapper,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct SendTxRequest {
+    pub to: AddressWrapper,
+    pub value: HexU256,
+    // #[serde(default)]
+    // pub data: Option<Bytes>,
+    pub gas_limit: HexU256,
+    // #[serde(default)]
+    // pub priority: TransactionPriority,
+    #[serde(default)]
+    pub tx_id: Option<String>,
+    #[serde(default, with = "crate::serde_utils::base64_binary")]
+    pub blobs: Option<Vec<Vec<u8>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct SendTxResponse {
+    pub tx_id: String,
+}
 
 impl RelayerUpdate {
     pub fn with_relayer_name(mut self, relayer_name: String) -> Self {
@@ -168,7 +191,7 @@ mod tests {
             max_inflight_txs: 0,
             max_queued_txs: 0,
             gas_price_limits: vec![RelayerGasPriceLimit {
-                value: U256Wrapper(U256::zero()),
+                value: U256::zero().into(),
                 chain_id: 1,
             }],
             enabled: true,

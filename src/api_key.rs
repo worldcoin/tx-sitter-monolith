@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use base64::Engine;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
-use poem_openapi::types::{ParseFromJSON, ToJSON};
+use poem_openapi::types::{ParseFromJSON, ParseFromParameter, ToJSON};
 use rand::rngs::OsRng;
 use rand::Rng;
 use serde::Serialize;
@@ -138,7 +138,7 @@ impl poem_openapi::types::Type for ApiKey {
         let mut schema_ref = MetaSchema::new_with_format("string", "api-key");
 
         schema_ref.example = Some(serde_json::Value::String(
-            "MyDwh6wBRyOAkrA-ANOGjViioo3fXMa53nbdLhezV4s=".to_string(),
+            "G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=".to_string(),
         ));
         schema_ref.title = Some("Api Key".to_string());
         schema_ref.description = Some("Base64 encoded API key");
@@ -173,6 +173,12 @@ impl ParseFromJSON for ApiKey {
 impl ToJSON for ApiKey {
     fn to_json(&self) -> Option<serde_json::Value> {
         serde_json::to_value(self).ok()
+    }
+}
+
+impl ParseFromParameter for ApiKey {
+    fn parse_from_parameter(value: &str) -> poem_openapi::types::ParseResult<Self> {
+        value.parse().map_err(|_| poem_openapi::types::ParseError::expected_input())
     }
 }
 

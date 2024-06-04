@@ -32,8 +32,8 @@ async fn escalation() -> eyre::Result<()> {
             &api_key,
             &SendTxRequest {
                 to: ARBITRARY_ADDRESS,
-                value,
-                gas_limit: U256::from(21_000),
+                value: value.into(),
+                gas_limit: U256::from(21_000).into(),
                 ..Default::default()
             },
         )

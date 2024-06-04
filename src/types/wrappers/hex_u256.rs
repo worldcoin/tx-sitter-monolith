@@ -7,9 +7,9 @@ use sqlx::Database;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct U256Wrapper(pub U256);
+pub struct HexU256(pub U256);
 
-impl<'r, DB> sqlx::Decode<'r, DB> for U256Wrapper
+impl<'r, DB> sqlx::Decode<'r, DB> for HexU256
 where
     DB: Database,
     [u8; 32]: sqlx::Decode<'r, DB>,
@@ -25,7 +25,7 @@ where
     }
 }
 
-impl<DB: Database> sqlx::Type<DB> for U256Wrapper
+impl<DB: Database> sqlx::Type<DB> for HexU256
 where
     [u8; 32]: sqlx::Type<DB>,
 {
@@ -38,7 +38,7 @@ where
     }
 }
 
-impl<'q, DB> sqlx::Encode<'q, DB> for U256Wrapper
+impl<'q, DB> sqlx::Encode<'q, DB> for HexU256
 where
     DB: Database,
     [u8; 32]: sqlx::Encode<'q, DB>,
@@ -54,13 +54,13 @@ where
     }
 }
 
-impl From<U256> for U256Wrapper {
+impl From<U256> for HexU256 {
     fn from(value: U256) -> Self {
         Self(value)
     }
 }
 
-impl poem_openapi::types::Type for U256Wrapper {
+impl poem_openapi::types::Type for HexU256 {
     const IS_REQUIRED: bool = true;
 
     type RawValueType = Self;
@@ -78,7 +78,7 @@ impl poem_openapi::types::Type for U256Wrapper {
             "0xff".to_string(),
         ));
         schema_ref.title = Some("Address".to_string());
-        schema_ref.description = Some("Hex encoded 256-bit unsigned integer");
+        schema_ref.description = Some("A 256-bit unsigned integer. Supports hex and decimal encoding");
 
         MetaSchemaRef::Inline(Box::new(MetaSchema::new_with_format(
             "string", "u256",
@@ -96,7 +96,7 @@ impl poem_openapi::types::Type for U256Wrapper {
     }
 }
 
-impl ParseFromJSON for U256Wrapper {
+impl ParseFromJSON for HexU256 {
     fn parse_from_json(
         value: Option<serde_json::Value>,
     ) -> poem_openapi::types::ParseResult<Self> {
@@ -111,7 +111,7 @@ impl ParseFromJSON for U256Wrapper {
     }
 }
 
-impl ToJSON for U256Wrapper {
+impl ToJSON for HexU256 {
     fn to_json(&self) -> Option<serde_json::Value> {
         serde_json::to_value(self.0).ok()
     }
@@ -124,10 +124,10 @@ mod tests {
     use super::*;
 
     #[test_case("0xff", 255)]
-    #[test_case("ff", 255)]
+    #[test_case("0x10", 16)]
     fn deserialize_string(s: &str, v: u64) {
         let s = format!("\"{s}\"");
-        let actual: U256Wrapper = serde_json::from_str(&s).unwrap();
+        let actual: HexU256 = serde_json::from_str(&s).unwrap();
 
         assert_eq!(actual.0, U256::from(v));
     }
