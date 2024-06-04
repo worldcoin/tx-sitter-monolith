@@ -1,5 +1,6 @@
 use poem_openapi::{Enum, Object};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::prelude::FromRow;
 use wrappers::address::AddressWrapper;
 use wrappers::decimal_u256::DecimalU256;
@@ -192,6 +193,34 @@ pub enum TxStatus {
     Pending,
     Mined,
     Finalized,
+}
+
+#[derive(Debug, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct RpcRequest {
+    pub id: i32,
+    pub method: String,
+    #[serde(default)]
+    #[oai(default)]
+    pub params: Value,
+    pub jsonrpc: JsonRpcVersion,
+}
+
+#[derive(Debug, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct RpcResponse {
+    pub id: i32,
+    pub result: Value,
+    pub jsonrpc: JsonRpcVersion,
+}
+
+#[derive(Debug, Serialize, Deserialize, Enum)]
+pub enum JsonRpcVersion {
+    #[serde(rename = "2.0")]
+    #[oai(rename = "2.0")]
+    V2,
 }
 
 impl TxStatus {

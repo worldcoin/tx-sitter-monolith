@@ -10,6 +10,7 @@ use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::Json;
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
 use security::BasicAuth;
+use serde_json::Value;
 use url::Url;
 
 use crate::api_key::ApiKey;
@@ -18,7 +19,9 @@ use crate::server::routes::relayer::CreateApiKeyResponse;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
-    CreateRelayerRequest, CreateRelayerResponse, GetTxQuery, GetTxResponse, NetworkInfo, NewNetworkInfo, RelayerInfo, RelayerUpdate, SendTxRequest, SendTxResponse, TxStatus
+    CreateRelayerRequest, CreateRelayerResponse, GetTxQuery, GetTxResponse,
+    NetworkInfo, NewNetworkInfo, RelayerInfo, RelayerUpdate, RpcRequest,
+    SendTxRequest, SendTxResponse, TxStatus,
 };
 
 mod security;
@@ -362,28 +365,30 @@ impl RelayerApi {
         let txs = if unsent {
             app.db.read_txs(api_token.relayer_id(), Some(None)).await?
         } else if let Some(status) = status {
-            app.db.read_txs(api_token.relayer_id(), Some(Some(status))).await?
+            app.db
+                .read_txs(api_token.relayer_id(), Some(Some(status)))
+                .await?
         } else {
             app.db.read_txs(api_token.relayer_id(), None).await?
         };
 
-        let txs =
-            txs.into_iter()
-                .map(|tx| GetTxResponse {
-                    tx_id: tx.tx_id,
-                    to: tx.to,
-                    data: if tx.data.is_empty() {
-                        None
-                    } else {
-                        Some(tx.data.into())
-                    },
-                    value: tx.value.into(),
-                    gas_limit: tx.gas_limit.into(),
-                    nonce: tx.nonce,
-                    tx_hash: tx.tx_hash,
-                    status: tx.status,
-                })
-                .collect();
+        let txs = txs
+            .into_iter()
+            .map(|tx| GetTxResponse {
+                tx_id: tx.tx_id,
+                to: tx.to,
+                data: if tx.data.is_empty() {
+                    None
+                } else {
+                    Some(tx.data.into())
+                },
+                value: tx.value.into(),
+                gas_limit: tx.gas_limit.into(),
+                nonce: tx.nonce,
+                tx_hash: tx.tx_hash,
+                status: tx.status,
+            })
+            .collect();
 
         Ok(Json(txs))
     }
@@ -394,10 +399,30 @@ impl RelayerApi {
         &self,
         Data(app): Data<&Arc<App>>,
         Path(api_token): Path<ApiKey>,
-    ) -> Result<()> {
+        Json(req): Json<RpcRequest>,
+    ) -> Result<Json<Value>> {
         api_token.validate(app).await?;
 
-        Ok(())
+        let relayer_info = app.db.get_relayer(api_token.relayer_id()).await?;
+
+        // TODO: Cache?
+        let http_provider = app.http_provider(relayer_info.chain_id).await?;
+        let url = http_provider.url();
+
+        let response = reqwest::Client::new()
+            .post(url.clone())
+            .json(&req)
+            .send()
+            .await
+            .map_err(|err| {
+                eyre::eyre!("Error sending request to {}: {}", url, err)
+            })?;
+
+        let response: Value = response.json().await.map_err(|err| {
+            eyre::eyre!("Error parsing response from {}: {}", url, err)
+        })?;
+
+        Ok(Json(response))
     }
 }
 
