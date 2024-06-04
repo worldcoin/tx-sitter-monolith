@@ -94,17 +94,19 @@ impl poem_openapi::types::Type for DecimalU256 {
     }
 
     fn schema_ref() -> MetaSchemaRef {
-        let mut schema_ref = MetaSchema::new_with_format("string", "u256");
+        let mut schema_ref = MetaSchema::new_with_format("u256", "decimal");
 
         schema_ref.example =
-            Some(serde_json::Value::String("0xff".to_string()));
-        schema_ref.title = Some("Address".to_string());
+            Some(serde_json::Value::String("0".to_string()));
+        schema_ref.default =
+            Some(serde_json::Value::String("0".to_string()));
+        schema_ref.title = Some("Decimal U256".to_string());
         schema_ref.description = Some(
             "A 256-bit unsigned integer. Supports hex and decimal encoding",
         );
 
         MetaSchemaRef::Inline(Box::new(MetaSchema::new_with_format(
-            "string", "u256",
+            "u256", "decimal",
         )))
     }
 

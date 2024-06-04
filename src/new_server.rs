@@ -19,7 +19,7 @@ use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
     CreateRelayerRequest, CreateRelayerResponse, NetworkInfo, NewNetworkInfo,
-    RelayerInfo, RelayerUpdate, SendTxResponse,
+    RelayerInfo, RelayerUpdate, SendTxRequest, SendTxResponse,
 };
 
 mod security;
@@ -262,52 +262,53 @@ impl RelayerApi {
         &self,
         Data(app): Data<&Arc<App>>,
         Path(api_token): Path<ApiKey>,
-        // Json(req): Json<SendTxRequest>,
+        Json(req): Json<SendTxRequest>,
     ) -> Result<Json<SendTxResponse>> {
         api_token.validate(app).await?;
 
-        // let tx_id = if let Some(id) = req.tx_id {
-        //     id
-        // } else {
-        //     uuid::Uuid::new_v4().to_string()
-        // };
+        let tx_id = if let Some(id) = req.tx_id {
+            id
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
 
-        // let relayer = app.db.get_relayer(api_token.relayer_id()).await?;
+        let relayer = app.db.get_relayer(api_token.relayer_id()).await?;
 
-        // if !relayer.enabled {
-        //     return Err(ApiError::RelayerDisabled);
-        // }
+        if !relayer.enabled {
+            return Err(poem::error::Error::from_string(
+                "Relayer is disabled".to_string(),
+                StatusCode::FORBIDDEN,
+            ));
+        }
 
-        // let relayer_queued_tx_count = app
-        //     .db
-        //     .get_relayer_pending_txs(api_token.relayer_id())
-        //     .await?;
+        let relayer_queued_tx_count = app
+            .db
+            .get_relayer_pending_txs(api_token.relayer_id())
+            .await?;
 
-        // if relayer_queued_tx_count > relayer.max_queued_txs as usize {
-        //     return Err(ApiError::TooManyTransactions {
-        //         max: relayer.max_queued_txs as usize,
-        //         current: relayer_queued_tx_count,
-        //     });
-        // }
+        if relayer_queued_tx_count > relayer.max_queued_txs as usize {
+            return Err(poem::error::Error::from_string(
+                "Relayer queue is full".to_string(),
+                StatusCode::TOO_MANY_REQUESTS,
+            ));
+        }
 
-        // app.db
-        //     .create_transaction(
-        //         &tx_id,
-        //         req.to,
-        //         req.data.as_ref().map(|d| &d[..]).unwrap_or(&[]),
-        //         req.value,
-        //         req.gas_limit,
-        //         req.priority,
-        //         req.blobs,
-        //         api_token.relayer_id(),
-        //     )
-        //     .await?;
+        app.db
+            .create_transaction(
+                &tx_id,
+                req.to.0,
+                req.data.as_ref().map(|d| &d.0[..]).unwrap_or(&[]),
+                req.value.0,
+                req.gas_limit.0,
+                req.priority,
+                req.blobs,
+                api_token.relayer_id(),
+            )
+            .await?;
 
-        // tracing::info!(tx_id, "Transaction created");
+        tracing::info!(tx_id, "Transaction created");
 
-        // Ok(Json(SendTxResponse { tx_id }))
-
-        todo!()
+        Ok(Json(SendTxResponse { tx_id }))
     }
 
     /// Get Transaction

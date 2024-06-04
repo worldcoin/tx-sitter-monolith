@@ -1,13 +1,15 @@
-use poem_openapi::Object;
+use poem_openapi::{Enum, Object};
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
 use wrappers::address::AddressWrapper;
+use wrappers::hex_bytes::HexBytes;
 use wrappers::hex_u256::HexU256;
 
 pub mod wrappers;
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type, Enum)]
 #[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
 #[sqlx(type_name = "transaction_priority", rename_all = "camelCase")]
 pub enum TransactionPriority {
     // 5th percentile
@@ -113,7 +115,6 @@ pub struct CreateRelayerRequest {
 pub struct CreateRelayerResponse {
     /// ID of the created relayer
     pub relayer_id: String,
-    // TODO: Make type safe
     /// Address of the created relayer
     pub address: AddressWrapper,
 }
@@ -124,14 +125,19 @@ pub struct CreateRelayerResponse {
 pub struct SendTxRequest {
     pub to: AddressWrapper,
     pub value: HexU256,
-    // #[serde(default)]
-    // pub data: Option<Bytes>,
-    pub gas_limit: HexU256,
-    // #[serde(default)]
-    // pub priority: TransactionPriority,
     #[serde(default)]
+    #[oai(default)]
+    pub data: Option<HexBytes>,
+    pub gas_limit: HexU256,
+    #[serde(default)]
+    #[oai(default)]
+    pub priority: TransactionPriority,
+    #[serde(default)]
+    #[oai(default)]
     pub tx_id: Option<String>,
+    // TODO: poem_openapi thinks this is a nested array of numbers
     #[serde(default, with = "crate::serde_utils::base64_binary")]
+    #[oai(default)]
     pub blobs: Option<Vec<Vec<u8>>>,
 }
 
