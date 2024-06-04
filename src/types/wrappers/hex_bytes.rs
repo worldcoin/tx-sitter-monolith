@@ -13,6 +13,12 @@ impl From<Bytes> for HexBytes {
     }
 }
 
+impl From<Vec<u8>> for HexBytes {
+    fn from(value: Vec<u8>) -> Self {
+        Self(Bytes::from(value))
+    }
+}
+
 impl poem_openapi::types::Type for HexBytes {
     const IS_REQUIRED: bool = true;
 

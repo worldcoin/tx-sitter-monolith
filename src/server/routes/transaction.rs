@@ -1,16 +1,15 @@
 use std::sync::Arc;
 
 use axum::extract::{Json, Path, Query, State};
-use ethers::types::{Address, Bytes, H256, U256};
+use ethers::types::{Address, Bytes, H256};
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::api_key::ApiKey;
 use crate::app::App;
-use crate::db::TxStatus;
 use crate::server::ApiError;
 use crate::types::wrappers::decimal_u256::DecimalU256;
-use crate::types::TransactionPriority;
+use crate::types::{TransactionPriority, TxStatus};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

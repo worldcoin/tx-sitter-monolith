@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
 use wrappers::address::AddressWrapper;
 use wrappers::decimal_u256::DecimalU256;
+use wrappers::h256::H256Wrapper;
 use wrappers::hex_bytes::HexBytes;
 use wrappers::hex_u256::HexU256;
 
@@ -149,6 +150,49 @@ pub struct SendTxRequest {
 #[oai(rename_all = "camelCase")]
 pub struct SendTxResponse {
     pub tx_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct GetTxResponse {
+    pub tx_id: String,
+    pub to: AddressWrapper,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<HexBytes>,
+    pub value: DecimalU256,
+    pub gas_limit: DecimalU256,
+    pub nonce: u64,
+
+    // Sent tx data
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<H256Wrapper>,
+    #[serde(default)]
+    #[oai(default)]
+    pub status: Option<TxStatus>,
+}
+
+#[derive(
+    Debug, Clone, Serialize, Deserialize, Copy, PartialEq, Eq, sqlx::Type, Enum
+)]
+#[sqlx(rename_all = "camelCase")]
+#[sqlx(type_name = "tx_status")]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub enum TxStatus {
+    Pending,
+    Mined,
+    Finalized,
+}
+
+impl TxStatus {
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Pending => Self::Pending,
+            Self::Mined => Self::Pending,
+            Self::Finalized => Self::Mined,
+        }
+    }
 }
 
 impl RelayerUpdate {

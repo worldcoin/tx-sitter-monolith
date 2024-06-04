@@ -18,8 +18,8 @@ use crate::server::routes::relayer::CreateApiKeyResponse;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
-    CreateRelayerRequest, CreateRelayerResponse, NetworkInfo, NewNetworkInfo,
-    RelayerInfo, RelayerUpdate, SendTxRequest, SendTxResponse,
+    CreateRelayerRequest, CreateRelayerResponse, GetTxResponse, NetworkInfo,
+    NewNetworkInfo, RelayerInfo, RelayerUpdate, SendTxRequest, SendTxResponse,
 };
 
 mod security;
@@ -318,10 +318,32 @@ impl RelayerApi {
         Data(app): Data<&Arc<App>>,
         Path(api_token): Path<ApiKey>,
         Path(tx_id): Path<String>,
-    ) -> Result<Json<SendTxResponse>> {
+    ) -> Result<Json<GetTxResponse>> {
         api_token.validate(app).await?;
 
-        todo!()
+        let tx = app.db.read_tx(&tx_id).await?.ok_or_else(|| {
+            poem::error::Error::from_string(
+                "Transaction not found".to_string(),
+                StatusCode::NOT_FOUND,
+            )
+        })?;
+
+        let get_tx_response = GetTxResponse {
+            tx_id: tx.tx_id,
+            to: tx.to,
+            data: if tx.data.is_empty() {
+                None
+            } else {
+                Some(tx.data.into())
+            },
+            value: tx.value.into(),
+            gas_limit: tx.gas_limit.into(),
+            nonce: tx.nonce,
+            tx_hash: tx.tx_hash,
+            status: tx.status,
+        };
+
+        Ok(Json(get_tx_response))
     }
 
     /// Get Transactions
