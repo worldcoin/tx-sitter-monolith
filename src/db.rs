@@ -12,7 +12,9 @@ use tracing::instrument;
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
 use crate::types::wrappers::h256::H256Wrapper;
-use crate::types::{NetworkInfo, RelayerInfo, RelayerUpdate, TransactionPriority, TxStatus};
+use crate::types::{
+    NetworkInfo, RelayerInfo, RelayerUpdate, TransactionPriority, TxStatus,
+};
 
 pub mod data;
 

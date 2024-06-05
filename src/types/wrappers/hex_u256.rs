@@ -1,6 +1,6 @@
 use ethers::types::U256;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
-use poem_openapi::types::{ParseFromJSON, ToJSON};
+use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
 use sqlx::database::{HasArguments, HasValueRef};
 use sqlx::Database;
@@ -74,12 +74,9 @@ impl poem_openapi::types::Type for HexU256 {
     fn schema_ref() -> MetaSchemaRef {
         let mut schema_ref = MetaSchema::new_with_format("string", "hex-u256");
 
-        schema_ref.example = Some(serde_json::Value::String(
-            "0xff".to_string(),
-        ));
-        schema_ref.default = Some(serde_json::Value::String(
-            "0x0".to_string(),
-        ));
+        schema_ref.example =
+            Some(serde_json::Value::String("0xff".to_string()));
+        schema_ref.default = Some(serde_json::Value::String("0x0".to_string()));
         schema_ref.title = Some("Hex U256".to_string());
         schema_ref.description = Some("A hex encoded 256-bit unsigned integer");
 
@@ -101,12 +98,10 @@ impl ParseFromJSON for HexU256 {
     fn parse_from_json(
         value: Option<serde_json::Value>,
     ) -> poem_openapi::types::ParseResult<Self> {
-        // TODO: Better error handling
-        let value = value
-            .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
+        let value = value.ok_or_else(ParseError::expected_input)?;
 
-        let value = serde_json::from_value(value)
-            .map_err(|_| poem_openapi::types::ParseError::expected_input())?;
+        let value =
+            serde_json::from_value(value).map_err(ParseError::custom)?;
 
         Ok(value)
     }

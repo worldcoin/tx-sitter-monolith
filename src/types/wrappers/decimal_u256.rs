@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use ethers::types::U256;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
-use poem_openapi::types::{ParseFromJSON, ToJSON};
+use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
 use sqlx::database::{HasArguments, HasValueRef};
 use sqlx::Database;
@@ -122,15 +122,10 @@ impl ParseFromJSON for DecimalU256 {
     fn parse_from_json(
         value: Option<serde_json::Value>,
     ) -> poem_openapi::types::ParseResult<Self> {
-        // TODO: Better error handling
-        let value = value
-            .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
+        let value = value.ok_or_else(ParseError::expected_input)?;
 
-        let value = serde_json::from_value(value).map_err(|err| {
-            tracing::error!("Error deserializing DecimalU256: {:?}", err);
-
-            poem_openapi::types::ParseError::expected_input()
-        })?;
+        let value =
+            serde_json::from_value(value).map_err(ParseError::custom)?;
 
         Ok(value)
     }

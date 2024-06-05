@@ -41,26 +41,14 @@ impl AdminApi {
     ) -> Result<Json<CreateRelayerResponse>> {
         basic_auth.validate(app).await?;
 
-        let (key_id, signer) = match app.keys_source.new_signer(&req.name).await
-        {
-            Ok(signer) => signer,
-            Err(e) => {
-                tracing::error!("Failed to create signer: {:?}", e);
-
-                return Err(poem::error::Error::from_string(
-                    "Failed to create signer".to_string(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ));
-            }
-        };
+        let (key_id, signer) = app.keys_source.new_signer(&req.name).await?;
 
         let address = signer.address();
 
         let relayer_id = uuid::Uuid::new_v4();
         let relayer_id = relayer_id.to_string();
 
-        let result = app
-            .db
+        app.db
             .create_relayer(
                 &relayer_id,
                 &req.name,
@@ -68,19 +56,7 @@ impl AdminApi {
                 &key_id,
                 address,
             )
-            .await;
-
-        match result {
-            Ok(()) => {}
-            Err(e) => {
-                tracing::error!("Failed to create relayer: {:?}", e);
-
-                return Err(poem::error::Error::from_string(
-                    "Failed to create relayer".to_string(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ));
-            }
-        }
+            .await?;
 
         Ok(Json(CreateRelayerResponse {
             relayer_id,
@@ -112,13 +88,7 @@ impl AdminApi {
     ) -> Result<Json<RelayerInfo>> {
         basic_auth.validate(app).await?;
 
-        let relayer_info =
-            app.db.get_relayer(&relayer_id).await.map_err(|err| {
-                poem::error::Error::from_string(
-                    err.to_string(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                )
-            })?;
+        let relayer_info = app.db.get_relayer(&relayer_id).await?;
 
         Ok(Json(relayer_info))
     }
@@ -134,15 +104,7 @@ impl AdminApi {
     ) -> Result<()> {
         basic_auth.validate(app).await?;
 
-        app.db
-            .update_relayer(&relayer_id, &req)
-            .await
-            .map_err(|err| {
-                poem::error::Error::from_string(
-                    err.to_string(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                )
-            })?;
+        app.db.update_relayer(&relayer_id, &req).await?;
 
         Ok(())
     }
@@ -159,12 +121,7 @@ impl AdminApi {
     ) -> Result<()> {
         basic_auth.validate(app).await?;
 
-        app.db.purge_unsent_txs(&relayer_id).await.map_err(|err| {
-            poem::error::Error::from_string(
-                err.to_string(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )
-        })?;
+        app.db.purge_unsent_txs(&relayer_id).await?;
 
         Ok(())
     }
@@ -202,12 +159,12 @@ impl AdminApi {
         let http_url: Url = network
             .http_rpc
             .parse::<Url>()
-            .map_err(|err| poem::error::BadRequest(err))?;
+            .map_err(poem::error::BadRequest)?;
 
         let ws_url: Url = network
             .ws_rpc
             .parse::<Url>()
-            .map_err(|err| poem::error::BadRequest(err))?;
+            .map_err(poem::error::BadRequest)?;
 
         app.db
             .upsert_network(
@@ -216,21 +173,10 @@ impl AdminApi {
                 http_url.as_str(),
                 ws_url.as_str(),
             )
-            .await
-            .map_err(|err| {
-                poem::error::Error::from_string(
-                    err.to_string(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                )
-            })?;
+            .await?;
 
         let task_runner = TaskRunner::new(app.clone());
-        Service::spawn_chain_tasks(&task_runner, chain_id).map_err(|err| {
-            poem::error::Error::from_string(
-                err.to_string(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )
-        })?;
+        Service::spawn_chain_tasks(&task_runner, chain_id)?;
 
         Ok(())
     }
@@ -244,12 +190,7 @@ impl AdminApi {
     ) -> Result<Json<Vec<NetworkInfo>>> {
         basic_auth.validate(app).await?;
 
-        let networks = app.db.get_networks().await.map_err(|err| {
-            poem::error::Error::from_string(
-                err.to_string(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )
-        })?;
+        let networks = app.db.get_networks().await?;
 
         Ok(Json(networks))
     }

@@ -1,6 +1,6 @@
 use ethers::types::Address;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
-use poem_openapi::types::{ParseFromJSON, ToJSON};
+use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
 use sqlx::database::HasValueRef;
 use sqlx::Database;
@@ -56,11 +56,11 @@ impl poem_openapi::types::Type for AddressWrapper {
     }
 
     fn schema_ref() -> MetaSchemaRef {
-        let mut schema_ref = MetaSchema::new_with_format(
-            "string", "address",
-        );
+        let mut schema_ref = MetaSchema::new_with_format("string", "address");
 
-        schema_ref.example = Some(serde_json::Value::String("0x000000000000000000000000000000000000000f".to_string()));
+        schema_ref.example = Some(serde_json::Value::String(
+            "0x000000000000000000000000000000000000000f".to_string(),
+        ));
         schema_ref.title = Some("Address".to_string());
         schema_ref.description = Some("Hex encoded ethereum address");
 
@@ -82,12 +82,10 @@ impl ParseFromJSON for AddressWrapper {
     fn parse_from_json(
         value: Option<serde_json::Value>,
     ) -> poem_openapi::types::ParseResult<Self> {
-        // TODO: Better error handling
-        let value = value
-            .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
+        let value = value.ok_or_else(ParseError::expected_input)?;
 
-        let value = serde_json::from_value(value)
-            .map_err(|_| poem_openapi::types::ParseError::expected_input())?;
+        let value =
+            serde_json::from_value(value).map_err(ParseError::custom)?;
 
         Ok(value)
     }
@@ -108,7 +106,10 @@ mod tests {
 
     #[test]
     fn deserialize() {
-        let address: AddressWrapper = serde_json::from_str(r#""1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2""#).unwrap();
+        let address: AddressWrapper = serde_json::from_str(
+            r#""1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2""#,
+        )
+        .unwrap();
 
         let expected = H160(hex!("1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"));
 

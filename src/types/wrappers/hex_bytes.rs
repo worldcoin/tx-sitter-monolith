@@ -1,7 +1,7 @@
 use ethers::types::Bytes;
-use serde::{Deserialize, Serialize};
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
-use poem_openapi::types::{ParseFromJSON, ToJSON};
+use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -33,9 +33,8 @@ impl poem_openapi::types::Type for HexBytes {
     fn schema_ref() -> MetaSchemaRef {
         let mut schema_ref = MetaSchema::new_with_format("string", "bytes");
 
-        schema_ref.example = Some(serde_json::Value::String(
-            "0xffffff".to_string(),
-        ));
+        schema_ref.example =
+            Some(serde_json::Value::String("0xffffff".to_string()));
         schema_ref.title = Some("Bytes".to_string());
         schema_ref.description = Some("Hex encoded binary blob");
 
@@ -59,12 +58,10 @@ impl ParseFromJSON for HexBytes {
     fn parse_from_json(
         value: Option<serde_json::Value>,
     ) -> poem_openapi::types::ParseResult<Self> {
-        // TODO: Better error handling
-        let value = value
-            .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
+        let value = value.ok_or_else(ParseError::expected_input)?;
 
-        let inner = serde_json::from_value(value)
-            .map_err(|_| poem_openapi::types::ParseError::expected_input())?;
+        let inner =
+            serde_json::from_value(value).map_err(ParseError::custom)?;
 
         Ok(Self(inner))
     }
@@ -78,8 +75,9 @@ impl ToJSON for HexBytes {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use test_case::test_case;
+
+    use super::*;
 
     #[test_case("0xff", vec![255])]
     #[test_case("0xffff", vec![255, 255])]

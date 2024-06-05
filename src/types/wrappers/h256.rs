@@ -1,6 +1,6 @@
 use ethers::types::H256;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
-use poem_openapi::types::{ParseFromJSON, ToJSON};
+use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
 use sqlx::database::{HasArguments, HasValueRef};
 use sqlx::postgres::{PgHasArrayType, PgTypeInfo};
@@ -100,11 +100,10 @@ impl ParseFromJSON for H256Wrapper {
         value: Option<serde_json::Value>,
     ) -> poem_openapi::types::ParseResult<Self> {
         // TODO: Better error handling
-        let value = value
-            .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
+        let value = value.ok_or_else(ParseError::expected_input)?;
 
-        let inner = serde_json::from_value(value)
-            .map_err(|_| poem_openapi::types::ParseError::expected_input())?;
+        let inner =
+            serde_json::from_value(value).map_err(ParseError::custom)?;
 
         Ok(Self(inner))
     }

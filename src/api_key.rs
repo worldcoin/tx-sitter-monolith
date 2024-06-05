@@ -3,7 +3,9 @@ use std::str::FromStr;
 
 use base64::Engine;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
-use poem_openapi::types::{ParseFromJSON, ParseFromParameter, ToJSON};
+use poem_openapi::types::{
+    ParseError, ParseFromJSON, ParseFromParameter, ToJSON,
+};
 use rand::rngs::OsRng;
 use rand::Rng;
 use serde::Serialize;
@@ -161,12 +163,9 @@ impl ParseFromJSON for ApiKey {
     fn parse_from_json(
         value: Option<serde_json::Value>,
     ) -> poem_openapi::types::ParseResult<Self> {
-        // TODO: Better error handling
-        let value = value
-            .ok_or_else(|| poem_openapi::types::ParseError::expected_input())?;
+        let value = value.ok_or_else(ParseError::expected_input)?;
 
-        serde_json::from_value(value)
-            .map_err(|_| poem_openapi::types::ParseError::expected_input())
+        serde_json::from_value(value).map_err(ParseError::custom)
     }
 }
 
@@ -177,8 +176,10 @@ impl ToJSON for ApiKey {
 }
 
 impl ParseFromParameter for ApiKey {
-    fn parse_from_parameter(value: &str) -> poem_openapi::types::ParseResult<Self> {
-        value.parse().map_err(|_| poem_openapi::types::ParseError::expected_input())
+    fn parse_from_parameter(
+        value: &str,
+    ) -> poem_openapi::types::ParseResult<Self> {
+        value.parse().map_err(|_| ParseError::expected_input())
     }
 }
 

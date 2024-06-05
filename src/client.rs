@@ -48,16 +48,18 @@ impl TxSitterClient {
         self
     }
 
+    fn creds(&self) -> (&str, &str) {
+        self.credentials
+            .as_ref()
+            .map(|(u, p)| (u.as_str(), p.as_str()))
+            .unwrap_or_default()
+    }
+
     async fn post<R>(&self, url: &str) -> Result<R, ClientError>
     where
         R: serde::de::DeserializeOwned,
     {
-        let (username, password) = self
-            .credentials
-            .as_ref()
-            .map(|(u, p)| (u.as_str(), p.as_str()))
-            .unwrap_or_default()
-            .clone();
+        let (username, password) = self.creds();
 
         let response = self
             .client
@@ -80,12 +82,7 @@ impl TxSitterClient {
         T: serde::Serialize,
         R: serde::de::DeserializeOwned,
     {
-        let (username, password) = self
-            .credentials
-            .as_ref()
-            .map(|(u, p)| (u.as_str(), p.as_str()))
-            .unwrap_or_default()
-            .clone();
+        let (username, password) = self.creds();
 
         let response = self
             .client
@@ -104,12 +101,7 @@ impl TxSitterClient {
     where
         R: serde::de::DeserializeOwned,
     {
-        let (username, password) = self
-            .credentials
-            .as_ref()
-            .map(|(u, p)| (u.as_str(), p.as_str()))
-            .unwrap_or_default()
-            .clone();
+        let (username, password) = self.creds();
 
         let response = self
             .client
@@ -155,17 +147,11 @@ impl TxSitterClient {
         relayer_id: &str,
         relayer_update: RelayerUpdate,
     ) -> Result<(), ClientError> {
-        let this = &self;
         let url: &str = &format!("{}/1/admin/relayer/{relayer_id}", self.url);
 
-        let (username, password) = this
-            .credentials
-            .as_ref()
-            .map(|(u, p)| (u.as_str(), p.as_str()))
-            .unwrap_or_default()
-            .clone();
+        let (username, password) = self.creds();
 
-        let response = this
+        let response = self
             .client
             .post(url)
             .json(&relayer_update)

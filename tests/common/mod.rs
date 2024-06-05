@@ -113,7 +113,12 @@ pub async fn await_balance(
     for _ in 0..50 {
         let balance = provider.get_balance(address, None).await?;
 
-        tracing::info!(?address, ?balance, ?expected_balance, "Checking balance");
+        tracing::info!(
+            ?address,
+            ?balance,
+            ?expected_balance,
+            "Checking balance"
+        );
 
         if balance >= expected_balance {
             return Ok(());
