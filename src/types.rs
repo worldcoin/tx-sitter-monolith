@@ -322,7 +322,7 @@ mod tests {
               "maxQueuedTxs": 0,
               "gasPriceLimits": [
                 {
-                  "value": "0x0",
+                  "value": "0",
                   "chainId": 1
                 }
               ],
