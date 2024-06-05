@@ -217,7 +217,10 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn get_relayer(&self, id: &str) -> eyre::Result<RelayerInfo> {
+    pub async fn get_relayer(
+        &self,
+        id: &str,
+    ) -> eyre::Result<Option<RelayerInfo>> {
         Ok(sqlx::query_as(
             r#"
             SELECT
@@ -237,7 +240,7 @@ impl Database {
             "#,
         )
         .bind(id)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?)
     }
 
@@ -1074,7 +1077,26 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn create_api_key(
+    pub async fn get_network(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<NetworkInfo>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
+            FROM   networks
+            INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
+            INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
+            WHERE networks.chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn upsert_api_key(
         &self,
         relayer_id: &str,
         api_key_hash: [u8; 32],
@@ -1363,7 +1385,10 @@ mod tests {
         )
         .await?;
 
-        let relayer = db.get_relayer(relayer_id).await?;
+        let relayer = db
+            .get_relayer(relayer_id)
+            .await?
+            .context("Missing relayer")?;
 
         assert_eq!(relayer.id, relayer_id);
         assert_eq!(relayer.name, relayer_name);
@@ -1390,7 +1415,10 @@ mod tests {
         )
         .await?;
 
-        let relayer = db.get_relayer(relayer_id).await?;
+        let relayer = db
+            .get_relayer(relayer_id)
+            .await?
+            .context("Missing relayer")?;
 
         assert_eq!(relayer.id, relayer_id);
         assert_eq!(relayer.name, relayer_name);

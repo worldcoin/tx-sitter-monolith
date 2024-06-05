@@ -54,7 +54,11 @@ async fn broadcast_relayer_txs(
         return Ok(());
     }
 
-    let relayer = app.db.get_relayer(&relayer_id).await?;
+    let relayer = app
+        .db
+        .get_relayer(&relayer_id)
+        .await?
+        .context("Missing relayer")?;
 
     if !should_send_relayer_transactions(app, &relayer).await? {
         tracing::warn!(relayer_id = relayer_id, "Skipping relayer broadcasts");

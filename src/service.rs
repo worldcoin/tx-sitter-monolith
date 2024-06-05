@@ -97,35 +97,44 @@ async fn initialize_predefined_values(
 
     tracing::warn!("Running with predefined values is not recommended in a production environment");
 
-    app.db
-        .upsert_network(
-            predefined.network.chain_id,
-            &predefined.network.name,
-            &predefined.network.http_rpc,
-            &predefined.network.ws_rpc,
-        )
-        .await?;
+    if app
+        .db
+        .get_network(predefined.network.chain_id)
+        .await?
+        .is_none()
+    {
+        app.db
+            .upsert_network(
+                predefined.network.chain_id,
+                &predefined.network.name,
+                &predefined.network.http_rpc,
+                &predefined.network.ws_rpc,
+            )
+            .await?;
 
-    let task_runner = TaskRunner::new(app.clone());
-    Service::spawn_chain_tasks(&task_runner, predefined.network.chain_id)?;
+        let task_runner = TaskRunner::new(app.clone());
+        Service::spawn_chain_tasks(&task_runner, predefined.network.chain_id)?;
+    }
 
     let secret_key = signing_key_from_hex(&predefined.relayer.key_id)?;
 
     let signer = Wallet::from(secret_key);
     let address = signer.address();
 
-    app.db
-        .create_relayer(
-            &predefined.relayer.id,
-            &predefined.relayer.name,
-            predefined.relayer.chain_id,
-            &predefined.relayer.key_id,
-            address,
-        )
-        .await?;
+    if app.db.get_relayer(&predefined.relayer.id).await?.is_none() {
+        app.db
+            .create_relayer(
+                &predefined.relayer.id,
+                &predefined.relayer.name,
+                predefined.relayer.chain_id,
+                &predefined.relayer.key_id,
+                address,
+            )
+            .await?;
+    }
 
     app.db
-        .create_api_key(
+        .upsert_api_key(
             predefined.relayer.api_key.relayer_id(),
             predefined.relayer.api_key.api_key_secret_hash(),
         )

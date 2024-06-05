@@ -14,6 +14,11 @@ API schema can be downloaded from http://localhost:3000/schema.json or http://lo
 
 This will use the `config.toml` configuration.
 
+### Error reporting & debugging
+For a better local development experience the `.env.example` enables color-eyre reporting.
+
+But that by default doesn't include the backtrace or code snippets. In order to enable snippets run with `RUST_LIB_BACKTRACE=full`.
+
 ## Configuration
 The Tx Sitter can be configured in 2 ways:
 1. Using the config file, refer to `config.rs` and `config.toml` for more info

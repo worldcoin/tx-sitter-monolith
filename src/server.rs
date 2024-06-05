@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ethers::signers::Signer;
+use eyre::ContextCompat;
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::middleware::Cors;
@@ -90,7 +91,13 @@ impl AdminApi {
 
         let relayer_info = app.db.get_relayer(&relayer_id).await?;
 
-        Ok(Json(relayer_info))
+        match relayer_info {
+            Some(relayer_info) => Ok(Json(relayer_info)),
+            None => Err(poem::error::Error::from_string(
+                "Relayer not found".to_string(),
+                StatusCode::NOT_FOUND,
+            )),
+        }
     }
 
     /// Update Relayer
@@ -139,7 +146,7 @@ impl AdminApi {
         let api_key = ApiKey::random(&relayer_id);
 
         app.db
-            .create_api_key(&relayer_id, api_key.api_key_secret_hash())
+            .upsert_api_key(&relayer_id, api_key.api_key_secret_hash())
             .await?;
 
         Ok(Json(CreateApiKeyResponse { api_key }))
@@ -218,7 +225,11 @@ impl RelayerApi {
             uuid::Uuid::new_v4().to_string()
         };
 
-        let relayer = app.db.get_relayer(api_token.relayer_id()).await?;
+        let relayer = app
+            .db
+            .get_relayer(api_token.relayer_id())
+            .await?
+            .context("Missing relayer")?;
 
         if !relayer.enabled {
             return Err(poem::error::Error::from_string(
@@ -347,7 +358,11 @@ impl RelayerApi {
     ) -> Result<Json<Value>> {
         api_token.validate(app).await?;
 
-        let relayer_info = app.db.get_relayer(api_token.relayer_id()).await?;
+        let relayer_info = app
+            .db
+            .get_relayer(api_token.relayer_id())
+            .await?
+            .context("Missing relayer")?;
 
         // TODO: Cache?
         let http_provider = app.http_provider(relayer_info.chain_id).await?;
