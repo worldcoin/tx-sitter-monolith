@@ -5,8 +5,7 @@ use std::time::Duration;
 use alloy::consensus::{SidecarBuilder, SimpleCoder};
 use alloy::network::eip2718::Encodable2718;
 use alloy::network::TransactionBuilder;
-use alloy::providers::Provider;
-use alloy::providers::WalletProvider;
+use alloy::providers::{Provider, WalletProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use ethers::providers::Middleware;
 use ethers::types::transaction::eip2718::TypedTransaction;
@@ -91,37 +90,20 @@ async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
         .universal_provider(tx.chain_id, tx.key_id.clone())
         .await?;
 
-    let fees_db = app
+    let fees = app
         .db
         .get_latest_block_fees_by_chain_id(tx.chain_id)
-        .await?;
+        .await?
+        .context("Missing block fees")?;
 
-    let (max_fee_per_gas, max_priority_fee_per_gas) = if fees_db.is_none() {
-        tracing::warn!(
-            tx_id = tx.id,
-            "Skipping transaction with zero base fee"
+    let max_base_fee_per_gas = fees.fee_estimates.base_fee_per_gas;
+
+    let (max_fee_per_gas, max_priority_fee_per_gas) =
+        calculate_gas_fees_from_estimates(
+            &fees.fee_estimates,
+            tx.priority.to_percentile_index(),
+            max_base_fee_per_gas,
         );
-
-        let eip1559_est = provider.estimate_eip1559_fees(None).await?;
-        (
-            eip1559_est.max_fee_per_gas,
-            eip1559_est.max_priority_fee_per_gas,
-        )
-    } else {
-        let fees = fees_db.unwrap();
-        let max_base_fee_per_gas = fees.fee_estimates.base_fee_per_gas;
-
-        let (max_fee_per_gas, max_priority_fee_per_gas) =
-            calculate_gas_fees_from_estimates(
-                &fees.fee_estimates,
-                tx.priority.to_percentile_index(),
-                max_base_fee_per_gas,
-            );
-        (
-            max_fee_per_gas.low_u128(),
-            max_priority_fee_per_gas.low_u128(),
-        )
-    };
 
     let to_alloy = tx.tx_to.0.to_fixed_bytes();
     let data: alloy::primitives::Bytes = tx.data.to_vec().into();
@@ -136,8 +118,8 @@ async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
         .with_input(data)
         .with_nonce(tx.nonce)
         .with_access_list(alloy::eips::eip2930::AccessList::default())
-        .with_max_priority_fee_per_gas(max_priority_fee_per_gas)
-        .with_max_fee_per_gas(max_fee_per_gas)
+        .with_max_priority_fee_per_gas(max_priority_fee_per_gas.low_u128())
+        .with_max_fee_per_gas(max_fee_per_gas.low_u128())
         .with_chain_id(tx.chain_id);
 
     if let Some(blobs) = tx.blobs {
@@ -146,7 +128,7 @@ async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
 
         let sidecar = sidecar.build()?;
         tx_request = tx_request
-            .with_max_fee_per_blob_gas(max_fee_per_gas)
+            .with_max_fee_per_blob_gas(max_fee_per_gas.low_u128())
             .with_blob_sidecar(sidecar)
     }
 
