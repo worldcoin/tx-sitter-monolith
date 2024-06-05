@@ -412,7 +412,8 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
         (AdminApi, RelayerApi, ServiceApi),
         "Tx Sitter",
         version::version!(),
-    );
+    )
+    .description(include_str!("./server/description.md"));
 
     if let Some(server_address) = app.config.server.server_address.as_ref() {
         api_service = api_service.server(server_address.clone());
@@ -421,6 +422,7 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
     let router = Route::new()
         .nest("/rapidoc", api_service.rapidoc())
         .nest("/swagger", api_service.swagger_ui())
+        .nest("/redoc", api_service.redoc())
         .nest("/schema.json", api_service.spec_endpoint())
         .nest("/schema.yml", api_service.spec_endpoint_yaml())
         .nest("/", api_service)

@@ -43,7 +43,7 @@ impl Service {
             Self::spawn_chain_tasks(&task_runner, chain_id)?;
         }
 
-        let server = crate::new_server::spawn_server(app.clone()).await?;
+        let server = crate::server::spawn_server(app.clone()).await?;
         let local_addr = server.local_addr();
         let server_handle = server.server_handle;
 

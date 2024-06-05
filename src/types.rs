@@ -6,7 +6,6 @@ use wrappers::address::AddressWrapper;
 use wrappers::decimal_u256::DecimalU256;
 use wrappers::h256::H256Wrapper;
 use wrappers::hex_bytes::HexBytes;
-use wrappers::hex_u256::HexU256;
 
 use crate::api_key::ApiKey;
 
@@ -81,7 +80,7 @@ pub struct RelayerUpdate {
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
 pub struct RelayerGasPriceLimit {
-    pub value: HexU256,
+    pub value: DecimalU256,
     pub chain_id: i64,
 }
 
@@ -144,9 +143,27 @@ pub struct SendTxRequest {
     pub data: Option<HexBytes>,
     /// Transaction gas limit
     pub gas_limit: DecimalU256,
+    /// Transaction priority
+    ///
+    /// The values map to the following percentiles:
+    ///
+    /// slowest -> 5th percentile
+    ///
+    /// slow -> 25th percentile
+    ///
+    /// regular -> 50th percentile
+    ///
+    /// fast -> 75th percentile
+    ///
+    /// fastest -> 95th percentile
+    ///
+    /// i.e. a transaction with priority `fast` will have a gas price that is higher than 75% of the gas prices of other transactions (based on fee estimates from previous blocks).
     #[serde(default)]
     #[oai(default)]
     pub priority: TransactionPriority,
+    /// An optional transaction id. If not provided tx-sitter will generate a UUID.
+    ///
+    /// Can be used to provide idempotency for the transaction.
     #[serde(default)]
     #[oai(default)]
     pub tx_id: Option<String>,

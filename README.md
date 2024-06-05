@@ -8,7 +8,7 @@ Copy `.env.example` to `.env` or set `RUST_LOG=info,service=debug` to have loggi
 1. Spin up the database `docker run --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres`
 2. Spin up a chain `anvil --chain-id 31337 --block-time 2`
 3. Start the service `cargo run`
-4. Visit http://localhost:3000/swagger or http://localhost:3000/rapidoc to interact with the api
+4. Visit http://localhost:3000/swagger or http://localhost:3000/rapidoc to interact with the api. Redoc ui is also available at http://localhost:3000/redoc but it's not interactive.
 
 API schema can be downloaded from http://localhost:3000/schema.json or http://localhost:3000/schema.yml
 

@@ -1232,7 +1232,6 @@ mod tests {
     use postgres_docker_utils::DockerContainerGuard;
 
     use super::*;
-    use crate::types::wrappers::hex_u256::HexU256;
     use crate::types::RelayerGasPriceLimit;
 
     async fn setup_db() -> eyre::Result<(Database, DockerContainerGuard)> {
@@ -1384,7 +1383,7 @@ mod tests {
                 max_queued_txs: Some(20),
                 gas_price_limits: Some(vec![RelayerGasPriceLimit {
                     chain_id: 1,
-                    value: HexU256(U256::from(10_123u64)),
+                    value: U256::from(10_123u64).into(),
                 }]),
                 enabled: None,
             },
@@ -1406,7 +1405,7 @@ mod tests {
             relayer.gas_price_limits,
             vec![RelayerGasPriceLimit {
                 chain_id: 1,
-                value: HexU256(U256::from(10_123u64)),
+                value: U256::from(10_123u64).into(),
             }]
         );
 
