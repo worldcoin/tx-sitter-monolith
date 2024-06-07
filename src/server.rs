@@ -400,7 +400,7 @@ enum ServiceResponse {
 #[OpenApi]
 impl ServiceApi {
     /// Health
-    #[oai(path = "/", method = "get")]
+    #[oai(path = "/health", method = "get")]
     async fn health(&self) -> ServiceResponse {
         ServiceResponse::Healthy
     }
