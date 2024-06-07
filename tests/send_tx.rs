@@ -22,9 +22,9 @@ async fn send_tx() -> eyre::Result<()> {
         .send_tx(
             &api_key,
             &SendTxRequest {
-                to: ARBITRARY_ADDRESS,
-                value,
-                gas_limit: U256::from(21_000),
+                to: ARBITRARY_ADDRESS.into(),
+                value: value.into(),
+                gas_limit: U256::from(21_000).into(),
                 ..Default::default()
             },
         )

@@ -34,7 +34,7 @@ pub async fn should_send_relayer_transactions(
         return Ok(false);
     }
 
-    for gas_limit in &relayer.gas_price_limits.0 {
+    for gas_limit in &relayer.gas_price_limits {
         let chain_fees = app
             .db
             .get_latest_block_fees_by_chain_id(relayer.chain_id)

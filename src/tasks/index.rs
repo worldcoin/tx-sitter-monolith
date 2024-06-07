@@ -22,25 +22,31 @@ const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
 
 pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
-        let ws_rpc = app.ws_provider(chain_id).await?;
-        let rpc = app.http_provider(chain_id).await?;
-
-        tracing::info!("Subscribing to new blocks");
-        // Subscribe to new block with the WS client which uses an unbounded receiver, buffering the stream
-        let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
-
-        // Get the first block from the stream, backfilling any missing blocks from the latest block in the db to the chain head
-        tracing::info!("Backfilling blocks");
-        if let Some(latest_block) = blocks_stream.next().await {
-            backfill_to_block(app.clone(), chain_id, &rpc, latest_block)
-                .await?;
-        }
-
-        // Index incoming blocks from the stream
-        while let Some(block) = blocks_stream.next().await {
-            index_block(app.clone(), chain_id, &rpc, block).await?;
-        }
+        index_inner(app.clone(), chain_id).await?;
     }
+}
+
+#[tracing::instrument(skip(app), level = "info")]
+async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
+    let ws_rpc = app.ws_provider(chain_id).await?;
+    let rpc = app.http_provider(chain_id).await?;
+
+    tracing::info!("Subscribing to new blocks");
+    // Subscribe to new block with the WS client which uses an unbounded receiver, buffering the stream
+    let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
+
+    // Get the first block from the stream, backfilling any missing blocks from the latest block in the db to the chain head
+    tracing::info!("Backfilling blocks");
+    if let Some(latest_block) = blocks_stream.next().await {
+        backfill_to_block(app.clone(), chain_id, &rpc, latest_block).await?;
+    }
+
+    // Index incoming blocks from the stream
+    while let Some(block) = blocks_stream.next().await {
+        index_block(app.clone(), chain_id, &rpc, block).await?;
+    }
+
+    Ok(())
 }
 
 #[tracing::instrument(skip(app, rpc, block))]
@@ -77,6 +83,7 @@ pub async fn index_block(
 
     let metric_labels: [(&str, String); 1] =
         [("chain_id", chain_id.to_string())];
+
     for tx in mined_txs {
         tracing::info!(
             tx_id = tx.0,
@@ -94,7 +101,7 @@ pub async fn index_block(
     Ok(())
 }
 
-#[tracing::instrument(skip(app, rpc, latest_block))]
+#[tracing::instrument(skip(app, rpc, latest_block), level = "info")]
 pub async fn backfill_to_block(
     app: Arc<App>,
     chain_id: u64,
@@ -102,35 +109,45 @@ pub async fn backfill_to_block(
     latest_block: Block<H256>,
 ) -> eyre::Result<()> {
     // Get the latest block from the db
-    if let Some(latest_db_block_number) =
+    let Some(latest_db_block_number) =
         app.db.get_latest_block_number(chain_id).await?
-    {
-        let next_block_number: u64 = latest_db_block_number + 1;
-
-        // Get the first block from the stream and backfill any missing blocks
-        let latest_block_number = latest_block
-            .number
-            .context("Missing block number")?
-            .as_u64();
-
-        if latest_block_number > next_block_number {
-            // Backfill blocks between the last synced block and the chain head, non inclusive
-            for block_number in next_block_number..latest_block_number {
-                let block = rpc
-                    .get_block::<BlockNumber>(block_number.into())
-                    .await?
-                    .context(format!(
-                        "Could not get block at height {}",
-                        block_number
-                    ))?;
-
-                index_block(app.clone(), chain_id, rpc, block).await?;
-            }
-        }
-
-        // Index the latest block after backfilling
-        index_block(app.clone(), chain_id, rpc, latest_block).await?;
+    else {
+        tracing::info!(chain_id, "No latest block");
+        return Ok(());
     };
+
+    let next_block_number: u64 = latest_db_block_number + 1;
+
+    // Get the first block from the stream and backfill any missing blocks
+    let latest_block_number = latest_block
+        .number
+        .context("Missing block number")?
+        .as_u64();
+
+    tracing::info!(
+        latest_block_number,
+        next_block_number,
+        "Backfilling to block"
+    );
+
+    if latest_block_number > next_block_number {
+        // Backfill blocks between the last synced block and the chain head, non inclusive
+        for block_number in next_block_number..latest_block_number {
+            let block = rpc
+                .get_block::<BlockNumber>(block_number.into())
+                .await?
+                .context(format!(
+                    "Could not get block at height {}",
+                    block_number
+                ))?;
+
+            index_block(app.clone(), chain_id, rpc, block).await?;
+        }
+    }
+
+    // Index the latest block after backfilling
+    index_block(app.clone(), chain_id, rpc, latest_block).await?;
+
     Ok(())
 }
 

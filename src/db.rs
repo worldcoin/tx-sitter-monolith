@@ -11,12 +11,15 @@ use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
-use crate::types::{RelayerInfo, RelayerUpdate, TransactionPriority};
+use crate::types::wrappers::h256::H256Wrapper;
+use crate::types::{
+    NetworkInfo, RelayerInfo, RelayerUpdate, TransactionPriority, TxStatus,
+};
 
 pub mod data;
 
-use self::data::{BlockFees, H256Wrapper, NetworkStats, ReadTxData, RpcKind};
-pub use self::data::{TxForEscalation, TxStatus, UnsentTx};
+use self::data::{BlockFees, NetworkStats, ReadTxData, RpcKind};
+pub use self::data::{TxForEscalation, UnsentTx};
 
 // Statically link in migration files
 static MIGRATOR: Migrator = sqlx::migrate!("db/migrations");
@@ -214,7 +217,10 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn get_relayer(&self, id: &str) -> eyre::Result<RelayerInfo> {
+    pub async fn get_relayer(
+        &self,
+        id: &str,
+    ) -> eyre::Result<Option<RelayerInfo>> {
         Ok(sqlx::query_as(
             r#"
             SELECT
@@ -234,7 +240,7 @@ impl Database {
             "#,
         )
         .bind(id)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?)
     }
 
@@ -963,7 +969,7 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn create_network(
+    pub async fn upsert_network(
         &self,
         chain_id: u64,
         name: &str,
@@ -976,7 +982,8 @@ impl Database {
             r#"
             INSERT INTO networks (chain_id, name)
             VALUES ($1, $2)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (chain_id) DO UPDATE
+            SET name = EXCLUDED.name
             "#,
         )
         .bind(chain_id as i64)
@@ -988,14 +995,27 @@ impl Database {
             r#"
             INSERT INTO rpcs (chain_id, url, kind)
             VALUES
-                ($1, $2, $3),
-                ($1, $4, $5)
-            ON CONFLICT DO NOTHING
+                ($1, $2, $3)
+            ON CONFLICT (chain_id, kind) DO UPDATE
+            SET url = EXCLUDED.url
             "#,
         )
         .bind(chain_id as i64)
         .bind(http_rpc)
         .bind(RpcKind::Http)
+        .execute(tx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO rpcs (chain_id, url, kind)
+            VALUES
+                ($1, $2, $3)
+            ON CONFLICT (chain_id, kind) DO UPDATE
+            SET url = EXCLUDED.url
+            "#,
+        )
+        .bind(chain_id as i64)
         .bind(ws_rpc)
         .bind(RpcKind::Ws)
         .execute(tx.as_mut())
@@ -1043,7 +1063,40 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn create_api_key(
+    pub async fn get_networks(&self) -> eyre::Result<Vec<NetworkInfo>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
+            FROM   networks
+            INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
+            INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_network(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<NetworkInfo>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
+            FROM   networks
+            INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
+            INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
+            WHERE networks.chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn upsert_api_key(
         &self,
         relayer_id: &str,
         api_key_hash: [u8; 32],
@@ -1201,7 +1254,6 @@ mod tests {
     use postgres_docker_utils::DockerContainerGuard;
 
     use super::*;
-    use crate::db::data::U256Wrapper;
     use crate::types::RelayerGasPriceLimit;
 
     async fn setup_db() -> eyre::Result<(Database, DockerContainerGuard)> {
@@ -1255,7 +1307,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();
@@ -1314,7 +1366,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();
@@ -1333,7 +1385,10 @@ mod tests {
         )
         .await?;
 
-        let relayer = db.get_relayer(relayer_id).await?;
+        let relayer = db
+            .get_relayer(relayer_id)
+            .await?
+            .context("Missing relayer")?;
 
         assert_eq!(relayer.id, relayer_id);
         assert_eq!(relayer.name, relayer_name);
@@ -1343,7 +1398,7 @@ mod tests {
         assert_eq!(relayer.nonce, 0);
         assert_eq!(relayer.current_nonce, 0);
         assert_eq!(relayer.max_inflight_txs, 5);
-        assert_eq!(relayer.gas_price_limits.0, vec![]);
+        assert_eq!(relayer.gas_price_limits, vec![]);
 
         db.update_relayer(
             relayer_id,
@@ -1353,14 +1408,17 @@ mod tests {
                 max_queued_txs: Some(20),
                 gas_price_limits: Some(vec![RelayerGasPriceLimit {
                     chain_id: 1,
-                    value: U256Wrapper(U256::from(10_123u64)),
+                    value: U256::from(10_123u64).into(),
                 }]),
                 enabled: None,
             },
         )
         .await?;
 
-        let relayer = db.get_relayer(relayer_id).await?;
+        let relayer = db
+            .get_relayer(relayer_id)
+            .await?
+            .context("Missing relayer")?;
 
         assert_eq!(relayer.id, relayer_id);
         assert_eq!(relayer.name, relayer_name);
@@ -1372,10 +1430,10 @@ mod tests {
         assert_eq!(relayer.max_inflight_txs, 10);
         assert_eq!(relayer.max_queued_txs, 20);
         assert_eq!(
-            relayer.gas_price_limits.0,
+            relayer.gas_price_limits,
             vec![RelayerGasPriceLimit {
                 chain_id: 1,
-                value: U256Wrapper(U256::from(10_123u64)),
+                value: U256::from(10_123u64).into(),
             }]
         );
 
@@ -1391,7 +1449,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();

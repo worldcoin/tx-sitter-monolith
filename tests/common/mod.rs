@@ -34,10 +34,10 @@ pub mod prelude {
     pub use futures::StreamExt;
     pub use tx_sitter::api_key::ApiKey;
     pub use tx_sitter::client::TxSitterClient;
-    pub use tx_sitter::server::routes::relayer::{
+    pub use tx_sitter::types::{
         CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
+        SendTxRequest,
     };
-    pub use tx_sitter::server::routes::transaction::SendTxRequest;
     pub use url::Url;
 
     pub use super::*;
@@ -70,8 +70,7 @@ pub fn setup_tracing() {
         .with(
             EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())
-                // Logging from fake_rpc can get very messy so we set it to warn only
-                .parse_lossy("info,tx_sitter=debug,fake_rpc=warn"),
+                .parse_lossy("info,tx_sitter=debug"),
         )
         .init();
 }
@@ -114,7 +113,12 @@ pub async fn await_balance(
     for _ in 0..50 {
         let balance = provider.get_balance(address, None).await?;
 
-        tracing::info!(?balance, ?expected_balance, "Checking balance");
+        tracing::info!(
+            ?address,
+            ?balance,
+            ?expected_balance,
+            "Checking balance"
+        );
 
         if balance >= expected_balance {
             return Ok(());
