@@ -1,8 +1,14 @@
+use alloy::consensus::{SidecarBuilder, SimpleCoder};
+use alloy::network::TransactionBuilder;
+use alloy::primitives::Address;
+use alloy::rpc::types::eth::TransactionRequest;
 use ethers::types::U256;
 use eyre::ContextCompat;
 
 use self::gas_estimation::FeesEstimate;
 use crate::app::App;
+use crate::db::data::{AddressWrapper, U256Wrapper};
+use crate::db::{TxForEscalation, UnsentTx};
 use crate::types::RelayerInfo;
 
 pub mod gas_estimation;
@@ -55,4 +61,121 @@ pub async fn should_send_relayer_transactions(
     }
 
     Ok(true)
+}
+
+pub async fn create_transaction_request<T: ToTransactionRequest>(
+    tx: &T,
+    signer_address: Address,
+    max_fee_per_gas: U256,
+    max_priority_fee_per_gas: U256,
+) -> eyre::Result<TransactionRequest> {
+    let request = tx
+        .to_transaction_request(
+            signer_address,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        )
+        .await?;
+    Ok(request)
+}
+
+async fn create_tx_request(
+    to: AddressWrapper,
+    gas_limit: U256Wrapper,
+    value: U256Wrapper,
+    data: Vec<u8>,
+    nonce: u64,
+    chain_id: u64,
+    blobs: Option<Vec<Vec<u8>>>,
+    signer_address: Address,
+    max_fee_per_gas: U256,
+    max_priority_fee_per_gas: U256,
+) -> eyre::Result<TransactionRequest> {
+    let to_alloy = to.0.to_fixed_bytes();
+    let data: alloy::primitives::Bytes = data.to_vec().into();
+    let mut alloy_value = [0_u8; 32];
+    value.0.to_little_endian(&mut alloy_value);
+
+    let mut tx_request = TransactionRequest::default()
+        .with_from(signer_address)
+        .with_to(alloy::primitives::Address::from_slice(&to_alloy))
+        .with_gas_limit(gas_limit.0.low_u128())
+        .with_value(alloy::primitives::U256::from_le_slice(&alloy_value))
+        .with_input(data)
+        .with_nonce(nonce)
+        .with_access_list(alloy::eips::eip2930::AccessList::default())
+        .with_max_priority_fee_per_gas(max_priority_fee_per_gas.low_u128())
+        .with_max_fee_per_gas(max_fee_per_gas.low_u128())
+        .with_chain_id(chain_id);
+
+    if let Some(blobs) = &blobs {
+        let sidecar: SidecarBuilder<SimpleCoder> =
+            SidecarBuilder::from_slice(&blobs[0]);
+
+        let sidecar = sidecar.build()?;
+        tx_request = tx_request
+            .with_max_fee_per_blob_gas(max_fee_per_gas.low_u128())
+            .with_blob_sidecar(sidecar);
+
+        tx_request.populate_blob_hashes();
+    }
+
+    Ok(tx_request)
+}
+
+pub trait ToTransactionRequest {
+    fn to_transaction_request(
+        &self,
+        signer_address: Address,
+        max_fee_per_gas: U256,
+        max_base_fee_per_gas: U256,
+    ) -> impl std::future::Future<Output = eyre::Result<TransactionRequest>> + Send;
+}
+
+impl ToTransactionRequest for UnsentTx {
+    async fn to_transaction_request(
+        &self,
+        signer_address: Address,
+        max_fee_per_gas: U256,
+        max_priority_fee_per_gas: U256,
+    ) -> eyre::Result<TransactionRequest> {
+        let request = create_tx_request(
+            self.tx_to,
+            self.gas_limit,
+            self.value,
+            self.data.clone(),
+            self.nonce,
+            self.chain_id,
+            self.blobs.clone(),
+            signer_address,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        )
+        .await?;
+        Ok(request)
+    }
+}
+
+impl ToTransactionRequest for TxForEscalation {
+    async fn to_transaction_request(
+        &self,
+        signer_address: Address,
+        max_fee_per_gas: U256,
+        max_priority_fee_per_gas: U256,
+    ) -> eyre::Result<TransactionRequest> {
+        let request = create_tx_request(
+            self.tx_to,
+            self.gas_limit,
+            self.value,
+            self.data.clone(),
+            self.nonce,
+            self.chain_id,
+            self.blobs.clone(),
+            signer_address,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        )
+        .await?;
+        Ok(request)
+    }
 }

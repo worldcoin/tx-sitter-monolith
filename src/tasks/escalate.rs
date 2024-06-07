@@ -1,17 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy::consensus::{SidecarBuilder, SimpleCoder};
-use alloy::network::TransactionBuilder;
 use alloy::providers::Provider;
-use alloy::rpc::types::eth::TransactionRequest;
 use ethers::types::{H256, U256};
 use eyre::ContextCompat;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
 use crate::app::App;
-use crate::broadcast_utils::should_send_relayer_transactions;
+use crate::broadcast_utils::{
+    create_transaction_request, should_send_relayer_transactions,
+};
 use crate::db::TxForEscalation;
 use crate::types::RelayerInfo;
 
@@ -121,34 +120,13 @@ async fn escalate_relayer_tx(
     let max_fee_per_gas =
         max_priority_fee_per_gas + fees.fee_estimates.base_fee_per_gas;
 
-    let to_alloy = tx.tx_to.0.to_fixed_bytes();
-    let data: alloy::primitives::Bytes = tx.data.to_vec().into();
-    let mut value = [0_u8; 32];
-    tx.value.0.to_little_endian(&mut value);
-
-    let mut tx_request = TransactionRequest::default()
-        .with_from(signer_address)
-        .with_to(alloy::primitives::Address::from_slice(&to_alloy))
-        .with_gas_limit(tx.gas_limit.0.low_u128())
-        .with_value(alloy::primitives::U256::from_le_slice(&value))
-        .with_input(data)
-        .with_nonce(tx.nonce)
-        .with_access_list(alloy::eips::eip2930::AccessList::default())
-        .with_max_priority_fee_per_gas(max_priority_fee_per_gas.low_u128())
-        .with_max_fee_per_gas(max_fee_per_gas.low_u128())
-        .with_chain_id(tx.chain_id);
-
-    if let Some(blobs) = tx.blobs {
-        let sidecar: SidecarBuilder<SimpleCoder> =
-            SidecarBuilder::from_slice(&blobs[0]);
-
-        let sidecar = sidecar.build()?;
-        tx_request = tx_request
-            .with_max_fee_per_blob_gas(max_fee_per_gas.low_u128())
-            .with_blob_sidecar(sidecar);
-
-        tx_request.populate_blob_hashes();
-    }
+    let tx_request = create_transaction_request(
+        &tx,
+        signer_address,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+    )
+    .await?;
 
     tracing::info!("Escalating transaction - assembled tx");
 
@@ -179,7 +157,7 @@ async fn escalate_relayer_tx(
         "Escalated transaction"
     );
 
-    let db_tx_hash = H256::from_slice(&tx_hash.as_slice());
+    let db_tx_hash = H256::from_slice(tx_hash.as_slice());
 
     app.db
         .escalate_tx(&tx.id, db_tx_hash, max_fee_per_gas, max_fee_per_gas)
