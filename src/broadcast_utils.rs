@@ -79,6 +79,7 @@ pub async fn create_transaction_request<T: ToTransactionRequest>(
     Ok(request)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_tx_request(
     to: AddressWrapper,
     gas_limit: U256Wrapper,
