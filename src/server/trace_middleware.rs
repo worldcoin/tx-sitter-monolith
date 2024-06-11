@@ -50,7 +50,14 @@ impl<E: Endpoint> Endpoint for TraceMiddlwareImpl<E> {
             let res = self.0.call(req).await;
             let response = match res {
                 Ok(r) => r.into_response(),
-                Err(e) => e.into_response(),
+                Err(err) => {
+                    let stacktrace = format!("{:?}", err);
+                    let message = err.to_string();
+
+                    tracing::error!(error.message = message, error.stack = stacktrace, error.kind = "Error", "error processing request");
+
+                    err.into_response()
+                },
             };
 
             if response.status().is_server_error() {
