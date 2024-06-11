@@ -441,8 +441,8 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
         .nest("/schema.json", api_service.spec_endpoint())
         .nest("/schema.yml", api_service.spec_endpoint_yaml())
         .nest("/", api_service)
-        .with(Cors::new())
         .with(trace_middleware::TraceMiddleware)
+        .with(Cors::new())
         .data(app.clone());
 
     let listener = TcpListener::bind(app.config.server.host);
