@@ -10,14 +10,15 @@ async fn escalation() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
+
     let anvil = AnvilBuilder::default()
         .block_time(ANVIL_BLOCK_TIME)
-        .spawn()
+        ._spawn()
         .await?;
 
     let (_service, client) = ServiceBuilder::default()
         .escalation_interval(ESCALATION_INTERVAL)
-        .build(&anvil, &db_url)
+        ._build(&anvil, &db_url)
         .await?;
 
     let CreateApiKeyResponse { api_key } =

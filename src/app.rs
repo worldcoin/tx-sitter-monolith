@@ -37,6 +37,8 @@ pub type UniversalProvider = FillProvider<
     Ethereum,
 >;
 
+pub type AlloyHttpProvider = RootProvider<AlloyHttp<Client>>;
+
 pub struct App {
     pub config: Config,
 
@@ -69,6 +71,17 @@ impl App {
         let url = self.db.get_network_rpc(chain_id, RpcKind::Http).await?;
 
         let provider = Provider::<Http>::try_from(url.as_str())?;
+
+        Ok(provider)
+    }
+
+    pub async fn alloy_http_provider(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<AlloyHttpProvider> {
+        let url = self.db.get_network_rpc(chain_id, RpcKind::Http).await?;
+
+        let provider = ProviderBuilder::new().on_http(url.parse().unwrap());
 
         Ok(provider)
     }

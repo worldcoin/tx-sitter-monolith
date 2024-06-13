@@ -18,12 +18,20 @@ pub fn calculate_gas_fees_from_estimates(
     estimates: &FeesEstimate,
     tx_priority_index: usize,
     max_base_fee_per_gas: U256,
-) -> (U256, U256) {
+    max_base_fee_per_blob_gas: u128,
+) -> (U256, U256, U256) {
     let max_priority_fee_per_gas = estimates.percentile_fees[tx_priority_index];
 
     let max_fee_per_gas = max_base_fee_per_gas + max_priority_fee_per_gas;
 
-    (max_fee_per_gas, max_priority_fee_per_gas)
+    let max_fee_per_blob_gas =
+        U256::from(max_base_fee_per_blob_gas) + max_priority_fee_per_gas;
+
+    (
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        max_fee_per_blob_gas,
+    )
 }
 
 pub async fn should_send_relayer_transactions(
@@ -68,12 +76,14 @@ pub async fn create_transaction_request<T: ToTransactionRequest>(
     signer_address: Address,
     max_fee_per_gas: U256,
     max_priority_fee_per_gas: U256,
+    max_fee_per_blob_gas: u128,
 ) -> eyre::Result<TransactionRequest> {
     let request = tx
         .to_transaction_request(
             signer_address,
             max_fee_per_gas,
             max_priority_fee_per_gas,
+            max_fee_per_blob_gas,
         )
         .await?;
     Ok(request)
@@ -91,6 +101,7 @@ async fn create_tx_request(
     signer_address: Address,
     max_fee_per_gas: U256,
     max_priority_fee_per_gas: U256,
+    max_fee_per_blob_gas: u128,
 ) -> eyre::Result<TransactionRequest> {
     let to_alloy = to.0.to_fixed_bytes();
     let data: alloy::primitives::Bytes = data.to_vec().into();
@@ -115,7 +126,7 @@ async fn create_tx_request(
 
         let sidecar = sidecar.build()?;
         tx_request = tx_request
-            .with_max_fee_per_blob_gas(max_fee_per_gas.low_u128())
+            .with_max_fee_per_blob_gas(max_fee_per_blob_gas)
             .with_blob_sidecar(sidecar);
 
         tx_request.populate_blob_hashes();
@@ -130,6 +141,7 @@ pub trait ToTransactionRequest {
         signer_address: Address,
         max_fee_per_gas: U256,
         max_base_fee_per_gas: U256,
+        max_fee_per_blob_gas: u128,
     ) -> impl std::future::Future<Output = eyre::Result<TransactionRequest>> + Send;
 }
 
@@ -139,6 +151,7 @@ impl ToTransactionRequest for UnsentTx {
         signer_address: Address,
         max_fee_per_gas: U256,
         max_priority_fee_per_gas: U256,
+        max_fee_per_blob_gas: u128,
     ) -> eyre::Result<TransactionRequest> {
         let request = create_tx_request(
             self.tx_to,
@@ -151,6 +164,7 @@ impl ToTransactionRequest for UnsentTx {
             signer_address,
             max_fee_per_gas,
             max_priority_fee_per_gas,
+            max_fee_per_blob_gas,
         )
         .await?;
         Ok(request)
@@ -163,6 +177,7 @@ impl ToTransactionRequest for TxForEscalation {
         signer_address: Address,
         max_fee_per_gas: U256,
         max_priority_fee_per_gas: U256,
+        max_fee_per_blob_gas: u128,
     ) -> eyre::Result<TransactionRequest> {
         let request = create_tx_request(
             self.tx_to,
@@ -175,6 +190,7 @@ impl ToTransactionRequest for TxForEscalation {
             signer_address,
             max_fee_per_gas,
             max_priority_fee_per_gas,
+            max_fee_per_blob_gas,
         )
         .await?;
         Ok(request)

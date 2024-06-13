@@ -3,6 +3,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use alloy::network::{Ethereum, EthereumSigner};
+use alloy::providers::fillers::{
+    ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, SignerFiller,
+};
+use alloy::providers::{
+    Identity, Provider as _, ProviderBuilder, RootProvider,
+};
+use alloy::signers::wallet::LocalWallet as AlloyLocalWallet;
+use alloy::signers::Signer as AlloySigner;
+use alloy::transports::http::{Client, Http as AlloyHttp};
 use ethers::core::k256::ecdsa::SigningKey;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
@@ -15,6 +25,21 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 pub type AppMiddleware = SignerMiddleware<Arc<Provider<Http>>, LocalWallet>;
+
+pub type UniversalProvider = FillProvider<
+    JoinFill<
+        JoinFill<
+            JoinFill<JoinFill<Identity, GasFiller>, NonceFiller>,
+            ChainIdFiller,
+        >,
+        SignerFiller<EthereumSigner>,
+    >,
+    RootProvider<AlloyHttp<Client>>,
+    AlloyHttp<Client>,
+    Ethereum,
+>;
+
+pub type AlloyHttpProvider = RootProvider<AlloyHttp<Client>>;
 
 mod anvil_builder;
 mod service_builder;
@@ -104,6 +129,31 @@ pub async fn setup_provider(
     let provider = Provider::<Http>::new(rpc_url.as_ref().parse()?);
 
     Ok(provider)
+}
+
+pub async fn _setup_provider(rpc_url: &str) -> eyre::Result<AlloyHttpProvider> {
+    let provider = ProviderBuilder::new().on_http(rpc_url.parse().unwrap());
+
+    Ok(provider)
+}
+
+pub async fn _setup_middleware(
+    rpc_url: &str,
+    private_key: &[u8],
+) -> eyre::Result<UniversalProvider> {
+    let provider = _setup_provider(rpc_url).await?;
+
+    let chain_id = provider.get_chain_id().await?;
+
+    let wallet = AlloyLocalWallet::from(SigningKey::from_slice(private_key)?)
+        .with_chain_id(Some(chain_id));
+
+    let provider_with_signer = ProviderBuilder::new()
+        .with_recommended_fillers()
+        .signer(wallet.into())
+        .on_http(rpc_url.parse().unwrap());
+
+    Ok(provider_with_signer)
 }
 
 pub async fn await_balance(

@@ -10,6 +10,8 @@ use tx_sitter::config::{
 };
 use tx_sitter::service::Service;
 
+use alloy::node_bindings::AnvilInstance as AlloyAnvilInstance;
+
 use super::prelude::{
     DEFAULT_ANVIL_CHAIN_ID, DEFAULT_ANVIL_PRIVATE_KEY, DEFAULT_RELAYER_ID,
 };
@@ -52,6 +54,56 @@ impl ServiceBuilder {
         db_url: &str,
     ) -> eyre::Result<(Service, TxSitterClient)> {
         let anvil_private_key = hex::encode(DEFAULT_ANVIL_PRIVATE_KEY);
+
+        let config = Config {
+            service: TxSitterConfig {
+                escalation_interval: self.escalation_interval,
+                soft_reorg_interval: self.soft_reorg_interval,
+                hard_reorg_interval: self.hard_reorg_interval,
+                telemetry: None,
+                predefined: Some(Predefined {
+                    network: PredefinedNetwork {
+                        chain_id: DEFAULT_ANVIL_CHAIN_ID,
+                        name: "Anvil".to_string(),
+                        http_rpc: anvil.endpoint(),
+                        ws_rpc: anvil.ws_endpoint(),
+                    },
+                    relayer: PredefinedRelayer {
+                        name: "Anvil".to_string(),
+                        id: DEFAULT_RELAYER_ID.to_string(),
+                        key_id: anvil_private_key,
+                        chain_id: DEFAULT_ANVIL_CHAIN_ID,
+                        // TODO: Use this key in tests
+                        api_key: ApiKey::random(DEFAULT_RELAYER_ID),
+                    },
+                }),
+            },
+            server: ServerConfig {
+                host: SocketAddr::V4(SocketAddrV4::new(
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    0,
+                )),
+                username: None,
+                password: None,
+            },
+            database: DatabaseConfig::connection_string(db_url),
+            keys: KeysConfig::Local(LocalKeysConfig::default()),
+        };
+
+        let service = Service::new(config).await?;
+
+        let client =
+            TxSitterClient::new(format!("http://{}", service.local_addr()));
+
+        Ok((service, client))
+    }
+
+    pub async fn _build(
+        self,
+        anvil: &AlloyAnvilInstance,
+        db_url: &str,
+    ) -> eyre::Result<(Service, TxSitterClient)> {
+        let anvil_private_key = hex::encode(anvil.keys()[1].to_bytes());
 
         let config = Config {
             service: TxSitterConfig {

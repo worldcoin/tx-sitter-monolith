@@ -90,13 +90,17 @@ async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
         .await?
         .context("Missing block fees")?;
 
-    let max_base_fee_per_gas = fees.fee_estimates.base_fee_per_gas;
+    tracing::debug!("====================== fees {:?}", fees);
 
-    let (max_fee_per_gas, max_priority_fee_per_gas) =
+    let max_base_fee_per_gas = fees.fee_estimates.base_fee_per_gas;
+    let max_base_fee_per_blob_gas = fees.fee_estimates.base_fee_per_blob_gas;
+
+    let (max_fee_per_gas, max_priority_fee_per_gas, max_fee_per_blob_gas) =
         calculate_gas_fees_from_estimates(
             &fees.fee_estimates,
             tx.priority.to_percentile_index(),
             max_base_fee_per_gas,
+            max_base_fee_per_blob_gas,
         );
 
     let tx_request = create_transaction_request(
@@ -104,6 +108,7 @@ async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
         signer_address,
         max_fee_per_gas,
         max_priority_fee_per_gas,
+        max_fee_per_blob_gas.as_u128(),
     )
     .await?;
 
@@ -120,6 +125,7 @@ async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
             tx_hash,
             max_fee_per_gas,
             max_priority_fee_per_gas,
+            max_fee_per_blob_gas.as_u128(),
         )
         .await?;
 

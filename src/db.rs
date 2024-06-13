@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use data::U128Wrapper;
 use ethers::types::{Address, H256, U256};
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::types::{BigDecimal, Json};
@@ -340,6 +341,7 @@ impl Database {
         tx_hash: H256,
         initial_max_fee_per_gas: U256,
         initial_max_priority_fee_per_gas: U256,
+        initial_max_fee_per_blob_gas: u128,
     ) -> eyre::Result<()> {
         let mut initial_max_fee_per_gas_bytes = [0u8; 32];
         initial_max_fee_per_gas
@@ -353,26 +355,28 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas, max_fee_per_blob_gas)
+            VALUES ($1, $2, $3, $4, $5)
             "#,
         )
         .bind(tx_id)
         .bind(tx_hash.as_bytes())
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
+        .bind(initial_max_fee_per_blob_gas.to_le_bytes())
         .execute(tx.as_mut())
         .await?;
 
         sqlx::query(
             r#"
-            INSERT INTO sent_transactions (tx_id, initial_max_fee_per_gas, initial_max_priority_fee_per_gas, valid_tx_hash)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO sent_transactions (tx_id, initial_max_fee_per_gas, initial_max_priority_fee_per_gas, initial_max_fee_per_blob_gas, valid_tx_hash)
+            VALUES ($1, $2, $3, $4, $5)
             "#
         )
         .bind(tx_id)
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
+        .bind(U128Wrapper(initial_max_fee_per_blob_gas))
         .bind(tx_hash.as_bytes())
         .execute(tx.as_mut()).await?;
 
@@ -772,7 +776,8 @@ impl Database {
             r#"
             SELECT r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce,
                    t.blobs, r.key_id, r.chain_id,
-                   s.initial_max_fee_per_gas, s.initial_max_priority_fee_per_gas, s.escalation_count
+                   s.initial_max_fee_per_gas, s.initial_max_priority_fee_per_gas,
+                   s.initial_max_fee_per_blob_gas, s.escalation_count
             FROM   transactions t
             JOIN   sent_transactions s ON t.id = s.tx_id
             JOIN   tx_hashes h ON t.id = h.tx_id
@@ -795,6 +800,7 @@ impl Database {
         tx_hash: H256,
         max_fee_per_gas: U256,
         max_priority_fee_per_gas: U256,
+        max_fee_per_blob_gas: u128,
     ) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
 
@@ -818,14 +824,15 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas, max_fee_per_blob_gas)
+            VALUES ($1, $2, $3, $4, $5)
             "#
         )
         .bind(tx_id)
         .bind(tx_hash.as_bytes())
         .bind(max_fee_per_gas_bytes)
         .bind(max_priority_fee_per_gas_bytes)
+        .bind(max_fee_per_blob_gas.to_le_bytes())
         .execute(tx.as_mut())
         .await?;
 
@@ -1444,12 +1451,14 @@ mod tests {
         let tx_hash_2 = H256::from_low_u64_be(2);
         let initial_max_fee_per_gas = U256::from(1);
         let initial_max_priority_fee_per_gas = U256::from(1);
+        let initial_max_fee_per_blob_gas = 1;
 
         db.insert_tx_broadcast(
             tx_id,
             tx_hash_1,
             initial_max_fee_per_gas,
             initial_max_priority_fee_per_gas,
+            initial_max_fee_per_blob_gas,
         )
         .await?;
 
@@ -1475,6 +1484,7 @@ mod tests {
             tx_hash_2,
             initial_max_fee_per_gas,
             initial_max_priority_fee_per_gas,
+            initial_max_fee_per_blob_gas,
         )
         .await?;
 
@@ -1574,6 +1584,7 @@ mod tests {
         let fee_estimates = FeesEstimate {
             base_fee_per_gas: U256::from(13_132),
             percentile_fees: vec![U256::from(0)],
+            base_fee_per_blob_gas: 10_123,
         };
 
         let gas_price = U256::from(1_000_000_007);
@@ -1601,6 +1612,10 @@ mod tests {
         assert_eq!(
             block_fees.fee_estimates.percentile_fees,
             fee_estimates.percentile_fees
+        );
+        assert_eq!(
+            block_fees.fee_estimates.base_fee_per_blob_gas,
+            fee_estimates.base_fee_per_blob_gas
         );
         assert_eq!(block_fees.gas_price, gas_price);
 

@@ -125,10 +125,13 @@ async fn escalate_relayer_tx(
         signer_address,
         max_fee_per_gas,
         max_priority_fee_per_gas,
+        0,
     )
     .await?;
 
     tracing::info!("Escalating transaction - assembled tx");
+
+    tracing::info!("TX - {:?}", tx_request);
 
     let pending_tx = provider.send_transaction(tx_request).await;
 
@@ -160,7 +163,13 @@ async fn escalate_relayer_tx(
     let db_tx_hash = H256::from_slice(tx_hash.as_slice());
 
     app.db
-        .escalate_tx(&tx.id, db_tx_hash, max_fee_per_gas, max_fee_per_gas)
+        .escalate_tx(
+            &tx.id,
+            db_tx_hash,
+            max_fee_per_gas,
+            max_fee_per_gas,
+            max_fee_per_gas.as_u128(),
+        )
         .await?;
 
     tracing::info!(tx_id = tx.id, "Escalated transaction saved");

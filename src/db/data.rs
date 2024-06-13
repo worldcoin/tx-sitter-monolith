@@ -1,9 +1,14 @@
 use ethers::types::{Address, H256, U256};
 use serde::{Deserialize, Serialize};
 use sqlx::database::{HasArguments, HasValueRef};
+use sqlx::encode::IsNull;
 use sqlx::postgres::{PgHasArrayType, PgTypeInfo};
 use sqlx::prelude::FromRow;
-use sqlx::Database;
+use sqlx::types::BigDecimal;
+use sqlx::{Database, Decode, Encode, Postgres, Type};
+
+use std::ops::Deref;
+use std::str::FromStr;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::types::TransactionPriority;
@@ -41,6 +46,7 @@ pub struct TxForEscalation {
     pub chain_id: u64,
     pub initial_max_fee_per_gas: U256Wrapper,
     pub initial_max_priority_fee_per_gas: U256Wrapper,
+    pub initial_max_fee_per_blob_gas: U128Wrapper,
     #[sqlx(try_from = "i64")]
     pub escalation_count: usize,
 }
@@ -86,6 +92,50 @@ pub struct U256Wrapper(pub U256);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct H256Wrapper(pub H256);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct U128Wrapper(pub u128);
+
+impl Type<Postgres> for U128Wrapper {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <BigDecimal as Type<Postgres>>::type_info()
+    }
+}
+
+impl Deref for U128Wrapper {
+    type Target = u128;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for U128Wrapper {
+    fn decode(
+        value: <Postgres as sqlx::database::HasValueRef<'r>>::ValueRef,
+    ) -> Result<Self, sqlx::error::BoxDynError> {
+        let big_decimal: BigDecimal = Decode::<Postgres>::decode(value)?;
+        let string_repr = big_decimal.to_string();
+        let u128_value = u128::from_str_radix(&string_repr, 10)?;
+        Ok(U128Wrapper(u128_value))
+    }
+}
+
+impl<'q> Encode<'q, Postgres> for U128Wrapper {
+    fn encode_by_ref(
+        &self,
+        buf: &mut <Postgres as sqlx::database::HasArguments<'q>>::ArgumentBuffer,
+    ) -> IsNull {
+        // Convert u128 to String and then to BigDecimal
+        let big_decimal = BigDecimal::from_str(&self.0.to_string()).unwrap();
+        Encode::<Postgres>::encode_by_ref(&big_decimal, buf)
+    }
+
+    fn size_hint(&self) -> usize {
+        let big_decimal = BigDecimal::from_str(&self.0.to_string()).unwrap();
+        Encode::<Postgres>::size_hint(&big_decimal)
+    }
+}
 
 impl<'r, DB> sqlx::Decode<'r, DB> for AddressWrapper
 where
