@@ -278,12 +278,18 @@ impl RelayerApi {
     ) -> Result<Json<GetTxResponse>> {
         api_token.validate(app).await?;
 
-        let tx = app.db.read_tx(&tx_id).await?.ok_or_else(|| {
-            poem::error::Error::from_string(
-                "Transaction not found".to_string(),
-                StatusCode::NOT_FOUND,
-            )
-        })?;
+        let relayer_id = api_token.relayer_id();
+
+        let tx = app
+            .db
+            .read_relayer_tx(relayer_id, &tx_id)
+            .await?
+            .ok_or_else(|| {
+                poem::error::Error::from_string(
+                    "Transaction not found".to_string(),
+                    StatusCode::NOT_FOUND,
+                )
+            })?;
 
         let get_tx_response = GetTxResponse {
             tx_id: tx.tx_id,
@@ -318,13 +324,17 @@ impl RelayerApi {
         api_token.validate(app).await?;
 
         let txs = if unsent {
-            app.db.read_txs(api_token.relayer_id(), Some(None)).await?
+            app.db
+                .read_relayer_txs(api_token.relayer_id(), Some(None))
+                .await?
         } else if let Some(status) = status {
             app.db
-                .read_txs(api_token.relayer_id(), Some(Some(status)))
+                .read_relayer_txs(api_token.relayer_id(), Some(Some(status)))
                 .await?
         } else {
-            app.db.read_txs(api_token.relayer_id(), None).await?
+            app.db
+                .read_relayer_txs(api_token.relayer_id(), None)
+                .await?
         };
 
         let txs = txs
