@@ -915,7 +915,7 @@ impl Database {
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.relayer_id = $1
-            AND   ($2 = true AND s.status = $3) OR $2 = false
+            AND   (($2 = true AND s.status = $3) OR $2 = false)
             "#,
         )
         .bind(relayer_id)
@@ -1725,6 +1725,12 @@ mod tests {
 
         let tx = db.read_relayer_tx(relayer_2_id, tx_id).await?;
         assert!(tx.is_none(), "Tx cannot be read by relayer 2");
+
+        let txs = db.read_relayer_txs(relayer_2_id, None).await?;
+        assert!(txs.is_empty(), "Txs cannot be read by relayer 2");
+
+        let txs = db.read_relayer_txs(relayer_1_id, None).await?;
+        assert_eq!(txs.len(), 1, "Txs can be read by relayer 1");
 
         Ok(())
     }
