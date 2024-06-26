@@ -14,7 +14,7 @@ use alloy::node_bindings::{
 };
 use tracing::info;
 
-use crate::{_setup_middleware, DEFAULT_ANVIL_PRIVATE_KEY};
+use crate::{setup_alloy_middleware, DEFAULT_ANVIL_PRIVATE_KEY};
 
 use super::prelude::{
     setup_middleware, DEFAULT_ANVIL_ACCOUNT, DEFAULT_ANVIL_BLOCK_TIME,
@@ -77,7 +77,7 @@ impl AnvilBuilder {
         Ok(anvil)
     }
 
-    pub async fn _spawn(self) -> eyre::Result<AlloyAnvilInstance> {
+    pub async fn spawn_for_alloy(self) -> eyre::Result<AlloyAnvilInstance> {
         let mut anvil = AlloyAnvil::new();
 
         let block_time = if let Some(block_time) = self.block_time {
@@ -93,9 +93,11 @@ impl AnvilBuilder {
 
         let anvil = anvil.try_spawn()?;
 
-        let middleware =
-            _setup_middleware(&anvil.endpoint(), DEFAULT_ANVIL_PRIVATE_KEY)
-                .await?;
+        let middleware = setup_alloy_middleware(
+            &anvil.endpoint(),
+            DEFAULT_ANVIL_PRIVATE_KEY,
+        )
+        .await?;
 
         // Wait for the chain to start and produce at least one block
         tokio::time::sleep(Duration::from_secs(block_time)).await;

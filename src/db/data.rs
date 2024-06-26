@@ -116,7 +116,7 @@ impl<'r> Decode<'r, Postgres> for U128Wrapper {
     ) -> Result<Self, sqlx::error::BoxDynError> {
         let big_decimal: BigDecimal = Decode::<Postgres>::decode(value)?;
         let string_repr = big_decimal.to_string();
-        let u128_value = u128::from_str_radix(&string_repr, 10)?;
+        let u128_value = string_repr.parse::<u128>()?;
         Ok(U128Wrapper(u128_value))
     }
 }

@@ -113,7 +113,7 @@ pub async fn setup_middleware(
     rpc_url: impl AsRef<str>,
     private_key: &[u8],
 ) -> eyre::Result<AppMiddleware> {
-    let provider = setup_provider(rpc_url).await?;
+    let provider: Provider<Http> = setup_provider(rpc_url).await?;
 
     let wallet = LocalWallet::from(SigningKey::from_slice(private_key)?)
         .with_chain_id(provider.get_chainid().await?.as_u64());
@@ -131,17 +131,19 @@ pub async fn setup_provider(
     Ok(provider)
 }
 
-pub async fn _setup_provider(rpc_url: &str) -> eyre::Result<AlloyHttpProvider> {
+pub async fn setup_alloy_provider(
+    rpc_url: &str,
+) -> eyre::Result<AlloyHttpProvider> {
     let provider = ProviderBuilder::new().on_http(rpc_url.parse().unwrap());
 
     Ok(provider)
 }
 
-pub async fn _setup_middleware(
+pub async fn setup_alloy_middleware(
     rpc_url: &str,
     private_key: &[u8],
 ) -> eyre::Result<UniversalProvider> {
-    let provider = _setup_provider(rpc_url).await?;
+    let provider = setup_alloy_provider(rpc_url).await?;
 
     let chain_id = provider.get_chain_id().await?;
 

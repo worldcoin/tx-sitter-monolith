@@ -98,7 +98,7 @@ impl ServiceBuilder {
         Ok((service, client))
     }
 
-    pub async fn _build(
+    pub async fn build_for_alloy(
         self,
         anvil: &AlloyAnvilInstance,
         db_url: &str,
