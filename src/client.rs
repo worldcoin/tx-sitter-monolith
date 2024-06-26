@@ -2,19 +2,17 @@ use reqwest::Response;
 use thiserror::Error;
 
 use crate::api_key::ApiKey;
-use crate::server::routes::network::NewNetworkInfo;
-use crate::server::routes::relayer::{
+use crate::types::{
     CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
+    GetTxResponse, NewNetworkInfo, RelayerUpdate, SendTxRequest,
+    SendTxResponse,
 };
-use crate::server::routes::transaction::{
-    GetTxResponse, SendTxRequest, SendTxResponse,
-};
-use crate::server::ApiError;
-use crate::types::RelayerUpdate;
 
 pub struct TxSitterClient {
     client: reqwest::Client,
     url: String,
+
+    credentials: Option<(String, String)>,
 }
 
 #[derive(Debug, Error)]
@@ -26,7 +24,7 @@ pub enum ClientError {
     Serde(#[from] serde_json::Error),
 
     #[error("API error: {0}")]
-    TxSitter(#[from] ApiError),
+    TxSitter(String),
 
     #[error("Invalid API key: {0}")]
     InvalidApiKey(eyre::Error),
@@ -37,14 +35,38 @@ impl TxSitterClient {
         Self {
             client: reqwest::Client::new(),
             url: url.to_string(),
+            credentials: None,
         }
+    }
+
+    pub fn with_credentials(
+        mut self,
+        username: impl ToString,
+        password: impl ToString,
+    ) -> Self {
+        self.credentials = Some((username.to_string(), password.to_string()));
+        self
+    }
+
+    fn creds(&self) -> (&str, &str) {
+        self.credentials
+            .as_ref()
+            .map(|(u, p)| (u.as_str(), p.as_str()))
+            .unwrap_or_default()
     }
 
     async fn post<R>(&self, url: &str) -> Result<R, ClientError>
     where
         R: serde::de::DeserializeOwned,
     {
-        let response = self.client.post(url).send().await?;
+        let (username, password) = self.creds();
+
+        let response = self
+            .client
+            .post(url)
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
 
         let response = Self::validate_response(response).await?;
 
@@ -60,7 +82,15 @@ impl TxSitterClient {
         T: serde::Serialize,
         R: serde::de::DeserializeOwned,
     {
-        let response = self.client.post(url).json(&body).send().await?;
+        let (username, password) = self.creds();
+
+        let response = self
+            .client
+            .post(url)
+            .json(&body)
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
 
         let response = Self::validate_response(response).await?;
 
@@ -71,7 +101,14 @@ impl TxSitterClient {
     where
         R: serde::de::DeserializeOwned,
     {
-        let response = self.client.get(url).send().await?;
+        let (username, password) = self.creds();
+
+        let response = self
+            .client
+            .get(url)
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
 
         let response = Self::validate_response(response).await?;
 
@@ -82,7 +119,7 @@ impl TxSitterClient {
         response: Response,
     ) -> Result<Response, ClientError> {
         if !response.status().is_success() {
-            let body: ApiError = response.json().await?;
+            let body: String = response.text().await?;
             return Err(ClientError::TxSitter(body));
         }
 
@@ -110,11 +147,21 @@ impl TxSitterClient {
         relayer_id: &str,
         relayer_update: RelayerUpdate,
     ) -> Result<(), ClientError> {
-        self.json_post(
-            &format!("{}/1/admin/relayer/{relayer_id}", self.url),
-            relayer_update,
-        )
-        .await
+        let url: &str = &format!("{}/1/admin/relayer/{relayer_id}", self.url);
+
+        let (username, password) = self.creds();
+
+        let response = self
+            .client
+            .post(url)
+            .json(&relayer_update)
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
+
+        let _response = Self::validate_response(response).await?;
+
+        Ok(())
     }
 
     pub async fn send_tx(
@@ -162,5 +209,14 @@ impl TxSitterClient {
         Self::validate_response(response).await?;
 
         Ok(())
+    }
+}
+
+impl ClientError {
+    pub fn tx_sitter(&self) -> Option<&str> {
+        match self {
+            Self::TxSitter(s) => Some(s),
+            _ => None,
+        }
     }
 }

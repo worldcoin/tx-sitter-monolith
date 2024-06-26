@@ -7,8 +7,10 @@ use eyre::ContextCompat;
 
 use self::gas_estimation::FeesEstimate;
 use crate::app::App;
-use crate::db::data::{AddressWrapper, U256Wrapper};
+
 use crate::db::{TxForEscalation, UnsentTx};
+use crate::types::wrappers::address::AddressWrapper;
+use crate::types::wrappers::hex_u256::HexU256;
 use crate::types::RelayerInfo;
 
 pub mod gas_estimation;
@@ -48,7 +50,7 @@ pub async fn should_send_relayer_transactions(
         return Ok(false);
     }
 
-    for gas_limit in &relayer.gas_price_limits.0 {
+    for gas_limit in &relayer.gas_price_limits {
         let chain_fees = app
             .db
             .get_latest_block_fees_by_chain_id(relayer.chain_id)
@@ -92,8 +94,8 @@ pub async fn create_transaction_request<T: ToTransactionRequest>(
 #[allow(clippy::too_many_arguments)]
 async fn create_tx_request(
     to: AddressWrapper,
-    gas_limit: U256Wrapper,
-    value: U256Wrapper,
+    gas_limit: HexU256,
+    value: HexU256,
     data: Vec<u8>,
     nonce: u64,
     chain_id: u64,
@@ -154,9 +156,9 @@ impl ToTransactionRequest for UnsentTx {
         max_fee_per_blob_gas: u128,
     ) -> eyre::Result<TransactionRequest> {
         let request = create_tx_request(
-            self.tx_to,
-            self.gas_limit,
-            self.value,
+            self.tx_to.clone(),
+            self.gas_limit.clone(),
+            self.value.clone(),
             self.data.clone(),
             self.nonce,
             self.chain_id,
@@ -180,9 +182,9 @@ impl ToTransactionRequest for TxForEscalation {
         max_fee_per_blob_gas: u128,
     ) -> eyre::Result<TransactionRequest> {
         let request = create_tx_request(
-            self.tx_to,
-            self.gas_limit,
-            self.value,
+            self.tx_to.clone(),
+            self.gas_limit.clone(),
+            self.value.clone(),
             self.data.clone(),
             self.nonce,
             self.chain_id,

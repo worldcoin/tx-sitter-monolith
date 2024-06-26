@@ -1,7 +1,5 @@
 mod common;
 
-use tx_sitter::client::ClientError;
-use tx_sitter::server::ApiError;
 use tx_sitter::types::{RelayerUpdate, TransactionPriority};
 
 use crate::common::prelude::*;
@@ -35,6 +33,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         api_key: secondary_api_key,
     } = client.create_relayer_api_key(&secondary_relayer_id).await?;
 
+    tracing::info!("Updating relayer");
     // Set max queued txs
     client
         .update_relayer(
@@ -48,15 +47,16 @@ async fn send_too_many_txs() -> eyre::Result<()> {
     // Send a transaction
     let value: U256 = parse_units("0.01", "ether")?.into();
 
+    tracing::info!("Sending txs");
     for _ in 0..=MAX_QUEUED_TXS {
         client
             .send_tx(
                 &secondary_api_key,
                 &SendTxRequest {
-                    to: ARBITRARY_ADDRESS,
-                    value,
+                    to: ARBITRARY_ADDRESS.into(),
+                    value: value.into(),
                     data: None,
-                    gas_limit: U256::from(21_000),
+                    gas_limit: U256::from(21_000).into(),
                     priority: TransactionPriority::Regular,
                     tx_id: None,
                     blobs: None,
@@ -70,10 +70,10 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         .send_tx(
             &secondary_api_key,
             &SendTxRequest {
-                to: ARBITRARY_ADDRESS,
-                value,
+                to: ARBITRARY_ADDRESS.into(),
+                value: value.into(),
                 data: None,
-                gas_limit: U256::from(21_000),
+                gas_limit: U256::from(21_000).into(),
                 priority: TransactionPriority::Regular,
                 tx_id: None,
                 blobs: None,
@@ -81,11 +81,10 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         )
         .await;
 
-    assert!(
-        matches!(
-            result,
-            Err(ClientError::TxSitter(ApiError::TooManyTransactions { .. }))
-        ),
+    // TODO: Fix checking errors by string
+    assert_eq!(
+        result.as_ref().err().and_then(|e| e.tx_sitter()),
+        Some("Relayer queue is full"),
         "Result {:?} should be too many transactions",
         result
     );
@@ -98,10 +97,10 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         .send_tx(
             &api_key,
             &SendTxRequest {
-                to: secondary_relayer_address,
-                value: total_required_value,
+                to: secondary_relayer_address.clone(),
+                value: total_required_value.into(),
                 data: None,
-                gas_limit: U256::from(21_000),
+                gas_limit: U256::from(21_000).into(),
                 priority: TransactionPriority::Regular,
                 tx_id: None,
                 blobs: None,
@@ -110,7 +109,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         .await?;
 
     tracing::info!("Waiting for secondary relayer balance");
-    await_balance(&provider, total_required_value, secondary_relayer_address)
+    await_balance(&provider, total_required_value, secondary_relayer_address.0)
         .await?;
 
     tracing::info!("Waiting for queued up txs to be processed");

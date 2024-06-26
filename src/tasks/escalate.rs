@@ -56,7 +56,11 @@ async fn escalate_relayer_txs(
     relayer_id: String,
     txs: Vec<TxForEscalation>,
 ) -> eyre::Result<()> {
-    let relayer = app.db.get_relayer(&relayer_id).await?;
+    let relayer = app
+        .db
+        .get_relayer(&relayer_id)
+        .await?
+        .context("Missing relayer")?;
 
     if txs.is_empty() {
         tracing::info!("No transactions to escalate");

@@ -23,6 +23,13 @@ struct Args {
 
     #[clap(short, long)]
     env_file: Vec<PathBuf>,
+
+    /// Installs color-eyre hooks for better messages
+    ///
+    /// Useful for local testing and debugging
+    /// Not very useful for production deployments
+    #[clap(short = 'E', long, env)]
+    color_eyre: bool,
 }
 
 #[tokio::main]
@@ -30,9 +37,15 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
     dotenv::dotenv().ok();
-
     for path in &args.env_file {
         dotenv::from_path(path)?;
+    }
+
+    // Reparse the args to account for newly loaded env vars
+    let args = Args::parse();
+
+    if args.color_eyre {
+        color_eyre::install()?;
     }
 
     let config = load_config(args.config.iter().map(PathBuf::as_ref))?;
@@ -61,6 +74,7 @@ async fn main() -> eyre::Result<()> {
             tracing_subscriber::registry()
                 .with(tracing_subscriber::fmt::layer().pretty().compact())
                 .with(tracing_subscriber::EnvFilter::from_default_env())
+                .with(tracing_error::ErrorLayer::default())
                 .init();
 
             TracingShutdownHandle

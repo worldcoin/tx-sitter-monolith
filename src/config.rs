@@ -102,6 +102,9 @@ pub struct ServerConfig {
 
     pub username: Option<String>,
     pub password: Option<String>,
+
+    // Optional address to show in API explorer
+    pub server_address: Option<String>,
 }
 
 impl ServerConfig {
@@ -292,6 +295,7 @@ mod tests {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
                 username: None,
                 password: None,
+                server_address: None,
             },
             database: DatabaseConfig::connection_string(
                 "postgres://postgres:postgres@127.0.0.1:52804/database"
@@ -319,6 +323,7 @@ mod tests {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
                 username: None,
                 password: None,
+                server_address: None,
             },
             database: DatabaseConfig::Parts(DbParts {
                 host: "host".to_string(),

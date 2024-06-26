@@ -40,7 +40,6 @@ alloy = { git = "https://github.com/alloy-rs/alloy", rev = "3f6c744", features =
     "transport-http",
 ] }
 async-trait = "0.1.74"
-axum = { version = "0.6.20", features = ["headers"] }
 base64 = "0.21.5"
 bigdecimal = "0.4.2"
 chrono = "0.4"
@@ -48,7 +47,8 @@ clap = { version = "4.3.0", features = ["env", "derive"] }
 config = "0.13.3"
 dotenv = "0.15.0"
 ethers = { version = "2.0.11", features = ["ws"] }
-eyre = "0.6.5"
+eyre = "0.6.3"
+color-eyre = "0.6.3"
 futures = "0.3"
 headers = "0.3.9"
 hex = "0.4.3"
@@ -59,6 +59,13 @@ hyper = "0.14.27"
 itertools = "0.12.0"
 metrics = "0.22.1"
 num-bigint = "0.4.4"
+poem = { version = "3", features = ["eyre06"] }
+poem-openapi = { version = "5", features = [
+    "openapi-explorer",
+    "rapidoc",
+    "redoc",
+    "swagger-ui",
+] }
 rand = "0.8.5"
 reqwest = { version = "0.11.24", default-features = false, features = [
     "rustls-tls",
@@ -80,7 +87,6 @@ strum = { version = "0.25.0", features = ["derive"] }
 thiserror = "1.0.50"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 toml = "0.8.8"
-tower-http = { version = "0.4.4", features = ["trace", "auth"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = [
     "env-filter",
@@ -89,9 +95,12 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "json",
     "ansi",
 ] }
+tracing-error = "0.2.0"
 url = "2.4.1"
 uuid = { version = "0.8", features = ["v4"] }
 k256 = "0.13.3"
+version = "3.0.0"
+regex = "1.10.4"
 
 [dev-dependencies]
 indoc = "2.0.3"

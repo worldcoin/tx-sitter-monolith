@@ -12,12 +12,15 @@ use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
-use crate::types::{RelayerInfo, RelayerUpdate, TransactionPriority};
+use crate::types::wrappers::h256::H256Wrapper;
+use crate::types::{
+    NetworkInfo, RelayerInfo, RelayerUpdate, TransactionPriority, TxStatus,
+};
 
 pub mod data;
 
-use self::data::{BlockFees, H256Wrapper, NetworkStats, ReadTxData, RpcKind};
-pub use self::data::{TxForEscalation, TxStatus, UnsentTx};
+use self::data::{BlockFees, NetworkStats, ReadTxData, RpcKind};
+pub use self::data::{TxForEscalation, UnsentTx};
 
 // Statically link in migration files
 static MIGRATOR: Migrator = sqlx::migrate!("db/migrations");
@@ -215,7 +218,10 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn get_relayer(&self, id: &str) -> eyre::Result<RelayerInfo> {
+    pub async fn get_relayer(
+        &self,
+        id: &str,
+    ) -> eyre::Result<Option<RelayerInfo>> {
         Ok(sqlx::query_as(
             r#"
             SELECT
@@ -235,7 +241,7 @@ impl Database {
             "#,
         )
         .bind(id)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?)
     }
 
@@ -875,7 +881,30 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn read_txs(
+    pub async fn read_relayer_tx(
+        &self,
+        relayer_id: &str,
+        tx_id: &str,
+    ) -> eyre::Result<Option<ReadTxData>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
+                   t.blobs, h.tx_hash, s.status
+            FROM transactions t
+            LEFT JOIN sent_transactions s ON t.id = s.tx_id
+            LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
+            WHERE t.id = $1
+            AND   t.relayer_id = $2
+            "#,
+        )
+        .bind(tx_id)
+        .bind(relayer_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn read_relayer_txs(
         &self,
         relayer_id: &str,
         tx_status_filter: Option<Option<TxStatus>>,
@@ -893,10 +922,36 @@ impl Database {
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.relayer_id = $1
-            AND   ($2 = true AND s.status = $3) OR $2 = false
+            AND   (($2 = true AND s.status = $3) OR $2 = false)
             "#,
         )
         .bind(relayer_id)
+        .bind(should_filter)
+        .bind(status_filter)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn read_txs(
+        &self,
+        tx_status_filter: Option<Option<TxStatus>>,
+    ) -> eyre::Result<Vec<ReadTxData>> {
+        let (should_filter, status_filter) = match tx_status_filter {
+            Some(status) => (true, status),
+            None => (false, None),
+        };
+
+        Ok(sqlx::query_as(
+            r#"
+            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
+                   t. blobs, h.tx_hash, s.status
+            FROM transactions t
+            LEFT JOIN sent_transactions s ON t.id = s.tx_id
+            LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
+            WHERE ($1 = true AND s.status = $2) OR $1 = false
+            "#,
+        )
         .bind(should_filter)
         .bind(status_filter)
         .fetch_all(&self.pool)
@@ -970,7 +1025,7 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn create_network(
+    pub async fn upsert_network(
         &self,
         chain_id: u64,
         name: &str,
@@ -983,7 +1038,8 @@ impl Database {
             r#"
             INSERT INTO networks (chain_id, name)
             VALUES ($1, $2)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (chain_id) DO UPDATE
+            SET name = EXCLUDED.name
             "#,
         )
         .bind(chain_id as i64)
@@ -995,14 +1051,27 @@ impl Database {
             r#"
             INSERT INTO rpcs (chain_id, url, kind)
             VALUES
-                ($1, $2, $3),
-                ($1, $4, $5)
-            ON CONFLICT DO NOTHING
+                ($1, $2, $3)
+            ON CONFLICT (chain_id, kind) DO UPDATE
+            SET url = EXCLUDED.url
             "#,
         )
         .bind(chain_id as i64)
         .bind(http_rpc)
         .bind(RpcKind::Http)
+        .execute(tx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO rpcs (chain_id, url, kind)
+            VALUES
+                ($1, $2, $3)
+            ON CONFLICT (chain_id, kind) DO UPDATE
+            SET url = EXCLUDED.url
+            "#,
+        )
+        .bind(chain_id as i64)
         .bind(ws_rpc)
         .bind(RpcKind::Ws)
         .execute(tx.as_mut())
@@ -1050,7 +1119,40 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn create_api_key(
+    pub async fn get_networks(&self) -> eyre::Result<Vec<NetworkInfo>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
+            FROM   networks
+            INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
+            INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_network(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<NetworkInfo>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
+            FROM   networks
+            INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
+            INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
+            WHERE networks.chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn upsert_api_key(
         &self,
         relayer_id: &str,
         api_key_hash: [u8; 32],
@@ -1208,7 +1310,6 @@ mod tests {
     use postgres_docker_utils::DockerContainerGuard;
 
     use super::*;
-    use crate::db::data::U256Wrapper;
     use crate::types::RelayerGasPriceLimit;
 
     async fn setup_db() -> eyre::Result<(Database, DockerContainerGuard)> {
@@ -1262,7 +1363,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();
@@ -1321,7 +1422,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();
@@ -1340,7 +1441,10 @@ mod tests {
         )
         .await?;
 
-        let relayer = db.get_relayer(relayer_id).await?;
+        let relayer = db
+            .get_relayer(relayer_id)
+            .await?
+            .context("Missing relayer")?;
 
         assert_eq!(relayer.id, relayer_id);
         assert_eq!(relayer.name, relayer_name);
@@ -1350,7 +1454,7 @@ mod tests {
         assert_eq!(relayer.nonce, 0);
         assert_eq!(relayer.current_nonce, 0);
         assert_eq!(relayer.max_inflight_txs, 5);
-        assert_eq!(relayer.gas_price_limits.0, vec![]);
+        assert_eq!(relayer.gas_price_limits, vec![]);
 
         db.update_relayer(
             relayer_id,
@@ -1360,14 +1464,17 @@ mod tests {
                 max_queued_txs: Some(20),
                 gas_price_limits: Some(vec![RelayerGasPriceLimit {
                     chain_id: 1,
-                    value: U256Wrapper(U256::from(10_123u64)),
+                    value: U256::from(10_123u64).into(),
                 }]),
                 enabled: None,
             },
         )
         .await?;
 
-        let relayer = db.get_relayer(relayer_id).await?;
+        let relayer = db
+            .get_relayer(relayer_id)
+            .await?
+            .context("Missing relayer")?;
 
         assert_eq!(relayer.id, relayer_id);
         assert_eq!(relayer.name, relayer_name);
@@ -1379,10 +1486,10 @@ mod tests {
         assert_eq!(relayer.max_inflight_txs, 10);
         assert_eq!(relayer.max_queued_txs, 20);
         assert_eq!(
-            relayer.gas_price_limits.0,
+            relayer.gas_price_limits,
             vec![RelayerGasPriceLimit {
                 chain_id: 1,
-                value: U256Wrapper(U256::from(10_123u64)),
+                value: U256::from(10_123u64).into(),
             }]
         );
 
@@ -1398,7 +1505,7 @@ mod tests {
         let http_rpc = "http_rpc";
         let ws_rpc = "ws_rpc";
 
-        db.create_network(chain_id, network_name, http_rpc, ws_rpc)
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
             .await?;
 
         let relayer_id = uuid();
@@ -1444,7 +1551,7 @@ mod tests {
         assert_eq!(tx.tx_hash, None);
         assert_eq!(tx.blobs, None);
 
-        let unsent_txs = db.read_txs(relayer_id, None).await?;
+        let unsent_txs = db.read_relayer_txs(relayer_id, None).await?;
         assert_eq!(unsent_txs.len(), 1, "1 unsent tx");
 
         let tx_hash_1 = H256::from_low_u64_be(1);
@@ -1467,15 +1574,15 @@ mod tests {
         assert_eq!(tx.tx_hash.unwrap().0, tx_hash_1);
         assert_eq!(tx.status, Some(TxStatus::Pending));
 
-        let unsent_txs = db.read_txs(relayer_id, Some(None)).await?;
+        let unsent_txs = db.read_relayer_txs(relayer_id, Some(None)).await?;
         assert_eq!(unsent_txs.len(), 0, "0 unsent tx");
 
         let pending_txs = db
-            .read_txs(relayer_id, Some(Some(TxStatus::Pending)))
+            .read_relayer_txs(relayer_id, Some(Some(TxStatus::Pending)))
             .await?;
         assert_eq!(pending_txs.len(), 1, "1 pending tx");
 
-        let all_txs = db.read_txs(relayer_id, None).await?;
+        let all_txs = db.read_relayer_txs(relayer_id, None).await?;
 
         assert_eq!(all_txs, pending_txs);
 
@@ -1558,6 +1665,82 @@ mod tests {
 
         assert_eq!(tx.tx_hash.unwrap().0, tx_hash_2);
         assert_eq!(tx.status, Some(TxStatus::Finalized));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_tx() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let chain_id = 123;
+        let network_name = "network_name";
+        let http_rpc = "http_rpc";
+        let ws_rpc = "ws_rpc";
+
+        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
+            .await?;
+
+        let relayer_1_id = uuid();
+        let relayer_1_id = relayer_1_id.as_str();
+        let relayer_1_name = "relayer_1";
+
+        let relayer_2_id = uuid();
+        let relayer_2_id = relayer_2_id.as_str();
+        let relayer_2_name = "relayer_2";
+
+        let key_id = "key_id";
+        let relayer_address = Address::from_low_u64_be(1);
+
+        db.create_relayer(
+            relayer_1_id,
+            relayer_1_name,
+            chain_id,
+            key_id,
+            relayer_address,
+        )
+        .await?;
+
+        db.create_relayer(
+            relayer_2_id,
+            relayer_2_name,
+            chain_id,
+            key_id,
+            relayer_address,
+        )
+        .await?;
+
+        let tx_id = "tx_id";
+        let to = Address::from_low_u64_be(1);
+        let data: &[u8] = &[];
+        let value = U256::from(0);
+        let gas_limit = U256::from(0);
+        let priority = TransactionPriority::Regular;
+        let blobs = None;
+
+        db.create_transaction(
+            tx_id,
+            to,
+            data,
+            value,
+            gas_limit,
+            priority,
+            blobs,
+            relayer_1_id,
+        )
+        .await?;
+
+        let tx = db.read_tx(tx_id).await?;
+        assert!(tx.is_some(), "Tx can be read via read_tx");
+
+        let tx = db.read_relayer_tx(relayer_2_id, tx_id).await?;
+        assert!(tx.is_none(), "Tx cannot be read by relayer 2");
+
+        let txs = db.read_relayer_txs(relayer_2_id, None).await?;
+        assert!(txs.is_empty(), "Txs cannot be read by relayer 2");
+
+        let txs = db.read_relayer_txs(relayer_1_id, None).await?;
+        assert_eq!(txs.len(), 1, "Txs can be read by relayer 1");
 
         Ok(())
     }

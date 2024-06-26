@@ -32,9 +32,9 @@ async fn escalation() -> eyre::Result<()> {
         .send_tx(
             &api_key,
             &SendTxRequest {
-                to: ARBITRARY_ADDRESS,
-                value,
-                gas_limit: U256::from(21_000),
+                to: ARBITRARY_ADDRESS.into(),
+                value: value.into(),
+                gas_limit: U256::from(21_000).into(),
                 ..Default::default()
             },
         )
@@ -79,7 +79,7 @@ async fn get_tx_hash(
         let tx = client.get_tx(api_key, tx_id).await?;
 
         if let Some(tx_hash) = tx.tx_hash {
-            return Ok(tx_hash);
+            return Ok(tx_hash.0);
         } else {
             tokio::time::sleep(Duration::from_secs(3)).await;
         }

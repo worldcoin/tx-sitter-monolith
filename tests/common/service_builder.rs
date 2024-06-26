@@ -25,9 +25,9 @@ pub struct ServiceBuilder {
 impl Default for ServiceBuilder {
     fn default() -> Self {
         Self {
-            escalation_interval: Duration::from_secs(30),
-            soft_reorg_interval: Duration::from_secs(45),
-            hard_reorg_interval: Duration::from_secs(60),
+            escalation_interval: Duration::from_secs(5),
+            soft_reorg_interval: Duration::from_secs(10),
+            hard_reorg_interval: Duration::from_secs(15),
         }
     }
 }
@@ -85,6 +85,7 @@ impl ServiceBuilder {
                 )),
                 username: None,
                 password: None,
+                server_address: None,
             },
             database: DatabaseConfig::connection_string(db_url),
             keys: KeysConfig::Local(LocalKeysConfig::default()),
