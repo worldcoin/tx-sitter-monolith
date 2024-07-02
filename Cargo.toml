@@ -3,6 +3,7 @@ name = "tx-sitter"
 version = "0.1.0"
 edition = "2021"
 default-run = "tx-sitter"
+license-file = "LICENSE"
 
 [workspace]
 members = ["crates/*"]
