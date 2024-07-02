@@ -136,6 +136,7 @@ impl ServiceBuilder {
                 )),
                 username: None,
                 password: None,
+                server_address: None,
             },
             database: DatabaseConfig::connection_string(db_url),
             keys: KeysConfig::Local(LocalKeysConfig::default()),

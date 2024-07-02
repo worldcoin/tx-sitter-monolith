@@ -4,6 +4,7 @@ use alloy::primitives::Address;
 use alloy::providers::{Provider, ProviderBuilder};
 
 use tokio::time::Duration;
+use tx_sitter::types::TransactionPriority;
 
 use crate::common::prelude::*;
 
@@ -30,18 +31,21 @@ async fn send_tx_with_blob() -> eyre::Result<()> {
     ethers_value.to_little_endian(&mut value);
     let tx_value = alloy::primitives::U256::from_le_slice(&value);
 
-    client
-        .send_tx(
-            &api_key,
-            &SendTxRequest {
-                to: ARBITRARY_ADDRESS,
-                value: ethers_value,
-                gas_limit: U256::from(21_000),
-                blobs: Some(vec![vec![1_u8; 17655]]),
-                ..Default::default()
-            },
-        )
-        .await?;
+    let req = SendTxRequest {
+        to: ARBITRARY_ADDRESS.into(),
+        value: ethers_value.into(),
+        gas_limit: U256::from(21_000).into(),
+        blobs: Some(vec![vec![1_u8; 10]]),
+        data: None,
+        priority: TransactionPriority::Regular,
+        tx_id: None,
+    };
+
+    let json_string = serde_json::to_string(&req).unwrap();
+
+    tracing::info!("==== Sending transaction: {:?}", json_string);
+
+    client.send_tx(&api_key, &req).await?;
 
     let address = Address::from_slice(&ARBITRARY_ADDRESS.to_fixed_bytes());
 
