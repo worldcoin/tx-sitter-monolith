@@ -10,14 +10,15 @@ async fn escalation() -> eyre::Result<()> {
     setup_tracing();
 
     let (db_url, _db_container) = setup_db().await?;
+
     let anvil = AnvilBuilder::default()
         .block_time(ANVIL_BLOCK_TIME)
-        .spawn()
+        .spawn_for_alloy()
         .await?;
 
     let (_service, client) = ServiceBuilder::default()
         .escalation_interval(ESCALATION_INTERVAL)
-        .build(&anvil, &db_url)
+        .build_for_alloy(&anvil, &db_url)
         .await?;
 
     let CreateApiKeyResponse { api_key } =
@@ -62,7 +63,7 @@ async fn await_balance(
         if balance == value {
             return Ok(());
         } else {
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 

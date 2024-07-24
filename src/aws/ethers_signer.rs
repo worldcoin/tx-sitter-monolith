@@ -244,6 +244,7 @@ impl AwsSigner {
 impl ethers::signers::Signer for AwsSigner {
     type Error = AwsSignerError;
 
+    #[allow(clippy::blocks_in_conditions)]
     #[instrument(err, skip(message))]
     async fn sign_message<S: Send + Sync + AsRef<[u8]>>(
         &self,
@@ -258,6 +259,7 @@ impl ethers::signers::Signer for AwsSigner {
             .await
     }
 
+    #[allow(clippy::blocks_in_conditions)]
     #[instrument(err)]
     async fn sign_transaction(
         &self,

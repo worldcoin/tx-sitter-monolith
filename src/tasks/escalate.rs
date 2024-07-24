@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ethers::providers::Middleware;
-use ethers::types::transaction::eip2718::TypedTransaction;
-use ethers::types::transaction::eip2930::AccessList;
-use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress, U256};
+use alloy::providers::Provider;
+use ethers::types::{H256, U256};
 use eyre::ContextCompat;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
 use crate::app::App;
-use crate::broadcast_utils::should_send_relayer_transactions;
+use crate::broadcast_utils::{
+    create_transaction_request, should_send_relayer_transactions,
+};
 use crate::db::TxForEscalation;
 use crate::types::RelayerInfo;
 
@@ -93,8 +93,8 @@ async fn escalate_relayer_tx(
 
     let escalation = tx.escalation_count + 1;
 
-    let middleware = app
-        .signer_middleware(tx.chain_id, tx.key_id.clone())
+    let (provider, signer_address) = app
+        .universal_provider(tx.chain_id, tx.key_id.clone())
         .await?;
 
     tracing::info!("Escalating transaction - got middleware");
@@ -124,24 +124,20 @@ async fn escalate_relayer_tx(
     let max_fee_per_gas =
         max_priority_fee_per_gas + fees.fee_estimates.base_fee_per_gas;
 
-    let eip1559_tx = Eip1559TransactionRequest {
-        from: None,
-        to: Some(NameOrAddress::from(Address::from(tx.tx_to.0))),
-        gas: Some(tx.gas_limit.0),
-        value: Some(tx.value.0),
-        data: Some(tx.data.into()),
-        nonce: Some(tx.nonce.into()),
-        access_list: AccessList::default(),
-        max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
-        max_fee_per_gas: Some(max_fee_per_gas),
-        chain_id: Some(tx.chain_id.into()),
-    };
+    let tx_request = create_transaction_request(
+        &tx,
+        signer_address,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        0,
+    )
+    .await?;
 
     tracing::info!("Escalating transaction - assembled tx");
 
-    let pending_tx = middleware
-        .send_transaction(TypedTransaction::Eip1559(eip1559_tx), None)
-        .await;
+    tracing::info!("TX - {:?}", tx_request);
+
+    let pending_tx = provider.send_transaction(tx_request).await;
 
     tracing::info!("Escalating transaction - sent tx");
 
@@ -168,8 +164,16 @@ async fn escalate_relayer_tx(
         "Escalated transaction"
     );
 
+    let db_tx_hash = H256::from_slice(tx_hash.as_slice());
+
     app.db
-        .escalate_tx(&tx.id, tx_hash, max_fee_per_gas, max_fee_per_gas)
+        .escalate_tx(
+            &tx.id,
+            db_tx_hash,
+            max_fee_per_gas,
+            max_fee_per_gas,
+            max_fee_per_gas.as_u128(),
+        )
         .await?;
 
     tracing::info!(tx_id = tx.id, "Escalated transaction saved");
