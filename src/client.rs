@@ -24,7 +24,7 @@ pub enum ClientError {
     Serde(#[from] serde_json::Error),
 
     #[error("API error: {0}")]
-    TxSitter(String),
+    TxSitter(reqwest::StatusCode, String),
 
     #[error("Invalid API key: {0}")]
     InvalidApiKey(eyre::Error),
@@ -118,9 +118,10 @@ impl TxSitterClient {
     async fn validate_response(
         response: Response,
     ) -> Result<Response, ClientError> {
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
             let body: String = response.text().await?;
-            return Err(ClientError::TxSitter(body));
+            return Err(ClientError::TxSitter(status, body));
         }
 
         Ok(response)
@@ -213,9 +214,9 @@ impl TxSitterClient {
 }
 
 impl ClientError {
-    pub fn tx_sitter(&self) -> Option<&str> {
+    pub fn tx_sitter_messager(&self) -> Option<&str> {
         match self {
-            Self::TxSitter(s) => Some(s),
+            Self::TxSitter(_, s) => Some(s),
             _ => None,
         }
     }
