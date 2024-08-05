@@ -250,7 +250,8 @@ impl RelayerApi {
             ));
         }
 
-        app.db
+        let res = app
+            .db
             .create_transaction(
                 &tx_id,
                 req.to.0,
@@ -261,7 +262,22 @@ impl RelayerApi {
                 req.blobs,
                 api_token.relayer_id(),
             )
-            .await?;
+            .await;
+
+        if let Err(ref err) = res {
+            if let Some(sqlx::Error::Database(err)) =
+                err.downcast_ref::<sqlx::Error>()
+            {
+                if err.constraint() == Some("transactions_pkey") {
+                    return Err(poem::error::Error::from_string(
+                        "Transaction with same id already exists.".to_string(),
+                        StatusCode::CONFLICT,
+                    ));
+                }
+            }
+        }
+
+        res?;
 
         tracing::info!(tx_id, "Transaction created");
 
