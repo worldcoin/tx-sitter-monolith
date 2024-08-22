@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ethers::types::{Address, H256, U256};
+use poem::http::StatusCode;
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::types::{BigDecimal, Json};
 use sqlx::{Pool, Postgres, Row};
@@ -26,6 +27,11 @@ static MIGRATOR: Migrator = sqlx::migrate!("db/migrations");
 
 pub struct Database {
     pub pool: Pool<Postgres>,
+}
+
+pub enum CreateResult {
+    SUCCESS,
+    CONFLICT
 }
 
 impl Database {
@@ -277,7 +283,7 @@ impl Database {
         priority: TransactionPriority,
         blobs: Option<Vec<Vec<u8>>>,
         relayer_id: &str,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<CreateResult> {
         let mut tx = self.pool.begin().await?;
 
         let mut value_bytes = [0u8; 32];
@@ -299,7 +305,7 @@ impl Database {
         .fetch_one(tx.as_mut())
         .await?;
 
-        sqlx::query(
+        let res = sqlx::query(
             r#"
             INSERT INTO transactions (id, tx_to, data, value, gas_limit, priority, relayer_id, nonce, blobs)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -315,11 +321,22 @@ impl Database {
         .bind(nonce)
         .bind(blobs)
         .execute(tx.as_mut())
-        .await?;
+        .await;
+
+        if let Err(ref err) = res {
+            if let sqlx::Error::Database(err) = err
+            {
+                if err.constraint() == Some("transactions_pkey") {
+                    return Ok(CreateResult::CONFLICT);
+                }
+            }
+        }
+
+        res?;
 
         tx.commit().await?;
 
-        Ok(())
+        Ok(CreateResult::SUCCESS)
     }
 
     #[instrument(skip(self), level = "debug")]
