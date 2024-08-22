@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ethers::types::{Address, H256, U256};
-use poem::http::StatusCode;
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::types::{BigDecimal, Json};
 use sqlx::{Pool, Postgres, Row};
@@ -31,7 +30,7 @@ pub struct Database {
 
 pub enum CreateResult {
     SUCCESS,
-    CONFLICT
+    CONFLICT,
 }
 
 impl Database {
@@ -323,12 +322,9 @@ impl Database {
         .execute(tx.as_mut())
         .await;
 
-        if let Err(ref err) = res {
-            if let sqlx::Error::Database(err) = err
-            {
-                if err.constraint() == Some("transactions_pkey") {
-                    return Ok(CreateResult::CONFLICT);
-                }
+        if let Err(sqlx::Error::Database(ref err)) = res {
+            if err.constraint() == Some("transactions_pkey") {
+                return Ok(CreateResult::CONFLICT);
             }
         }
 

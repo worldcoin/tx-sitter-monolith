@@ -265,14 +265,11 @@ impl RelayerApi {
             )
             .await?;
 
-        match res {
-            CreateResult::CONFLICT => {
-                return Err(poem::error::Error::from_string(
-                    "Transaction with same id already exists.".to_string(),
-                    StatusCode::CONFLICT,
-                ));
-            }
-            _ => {}
+        if let CreateResult::CONFLICT = res {
+            return Err(poem::error::Error::from_string(
+                "Transaction with same id already exists.".to_string(),
+                StatusCode::CONFLICT,
+            ));
         }
 
         tracing::info!(tx_id, "Transaction created");
