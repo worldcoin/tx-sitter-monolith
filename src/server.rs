@@ -17,6 +17,7 @@ use url::Url;
 
 use crate::api_key::ApiKey;
 use crate::app::App;
+use crate::db::CreateResult;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
@@ -250,7 +251,8 @@ impl RelayerApi {
             ));
         }
 
-        app.db
+        let res = app
+            .db
             .create_transaction(
                 &tx_id,
                 req.to.0,
@@ -262,6 +264,13 @@ impl RelayerApi {
                 api_token.relayer_id(),
             )
             .await?;
+
+        if let CreateResult::CONFLICT = res {
+            return Err(poem::error::Error::from_string(
+                "Transaction with same id already exists.".to_string(),
+                StatusCode::CONFLICT,
+            ));
+        }
 
         tracing::info!(tx_id, "Transaction created");
 

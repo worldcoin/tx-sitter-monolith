@@ -83,7 +83,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
 
     // TODO: Fix checking errors by string
     assert_eq!(
-        result.as_ref().err().and_then(|e| e.tx_sitter()),
+        result.as_ref().err().and_then(|e| e.tx_sitter_message()),
         Some("Relayer queue is full"),
         "Result {:?} should be too many transactions",
         result

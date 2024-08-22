@@ -28,6 +28,11 @@ pub struct Database {
     pub pool: Pool<Postgres>,
 }
 
+pub enum CreateResult {
+    SUCCESS,
+    CONFLICT,
+}
+
 impl Database {
     pub async fn new(config: &DatabaseConfig) -> eyre::Result<Self> {
         let connection_string = config.to_connection_string();
@@ -277,7 +282,7 @@ impl Database {
         priority: TransactionPriority,
         blobs: Option<Vec<Vec<u8>>>,
         relayer_id: &str,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<CreateResult> {
         let mut tx = self.pool.begin().await?;
 
         let mut value_bytes = [0u8; 32];
@@ -299,7 +304,7 @@ impl Database {
         .fetch_one(tx.as_mut())
         .await?;
 
-        sqlx::query(
+        let res = sqlx::query(
             r#"
             INSERT INTO transactions (id, tx_to, data, value, gas_limit, priority, relayer_id, nonce, blobs)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -315,11 +320,19 @@ impl Database {
         .bind(nonce)
         .bind(blobs)
         .execute(tx.as_mut())
-        .await?;
+        .await;
+
+        if let Err(sqlx::Error::Database(ref err)) = res {
+            if err.constraint() == Some("transactions_pkey") {
+                return Ok(CreateResult::CONFLICT);
+            }
+        }
+
+        res?;
 
         tx.commit().await?;
 
-        Ok(())
+        Ok(CreateResult::SUCCESS)
     }
 
     #[instrument(skip(self), level = "debug")]
