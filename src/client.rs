@@ -214,7 +214,7 @@ impl TxSitterClient {
 }
 
 impl ClientError {
-    pub fn tx_sitter_messager(&self) -> Option<&str> {
+    pub fn tx_sitter_message(&self) -> Option<&str> {
         match self {
             Self::TxSitter(_, s) => Some(s),
             _ => None,
