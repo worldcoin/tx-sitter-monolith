@@ -12,6 +12,7 @@ use tracing::instrument;
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
 use crate::types::wrappers::h256::H256Wrapper;
+use crate::types::wrappers::hex_u256::HexU256;
 use crate::types::{
     NetworkInfo, RelayerInfo, RelayerUpdate, TransactionPriority, TxStatus,
 };
@@ -269,6 +270,30 @@ impl Database {
         .await?;
 
         Ok(tx_count as usize)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_relayer_pending_txs_gas_limit_sum(
+        &self,
+        relayer_id: &str,
+    ) -> eyre::Result<U256> {
+        let gas_limits: Vec<(HexU256,)> = sqlx::query_as(
+            r#"
+            SELECT t.gas_limit
+            FROM transactions t
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE t.relayer_id = $1
+            AND (s.tx_id IS NULL OR s.status = $2)
+            "#,
+        )
+        .bind(relayer_id)
+        .bind(TxStatus::Pending)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(gas_limits
+            .into_iter()
+            .fold(U256::zero(), |acc, (v,)| acc + v.0))
     }
 
     #[instrument(skip(self), level = "debug")]

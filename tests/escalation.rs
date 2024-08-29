@@ -3,7 +3,7 @@ mod common;
 use crate::common::prelude::*;
 
 const ESCALATION_INTERVAL: Duration = Duration::from_secs(2);
-const ANVIL_BLOCK_TIME: u64 = 6;
+const ANVIL_BLOCK_TIME: u64 = 10;
 
 #[tokio::test]
 async fn escalation() -> eyre::Result<()> {

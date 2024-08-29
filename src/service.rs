@@ -82,6 +82,18 @@ impl Service {
 
         Ok(())
     }
+
+    pub async fn is_estimates_ready_for_chain(&self, chain_id: u64) -> bool {
+        let res = self
+            ._app
+            .db
+            .get_latest_block_fees_by_chain_id(chain_id)
+            .await;
+        match res {
+            Ok(res) => res.is_some(),
+            Err(_) => false,
+        }
+    }
 }
 
 async fn initialize_predefined_values(
