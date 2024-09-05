@@ -108,15 +108,14 @@ pub async fn backfill_to_block(
     rpc: &Provider<Http>,
     latest_block: Block<H256>,
 ) -> eyre::Result<()> {
-    // Get the latest block from the db
-    let Some(latest_db_block_number) =
+    let next_block_number: u64 = if let Some(latest_db_block_number) =
         app.db.get_latest_block_number(chain_id).await?
-    else {
+    {
+        latest_db_block_number + 1
+    } else {
         tracing::info!(chain_id, "No latest block");
-        return Ok(());
+        0
     };
-
-    let next_block_number: u64 = latest_db_block_number + 1;
 
     // Get the first block from the stream and backfill any missing blocks
     let latest_block_number = latest_block

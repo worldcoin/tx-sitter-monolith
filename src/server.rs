@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use ethers::middleware::Middleware;
+use ethers::providers::{Http, Provider};
 use ethers::signers::Signer;
 use eyre::ContextCompat;
 use poem::http::StatusCode;
@@ -249,6 +251,38 @@ impl RelayerApi {
                 "Relayer queue is full".to_string(),
                 StatusCode::TOO_MANY_REQUESTS,
             ));
+        }
+
+        let relayer_queued_tx_gas_limit_sum = app
+            .db
+            .get_relayer_pending_txs_gas_limit_sum(api_token.relayer_id())
+            .await?;
+
+        let block_fees = app
+            .db
+            .get_latest_block_fees_by_chain_id(relayer.chain_id)
+            .await?;
+        if let Some(block_fees) = block_fees {
+            let gas_limit = relayer_queued_tx_gas_limit_sum + req.gas_limit.0;
+            let estimated_transactions_cost = block_fees.gas_price * gas_limit;
+
+            // TODO: Cache?
+            let http_provider: Provider<Http> =
+                app.http_provider(relayer.chain_id).await?;
+
+            let balance = http_provider
+                .get_balance(relayer.address.0, None)
+                .await
+                .map_err(|err| {
+                    eyre::eyre!("Error checking balance: {}", err)
+                })?;
+
+            if balance < estimated_transactions_cost {
+                return Err(poem::error::Error::from_string(
+                    "Relayer funds are insufficient for transaction to be mined.".to_string(),
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                ));
+            }
         }
 
         let res = app

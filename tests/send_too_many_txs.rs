@@ -29,6 +29,28 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         })
         .await?;
 
+    let provider = setup_provider(anvil.endpoint()).await?;
+    let init_value: U256 = parse_units("1", "ether")?.into();
+
+    // Send some funds to created relayer
+    client
+        .send_tx(
+            &api_key,
+            &SendTxRequest {
+                to: secondary_relayer_address.clone(),
+                value: init_value.into(),
+                data: None,
+                gas_limit: U256::from(21_000).into(),
+                priority: TransactionPriority::Regular,
+                tx_id: None,
+                blobs: None,
+            },
+        )
+        .await?;
+
+    tracing::info!("Waiting for secondary relayer initial balance");
+    await_balance(&provider, init_value, secondary_relayer_address.0).await?;
+
     let CreateApiKeyResponse {
         api_key: secondary_api_key,
     } = client.create_relayer_api_key(&secondary_relayer_id).await?;
@@ -41,8 +63,6 @@ async fn send_too_many_txs() -> eyre::Result<()> {
             RelayerUpdate::default().with_max_queued_txs(MAX_QUEUED_TXS as u64),
         )
         .await?;
-
-    let provider = setup_provider(anvil.endpoint()).await?;
 
     // Send a transaction
     let value: U256 = parse_units("0.01", "ether")?.into();
