@@ -50,7 +50,7 @@ impl Service {
         initialize_predefined_values(&app).await?;
 
         Ok(Self {
-            app: app,
+            app,
             local_addr,
             server_handle,
         })
