@@ -95,18 +95,18 @@ impl ServiceBuilder {
             TxSitterClient::new(format!("http://{}", service.local_addr()));
 
         // Awaits for estimates to be ready
-        let mut is_estimates_ready = false;
+        let mut are_estimates_ready = false;
         for _ in 0..30 {
             if service
-                .is_estimates_ready_for_chain(DEFAULT_ANVIL_CHAIN_ID)
+                .are_estimates_ready_for_chain(DEFAULT_ANVIL_CHAIN_ID)
                 .await
             {
-                is_estimates_ready = true;
+                are_estimates_ready = true;
                 break;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        if !is_estimates_ready {
+        if !are_estimates_ready {
             eyre::bail!("Estimates were not ready!");
         }
 

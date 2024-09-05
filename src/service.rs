@@ -11,7 +11,7 @@ use crate::task_runner::TaskRunner;
 use crate::tasks;
 
 pub struct Service {
-    _app: Arc<App>,
+    app: Arc<App>,
     local_addr: SocketAddr,
     server_handle: JoinHandle<eyre::Result<()>>,
 }
@@ -50,7 +50,7 @@ impl Service {
         initialize_predefined_values(&app).await?;
 
         Ok(Self {
-            _app: app,
+            app: app,
             local_addr,
             server_handle,
         })
@@ -83,9 +83,9 @@ impl Service {
         Ok(())
     }
 
-    pub async fn is_estimates_ready_for_chain(&self, chain_id: u64) -> bool {
+    pub async fn are_estimates_ready_for_chain(&self, chain_id: u64) -> bool {
         let res = self
-            ._app
+            .app
             .db
             .get_latest_block_fees_by_chain_id(chain_id)
             .await;
