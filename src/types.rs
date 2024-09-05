@@ -168,8 +168,9 @@ pub struct SendTxRequest {
     #[oai(default)]
     pub tx_id: Option<String>,
     // TODO: poem_openapi thinks this is a nested array of numbers
-    #[serde(default, with = "crate::serde_utils::base64_binary")]
     #[oai(default)]
+    // #[serde(default, with = "crate::serde_utils::base64_binary")]
+    #[serde(default)]
     pub blobs: Option<Vec<Vec<u8>>>,
 }
 
@@ -358,7 +359,9 @@ mod tests {
               "priority": "regular",
               "txId": "tx_id",
               "blobs": [
-                "AA=="
+                [
+                  0
+                ]
               ]
             }
         "#};

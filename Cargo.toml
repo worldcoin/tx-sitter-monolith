@@ -26,6 +26,20 @@ postgres-docker-utils = { path = "crates/postgres-docker-utils" }
 telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "e0891328b29d9f85df037633feccca2f74a291a6" }
 
 ## External
+alloy = { git = "https://github.com/alloy-rs/alloy", rev = "3f6c744", features = [
+    "consensus",
+    "eips",
+    "network",
+    "node-bindings",
+    "providers",
+    "provider-ws",
+    "rpc-types-eth",
+    "kzg",
+    "signer-wallet",
+    "signer-aws",
+    "reqwest",
+    "transport-http",
+] }
 async-trait = "0.1.74"
 base64 = "0.21.5"
 bigdecimal = "0.4.2"
@@ -85,6 +99,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 tracing-error = "0.2.0"
 url = "2.4.1"
 uuid = { version = "0.8", features = ["v4"] }
+k256 = "0.13.3"
 version = "3.0.0"
 regex = "1.10.4"
 

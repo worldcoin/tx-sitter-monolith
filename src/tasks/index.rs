@@ -1,14 +1,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use alloy::eips::BlockNumberOrTag;
+use alloy::providers::Provider as AlloyProvider;
 use chrono::{DateTime, Utc};
 use ethers::providers::{Http, Middleware, Provider};
-use ethers::types::{Block, BlockNumber, H256};
+use ethers::types::{Block, BlockNumber, H256, U256};
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
-use crate::app::App;
+use crate::app::{AlloyHttpProvider, App};
 use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
@@ -151,7 +153,7 @@ pub async fn backfill_to_block(
 }
 
 pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
-    let rpc = app.http_provider(chain_id).await?;
+    let rpc = app.alloy_http_provider(chain_id).await?;
 
     loop {
         let latest_block_number = app
@@ -184,13 +186,13 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
                 latest_block_number,
                 chain_id,
                 &fee_estimates,
-                gas_price,
+                U256::from(gas_price),
             )
             .await?;
 
         let labels = [("chain_id", chain_id.to_string())];
         metrics::gauge!("gas_price", &labels)
-            .set(gas_price.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR);
+            .set(gas_price as f64 * GAS_PRICE_FOR_METRICS_FACTOR);
         metrics::gauge!("base_fee_per_gas", &labels).set(
             fee_estimates.base_fee_per_gas.as_u64() as f64
                 * GAS_PRICE_FOR_METRICS_FACTOR,
@@ -265,13 +267,17 @@ async fn update_relayer_nonce(
 }
 
 pub async fn get_block_fee_estimates(
-    rpc: &Provider<Http>,
-    block_id: impl Into<BlockNumber>,
+    rpc: &AlloyHttpProvider,
+    block_id: impl Into<BlockNumberOrTag>,
 ) -> eyre::Result<FeesEstimate> {
     let block_id = block_id.into();
 
     let fee_history = rpc
-        .fee_history(BLOCK_FEE_HISTORY_SIZE, block_id, &FEE_PERCENTILES)
+        .get_fee_history(
+            BLOCK_FEE_HISTORY_SIZE.try_into()?,
+            block_id,
+            &FEE_PERCENTILES,
+        )
         .await?;
 
     let fee_estimates = estimate_percentile_fees(&fee_history)?;
