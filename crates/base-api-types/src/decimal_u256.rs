@@ -4,8 +4,6 @@ use ethers::types::U256;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
 use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
-use sqlx::database::{HasArguments, HasValueRef};
-use sqlx::Database;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DecimalU256(pub U256);
@@ -33,51 +31,6 @@ impl<'de> Deserialize<'de> for DecimalU256 {
     }
 }
 
-impl<'r, DB> sqlx::Decode<'r, DB> for DecimalU256
-where
-    DB: Database,
-    [u8; 32]: sqlx::Decode<'r, DB>,
-{
-    fn decode(
-        value: <DB as HasValueRef<'r>>::ValueRef,
-    ) -> Result<Self, sqlx::error::BoxDynError> {
-        let bytes = <[u8; 32] as sqlx::Decode<DB>>::decode(value)?;
-
-        let value = U256::from_big_endian(&bytes);
-
-        Ok(Self(value))
-    }
-}
-
-impl<DB: Database> sqlx::Type<DB> for DecimalU256
-where
-    [u8; 32]: sqlx::Type<DB>,
-{
-    fn type_info() -> DB::TypeInfo {
-        <[u8; 32] as sqlx::Type<DB>>::type_info()
-    }
-
-    fn compatible(ty: &DB::TypeInfo) -> bool {
-        *ty == Self::type_info()
-    }
-}
-
-impl<'q, DB> sqlx::Encode<'q, DB> for DecimalU256
-where
-    DB: Database,
-    [u8; 32]: sqlx::Encode<'q, DB>,
-{
-    fn encode_by_ref(
-        &self,
-        buf: &mut <DB as HasArguments<'q>>::ArgumentBuffer,
-    ) -> sqlx::encode::IsNull {
-        let mut bytes = [0u8; 32];
-        self.0.to_big_endian(&mut bytes);
-
-        <[u8; 32] as sqlx::Encode<DB>>::encode_by_ref(&bytes, buf)
-    }
-}
-
 impl From<U256> for DecimalU256 {
     fn from(value: U256) -> Self {
         Self(value)
@@ -91,7 +44,7 @@ impl poem_openapi::types::Type for DecimalU256 {
 
     type RawElementValueType = Self;
 
-    fn name() -> std::borrow::Cow<'static, str> {
+    fn name() -> Cow<'static, str> {
         "string(decimal-u256)".into()
     }
 

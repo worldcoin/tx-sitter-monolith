@@ -11,13 +11,13 @@ use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::DatabaseConfig;
-use crate::types::wrappers::h256::H256Wrapper;
-use crate::types::wrappers::hex_u256::HexU256;
-use crate::types::{
-    NetworkInfo, RelayerInfo, RelayerUpdate, TransactionPriority, TxStatus,
-};
+use crate::db::data::{NetworkInfo, RelayerInfo};
+use crate::db::wrappers::h256::H256Wrapper;
+use crate::db::wrappers::hex_u256::HexU256Wrapper;
+use crate::types::{RelayerUpdateRequest, TransactionPriority, TxStatus};
 
 pub mod data;
+pub mod wrappers;
 
 use self::data::{BlockFees, NetworkStats, ReadTxData, RpcKind};
 pub use self::data::{TxForEscalation, UnsentTx};
@@ -84,11 +84,11 @@ impl Database {
     pub async fn update_relayer(
         &self,
         id: &str,
-        update: &RelayerUpdate,
+        update: &RelayerUpdateRequest,
     ) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        let RelayerUpdate {
+        let RelayerUpdateRequest {
             relayer_name,
             max_inflight_txs,
             max_queued_txs,
@@ -277,7 +277,7 @@ impl Database {
         &self,
         relayer_id: &str,
     ) -> eyre::Result<U256> {
-        let gas_limits: Vec<(HexU256,)> = sqlx::query_as(
+        let gas_limits: Vec<(HexU256Wrapper,)> = sqlx::query_as(
             r#"
             SELECT t.gas_limit
             FROM transactions t
@@ -1341,7 +1341,8 @@ mod tests {
     use postgres_docker_utils::DockerContainerGuard;
 
     use super::*;
-    use crate::types::RelayerGasPriceLimit;
+    use crate::db::data::RelayerGasPriceLimit;
+    use crate::types::{RelayerGasPriceLimitResponse, RelayerUpdateRequest};
 
     async fn setup_db() -> eyre::Result<(Database, DockerContainerGuard)> {
         let db_container = postgres_docker_utils::setup().await?;
@@ -1489,11 +1490,11 @@ mod tests {
 
         db.update_relayer(
             relayer_id,
-            &RelayerUpdate {
+            &RelayerUpdateRequest {
                 relayer_name: None,
                 max_inflight_txs: Some(10),
                 max_queued_txs: Some(20),
-                gas_price_limits: Some(vec![RelayerGasPriceLimit {
+                gas_price_limits: Some(vec![RelayerGasPriceLimitResponse {
                     chain_id: 1,
                     value: U256::from(10_123u64).into(),
                 }]),

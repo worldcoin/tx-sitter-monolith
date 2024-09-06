@@ -12,7 +12,7 @@ use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
-use crate::types::RelayerInfo;
+use crate::db::data::RelayerInfo;
 
 const BLOCK_FEE_HISTORY_SIZE: usize = 10;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];

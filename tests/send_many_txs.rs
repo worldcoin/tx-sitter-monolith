@@ -1,5 +1,8 @@
 mod common;
 
+use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
+use tx_sitter_client::apis::relayer_v1_api::CreateTransactionParams;
+
 use crate::common::prelude::*;
 
 #[tokio::test]
@@ -13,7 +16,13 @@ async fn send_many_txs() -> eyre::Result<()> {
         ServiceBuilder::default().build(&anvil, &db_url).await?;
 
     let CreateApiKeyResponse { api_key } =
-        client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
+        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
+            &client,
+            RelayerCreateApiKeyParams {
+                relayer_id: DEFAULT_RELAYER_ID.to_string(),
+            },
+        )
+        .await?;
 
     let provider = setup_provider(anvil.endpoint()).await?;
 
@@ -26,17 +35,19 @@ async fn send_many_txs() -> eyre::Result<()> {
     for _ in 0..num_transfers {
         let client = &client;
         tasks.push(async {
-            client
-                .send_tx(
-                    &api_key,
-                    &SendTxRequest {
+            tx_sitter_client::apis::relayer_v1_api::create_transaction(
+                client,
+                CreateTransactionParams {
+                    api_token: api_key.clone(),
+                    send_tx_request: SendTxRequest {
                         to: ARBITRARY_ADDRESS.into(),
                         value: value.into(),
                         gas_limit: U256::from(21_000).into(),
                         ..Default::default()
                     },
-                )
-                .await?;
+                },
+            )
+            .await?;
 
             Ok(())
         });

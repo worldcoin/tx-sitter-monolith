@@ -2,7 +2,6 @@ pub mod api_key;
 pub mod app;
 pub mod aws;
 pub mod broadcast_utils;
-pub mod client;
 pub mod config;
 pub mod db;
 pub mod keys;

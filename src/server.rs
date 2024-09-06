@@ -12,7 +12,7 @@ use poem::web::{Data, LocalAddr};
 use poem::{EndpointExt, Result, Route};
 use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::Json;
-use poem_openapi::{ApiResponse, OpenApi, OpenApiService};
+use poem_openapi::{ApiResponse, OpenApi, OpenApiService, Tags};
 use security::BasicAuth;
 use serde_json::Value;
 use url::Url;
@@ -23,20 +23,32 @@ use crate::db::CreateResult;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
-    CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
-    GetTxResponse, NetworkInfo, NewNetworkInfo, RelayerInfo, RelayerUpdate,
-    RpcRequest, SendTxRequest, SendTxResponse, TxStatus,
+    CreateApiKeyResponse, CreateNetworkRequest, CreateRelayerRequest,
+    CreateRelayerResponse, GetTxResponse, NetworkResponse, RelayerResponse,
+    RelayerUpdateRequest, RpcRequest, SendTxRequest, SendTxResponse, TxStatus,
 };
 
 mod security;
 mod trace_middleware;
+
+#[derive(Tags)]
+enum OpenAPITags {
+    AdminV1,
+    RelayerV1,
+    Service,
+}
 
 struct AdminApi;
 
 #[OpenApi(prefix_path = "/1/admin/")]
 impl AdminApi {
     /// Create Relayer
-    #[oai(path = "/relayer", method = "post")]
+    #[oai(
+        path = "/relayer",
+        method = "post",
+        operation_id = "create_relayer",
+        tag = "OpenAPITags::AdminV1"
+    )]
     async fn create_relayer(
         &self,
         basic_auth: BasicAuth,
@@ -69,33 +81,43 @@ impl AdminApi {
     }
 
     /// Get Relayers
-    #[oai(path = "/relayers", method = "get")]
+    #[oai(
+        path = "/relayers",
+        method = "get",
+        operation_id = "get_relayers",
+        tag = "OpenAPITags::AdminV1"
+    )]
     async fn get_relayers(
         &self,
         basic_auth: BasicAuth,
         Data(app): Data<&Arc<App>>,
-    ) -> Result<Json<Vec<RelayerInfo>>> {
+    ) -> Result<Json<Vec<RelayerResponse>>> {
         basic_auth.validate(app).await?;
 
         let relayer_info = app.db.get_relayers().await?;
 
-        Ok(Json(relayer_info))
+        Ok(Json(relayer_info.into_iter().map(|v| v.into()).collect()))
     }
 
     /// Get Relayer
-    #[oai(path = "/relayer/:relayer_id", method = "get")]
+    #[oai(
+        path = "/relayer/:relayer_id",
+        method = "get",
+        operation_id = "get_relayer",
+        tag = "OpenAPITags::AdminV1"
+    )]
     async fn get_relayer(
         &self,
         basic_auth: BasicAuth,
         Data(app): Data<&Arc<App>>,
         Path(relayer_id): Path<String>,
-    ) -> Result<Json<RelayerInfo>> {
+    ) -> Result<Json<RelayerResponse>> {
         basic_auth.validate(app).await?;
 
         let relayer_info = app.db.get_relayer(&relayer_id).await?;
 
         match relayer_info {
-            Some(relayer_info) => Ok(Json(relayer_info)),
+            Some(relayer_info) => Ok(Json(relayer_info.into())),
             None => Err(poem::error::Error::from_string(
                 "Relayer not found".to_string(),
                 StatusCode::NOT_FOUND,
@@ -104,13 +126,18 @@ impl AdminApi {
     }
 
     /// Update Relayer
-    #[oai(path = "/relayer/:relayer_id", method = "post")]
+    #[oai(
+        path = "/relayer/:relayer_id",
+        method = "post",
+        operation_id = "update_relayer",
+        tag = "OpenAPITags::AdminV1"
+    )]
     async fn update_relayer(
         &self,
         basic_auth: BasicAuth,
         Data(app): Data<&Arc<App>>,
         Path(relayer_id): Path<String>,
-        Json(req): Json<RelayerUpdate>,
+        Json(req): Json<RelayerUpdateRequest>,
     ) -> Result<()> {
         basic_auth.validate(app).await?;
 
@@ -122,7 +149,12 @@ impl AdminApi {
     /// Reset Relayer transactions
     ///
     /// Purges unsent transactions, useful for unstucking the relayer
-    #[oai(path = "/relayer/:relayer_id/reset", method = "post")]
+    #[oai(
+        path = "/relayer/:relayer_id/reset",
+        method = "post",
+        operation_id = "reset_relayer",
+        tag = "OpenAPITags::AdminV1"
+    )]
     async fn purge_unsent_txs(
         &self,
         basic_auth: BasicAuth,
@@ -137,7 +169,12 @@ impl AdminApi {
     }
 
     /// Create Relayer API Key
-    #[oai(path = "/relayer/:relayer_id/key", method = "post")]
+    #[oai(
+        path = "/relayer/:relayer_id/key",
+        method = "post",
+        operation_id = "relayer_create_api_key",
+        tag = "OpenAPITags::AdminV1"
+    )]
     async fn create_relayer_api_key(
         &self,
         basic_auth: BasicAuth,
@@ -156,13 +193,18 @@ impl AdminApi {
     }
 
     /// Create Network
-    #[oai(path = "/network/:chain_id", method = "post")]
+    #[oai(
+        path = "/network/:chain_id",
+        method = "post",
+        operation_id = "create_network",
+        tag = "OpenAPITags::AdminV1"
+    )]
     async fn create_network(
         &self,
         basic_auth: BasicAuth,
         Data(app): Data<&Arc<App>>,
         Path(chain_id): Path<u64>,
-        Json(network): Json<NewNetworkInfo>,
+        Json(network): Json<CreateNetworkRequest>,
     ) -> Result<()> {
         basic_auth.validate(app).await?;
 
@@ -192,17 +234,22 @@ impl AdminApi {
     }
 
     /// Get Networks
-    #[oai(path = "/networks", method = "get")]
+    #[oai(
+        path = "/networks",
+        method = "get",
+        operation_id = "get_networks",
+        tag = "OpenAPITags::AdminV1"
+    )]
     async fn list_networks(
         &self,
         basic_auth: BasicAuth,
         Data(app): Data<&Arc<App>>,
-    ) -> Result<Json<Vec<NetworkInfo>>> {
+    ) -> Result<Json<Vec<NetworkResponse>>> {
         basic_auth.validate(app).await?;
 
         let networks = app.db.get_networks().await?;
 
-        Ok(Json(networks))
+        Ok(Json(networks.into_iter().map(|v| v.into()).collect()))
     }
 }
 
@@ -211,7 +258,12 @@ struct RelayerApi;
 #[OpenApi(prefix_path = "/1/api/")]
 impl RelayerApi {
     /// Send Transaction
-    #[oai(path = "/:api_token/tx", method = "post")]
+    #[oai(
+        path = "/:api_token/tx",
+        method = "post",
+        operation_id = "create_transaction",
+        tag = "OpenAPITags::RelayerV1"
+    )]
     async fn send_tx(
         &self,
         Data(app): Data<&Arc<App>>,
@@ -312,7 +364,12 @@ impl RelayerApi {
     }
 
     /// Get Transaction
-    #[oai(path = "/:api_token/tx/:tx_id", method = "get")]
+    #[oai(
+        path = "/:api_token/tx/:tx_id",
+        method = "get",
+        operation_id = "get_transaction",
+        tag = "OpenAPITags::RelayerV1"
+    )]
     async fn get_tx(
         &self,
         Data(app): Data<&Arc<App>>,
@@ -336,7 +393,7 @@ impl RelayerApi {
 
         let get_tx_response = GetTxResponse {
             tx_id: tx.tx_id,
-            to: tx.to,
+            to: tx.to.into(),
             data: if tx.data.is_empty() {
                 None
             } else {
@@ -345,7 +402,7 @@ impl RelayerApi {
             value: tx.value.into(),
             gas_limit: tx.gas_limit.into(),
             nonce: tx.nonce,
-            tx_hash: tx.tx_hash,
+            tx_hash: tx.tx_hash.map(|v| v.into()),
             status: tx.status,
         };
 
@@ -353,7 +410,12 @@ impl RelayerApi {
     }
 
     /// Get Transactions
-    #[oai(path = "/:api_token/txs", method = "get")]
+    #[oai(
+        path = "/:api_token/txs",
+        method = "get",
+        operation_id = "get_transactions",
+        tag = "OpenAPITags::RelayerV1"
+    )]
     async fn get_txs(
         &self,
         Data(app): Data<&Arc<App>>,
@@ -384,7 +446,7 @@ impl RelayerApi {
             .into_iter()
             .map(|tx| GetTxResponse {
                 tx_id: tx.tx_id,
-                to: tx.to,
+                to: tx.to.into(),
                 data: if tx.data.is_empty() {
                     None
                 } else {
@@ -393,7 +455,7 @@ impl RelayerApi {
                 value: tx.value.into(),
                 gas_limit: tx.gas_limit.into(),
                 nonce: tx.nonce,
-                tx_hash: tx.tx_hash,
+                tx_hash: tx.tx_hash.map(|v| v.into()),
                 status: tx.status,
             })
             .collect();
@@ -402,7 +464,12 @@ impl RelayerApi {
     }
 
     /// Relayer RPC
-    #[oai(path = "/:api_token/rpc", method = "post")]
+    #[oai(
+        path = "/:api_token/rpc",
+        method = "post",
+        operation_id = "call_rpc",
+        tag = "OpenAPITags::RelayerV1"
+    )]
     async fn relayer_rpc(
         &self,
         Data(app): Data<&Arc<App>>,
@@ -453,7 +520,12 @@ enum ServiceResponse {
 #[OpenApi]
 impl ServiceApi {
     /// Health
-    #[oai(path = "/health", method = "get")]
+    #[oai(
+        path = "/health",
+        method = "get",
+        operation_id = "health",
+        tag = "OpenAPITags::Service"
+    )]
     async fn health(&self) -> ServiceResponse {
         ServiceResponse::Healthy
     }

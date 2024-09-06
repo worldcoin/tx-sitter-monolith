@@ -3,7 +3,7 @@ use eyre::ContextCompat;
 
 use self::gas_estimation::FeesEstimate;
 use crate::app::App;
-use crate::types::RelayerInfo;
+use crate::db::data::RelayerInfo;
 
 pub mod gas_estimation;
 

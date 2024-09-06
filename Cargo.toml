@@ -21,6 +21,8 @@ aws-types = "1.2.1"
 
 # Internal
 postgres-docker-utils = { path = "crates/postgres-docker-utils" }
+base-api-types = { path = "crates/base-api-types" }
+tx-sitter-client = { path = "crates/tx-sitter-client" }
 
 # Company
 telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "e0891328b29d9f85df037633feccca2f74a291a6" }

@@ -11,8 +11,8 @@ use futures::StreamExt;
 
 use crate::app::App;
 use crate::broadcast_utils::should_send_relayer_transactions;
+use crate::db::data::RelayerInfo;
 use crate::db::TxForEscalation;
-use crate::types::RelayerInfo;
 
 pub async fn escalate_txs_task(app: Arc<App>) -> eyre::Result<()> {
     loop {

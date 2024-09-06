@@ -32,12 +32,8 @@ pub mod prelude {
     pub use ethers::utils::parse_units;
     pub use futures::stream::FuturesUnordered;
     pub use futures::StreamExt;
-    pub use tx_sitter::api_key::ApiKey;
-    pub use tx_sitter::client::TxSitterClient;
-    pub use tx_sitter::types::{
-        CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
-        SendTxRequest,
-    };
+    pub use tx_sitter_client::apis::configuration::Configuration;
+    pub use tx_sitter_client::models::*;
     pub use url::Url;
 
     pub use super::*;
