@@ -12,46 +12,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::models;
 
-///
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-    Serialize,
-    Deserialize,
-)]
-pub enum TransactionPriority {
-    #[serde(rename = "slowest")]
-    Slowest,
-    #[serde(rename = "slow")]
-    Slow,
-    #[serde(rename = "regular")]
-    Regular,
-    #[serde(rename = "fast")]
-    Fast,
-    #[serde(rename = "fastest")]
-    Fastest,
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RelayerUpdateRequest {
+    #[serde(rename = "relayerName", skip_serializing_if = "Option::is_none")]
+    pub relayer_name: Option<String>,
+    #[serde(
+        rename = "maxInflightTxs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_inflight_txs: Option<i32>,
+    #[serde(rename = "maxQueuedTxs", skip_serializing_if = "Option::is_none")]
+    pub max_queued_txs: Option<i32>,
+    #[serde(
+        rename = "gasPriceLimits",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gas_price_limits: Option<Vec<models::RelayerGasPriceLimitResponse>>,
+    #[serde(rename = "enabled", skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
-impl std::fmt::Display for TransactionPriority {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Slowest => write!(f, "slowest"),
-            Self::Slow => write!(f, "slow"),
-            Self::Regular => write!(f, "regular"),
-            Self::Fast => write!(f, "fast"),
-            Self::Fastest => write!(f, "fastest"),
+impl RelayerUpdateRequest {
+    pub fn new() -> RelayerUpdateRequest {
+        RelayerUpdateRequest {
+            relayer_name: None,
+            max_inflight_txs: None,
+            max_queued_txs: None,
+            gas_price_limits: None,
+            enabled: None,
         }
-    }
-}
-
-impl Default for TransactionPriority {
-    fn default() -> TransactionPriority {
-        Self::Slowest
     }
 }

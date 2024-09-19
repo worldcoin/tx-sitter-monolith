@@ -1,6 +1,6 @@
 # \AdminV1Api
 
-All URIs are relative to *http://localhost:3000*
+All URIs are relative to *http://localhost:8000*
 
 Method | HTTP request | Description
 ------------- | ------------- | -------------
@@ -17,7 +17,7 @@ Method | HTTP request | Description
 
 ## create_network
 
-> create_network(chain_id, new_network_info)
+> create_network(chain_id, create_network_request)
 Create Network
 
 ### Parameters
@@ -26,7 +26,7 @@ Create Network
 Name | Type | Description  | Required | Notes
 ------------- | ------------- | ------------- | ------------- | -------------
 **chain_id** | **i32** |  | [required] |
-**new_network_info** | [**NewNetworkInfo**](NewNetworkInfo.md) |  | [required] |
+**create_network_request** | [**CreateNetworkRequest**](CreateNetworkRequest.md) |  | [required] |
 
 ### Return type
 
@@ -74,7 +74,7 @@ Name | Type | Description  | Required | Notes
 
 ## get_networks
 
-> Vec<models::NetworkInfo> get_networks()
+> Vec<models::NetworkResponse> get_networks()
 Get Networks
 
 ### Parameters
@@ -83,7 +83,7 @@ This endpoint does not need any parameter.
 
 ### Return type
 
-[**Vec<models::NetworkInfo>**](NetworkInfo.md)
+[**Vec<models::NetworkResponse>**](NetworkResponse.md)
 
 ### Authorization
 
@@ -99,7 +99,7 @@ This endpoint does not need any parameter.
 
 ## get_relayer
 
-> models::RelayerInfo get_relayer(relayer_id)
+> models::RelayerResponse get_relayer(relayer_id)
 Get Relayer
 
 ### Parameters
@@ -111,7 +111,7 @@ Name | Type | Description  | Required | Notes
 
 ### Return type
 
-[**models::RelayerInfo**](RelayerInfo.md)
+[**models::RelayerResponse**](RelayerResponse.md)
 
 ### Authorization
 
@@ -127,7 +127,7 @@ Name | Type | Description  | Required | Notes
 
 ## get_relayers
 
-> Vec<models::RelayerInfo> get_relayers()
+> Vec<models::RelayerResponse> get_relayers()
 Get Relayers
 
 ### Parameters
@@ -136,7 +136,7 @@ This endpoint does not need any parameter.
 
 ### Return type
 
-[**Vec<models::RelayerInfo>**](RelayerInfo.md)
+[**Vec<models::RelayerResponse>**](RelayerResponse.md)
 
 ### Authorization
 
@@ -210,7 +210,7 @@ Name | Type | Description  | Required | Notes
 
 ## update_relayer
 
-> update_relayer(relayer_id, relayer_update)
+> update_relayer(relayer_id, relayer_update_request)
 Update Relayer
 
 ### Parameters
@@ -219,7 +219,7 @@ Update Relayer
 Name | Type | Description  | Required | Notes
 ------------- | ------------- | ------------- | ------------- | -------------
 **relayer_id** | **String** |  | [required] |
-**relayer_update** | [**RelayerUpdate**](RelayerUpdate.md) |  | [required] |
+**relayer_update_request** | [**RelayerUpdateRequest**](RelayerUpdateRequest.md) |  | [required] |
 
 ### Return type
 

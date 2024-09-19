@@ -12,46 +12,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::models;
 
-///
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-    Serialize,
-    Deserialize,
-)]
-pub enum TransactionPriority {
-    #[serde(rename = "slowest")]
-    Slowest,
-    #[serde(rename = "slow")]
-    Slow,
-    #[serde(rename = "regular")]
-    Regular,
-    #[serde(rename = "fast")]
-    Fast,
-    #[serde(rename = "fastest")]
-    Fastest,
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RelayerGasPriceLimitResponse {
+    /// A decimal 256-bit unsigned integer
+    #[serde(rename = "value")]
+    pub value: base_api_types::DecimalU256,
+    #[serde(rename = "chainId")]
+    pub chain_id: i64,
 }
 
-impl std::fmt::Display for TransactionPriority {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Slowest => write!(f, "slowest"),
-            Self::Slow => write!(f, "slow"),
-            Self::Regular => write!(f, "regular"),
-            Self::Fast => write!(f, "fast"),
-            Self::Fastest => write!(f, "fastest"),
-        }
-    }
-}
-
-impl Default for TransactionPriority {
-    fn default() -> TransactionPriority {
-        Self::Slowest
+impl RelayerGasPriceLimitResponse {
+    pub fn new(
+        value: base_api_types::DecimalU256,
+        chain_id: i64,
+    ) -> RelayerGasPriceLimitResponse {
+        RelayerGasPriceLimitResponse { value, chain_id }
     }
 }

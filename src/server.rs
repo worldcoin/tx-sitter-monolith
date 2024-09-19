@@ -547,17 +547,15 @@ impl ServerHandle {
     }
 }
 
-pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
-    let mut api_service = OpenApiService::new(
-        (AdminApi, RelayerApi, ServiceApi),
-        "Tx Sitter",
-        version::version!(),
-    )
-    .description(include_str!("./server/description.md"));
+pub async fn generate_spec_yaml(server_address: Option<&String>) -> String {
+    let api_service = create_api_service(server_address);
 
-    if let Some(server_address) = app.config.server.server_address.as_ref() {
-        api_service = api_service.server(server_address.clone());
-    }
+    api_service.spec_yaml()
+}
+
+pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
+    let api_service =
+        create_api_service(app.config.server.server_address.as_ref());
 
     let router = Route::new()
         .nest("/rapidoc", api_service.rapidoc())
@@ -586,4 +584,21 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
         local_addrs,
         server_handle,
     })
+}
+
+fn create_api_service(
+    server_address: Option<&String>,
+) -> OpenApiService<(AdminApi, RelayerApi, ServiceApi), ()> {
+    let mut api_service = OpenApiService::new(
+        (AdminApi, RelayerApi, ServiceApi),
+        "Tx Sitter",
+        version::version!(),
+    )
+    .description(include_str!("./server/description.md"));
+
+    if let Some(server_address) = server_address {
+        api_service = api_service.server(server_address.clone());
+    }
+
+    api_service
 }

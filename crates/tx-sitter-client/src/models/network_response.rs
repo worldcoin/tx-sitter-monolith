@@ -12,46 +12,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::models;
 
-///
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-    Serialize,
-    Deserialize,
-)]
-pub enum TransactionPriority {
-    #[serde(rename = "slowest")]
-    Slowest,
-    #[serde(rename = "slow")]
-    Slow,
-    #[serde(rename = "regular")]
-    Regular,
-    #[serde(rename = "fast")]
-    Fast,
-    #[serde(rename = "fastest")]
-    Fastest,
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NetworkResponse {
+    #[serde(rename = "chainId")]
+    pub chain_id: i32,
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "httpRpc")]
+    pub http_rpc: String,
+    #[serde(rename = "wsRpc")]
+    pub ws_rpc: String,
 }
 
-impl std::fmt::Display for TransactionPriority {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Slowest => write!(f, "slowest"),
-            Self::Slow => write!(f, "slow"),
-            Self::Regular => write!(f, "regular"),
-            Self::Fast => write!(f, "fast"),
-            Self::Fastest => write!(f, "fastest"),
+impl NetworkResponse {
+    pub fn new(
+        chain_id: i32,
+        name: String,
+        http_rpc: String,
+        ws_rpc: String,
+    ) -> NetworkResponse {
+        NetworkResponse {
+            chain_id,
+            name,
+            http_rpc,
+            ws_rpc,
         }
-    }
-}
-
-impl Default for TransactionPriority {
-    fn default() -> TransactionPriority {
-        Self::Slowest
     }
 }

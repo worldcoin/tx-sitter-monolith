@@ -1,7 +1,7 @@
 /*
  * Tx Sitter
  *
- * A transaction relayer service!  ## Operating a relayer Below is a guide on using this service. Note that septs 1 through 4 require authentication using HTTP Basic auth. Using swagger explorer make sure to click the authorize button and use the correct credentials. Default dev creds are `admin:admin`.  ### 1. Setup a network tx-sitter keeps track of supported networks in its internal database. In order to be able to create any relayers at least one network must be present. To add a network use the `POST /1/admin/networks/:chain_id` endpoint.  To see the list of currently added networks use the `GET /1/admin/networks` endpoint.  ### 2. Create a relayer A relayer is an abstraction layer on top of a private key stored locally (for testing purposes only!) or using a secrets manager (currently only AWS KMS is supported).  To create a relayer use the `POST /1/admin/relayer` endpoint. The data returned will contain a relayer id, make sure to copy it to the clipboard.  ### 3. Create an API key By itself a relayer is not very useful. In order to send transactions one must create an API key. To do that use the `POST /1/admin/relayer/:relayer_id/key` endpoint. **Make sure to copy the API key from the response. It's not possible to recover it!** But it's always possible to create a new one.  ### 4. Use the API key Once an API keys has been created it's possible to use the relayer api to, among other things, send transactions.  You can use the `POST /1/api/:api_token/tx` endpoint to create a transaction.
+ * A transaction relayer service!  ## Operating a relayer Below is a guide on using this service. Note that steps 1 through 4 require authentication using HTTP Basic auth. Using swagger explorer make sure to click the authorize button and use the correct credentials. Default dev creds are `admin:admin`.  ### 1. Setup a network tx-sitter keeps track of supported networks in its internal database. In order to be able to create any relayers at least one network must be present. To add a network use the `POST /1/admin/networks/:chain_id` endpoint.  To see the list of currently added networks use the `GET /1/admin/networks` endpoint.  ### 2. Create a relayer A relayer is an abstraction layer on top of a private key stored locally (for testing purposes only!) or using a secrets manager (currently only AWS KMS is supported).  To create a relayer use the `POST /1/admin/relayer` endpoint. The data returned will contain a relayer id, make sure to copy it to the clipboard.  ### 3. Create an API key By itself a relayer is not very useful. In order to send transactions one must create an API key. To do that use the `POST /1/admin/relayer/:relayer_id/key` endpoint. **Make sure to copy the API key from the response. It's not possible to recover it!** But it's always possible to create a new one.  ### 4. Use the API key Once an API keys has been created it's possible to use the relayer api to, among other things, send transactions.  You can use the `POST /1/api/:api_token/tx` endpoint to create a transaction.
  *
  * The version of the OpenAPI document: 0.1.0
  *
@@ -19,7 +19,7 @@ use crate::models;
 #[derive(Clone, Debug)]
 pub struct CreateNetworkParams {
     pub chain_id: i32,
-    pub new_network_info: models::NewNetworkInfo,
+    pub create_network_request: models::CreateNetworkRequest,
 }
 
 /// struct for passing parameters to the method [`create_relayer`]
@@ -50,7 +50,7 @@ pub struct ResetRelayerParams {
 #[derive(Clone, Debug)]
 pub struct UpdateRelayerParams {
     pub relayer_id: String,
-    pub relayer_update: models::RelayerUpdate,
+    pub relayer_update_request: models::RelayerUpdateRequest,
 }
 
 /// struct for typed errors of method [`create_network`]
@@ -117,7 +117,7 @@ pub async fn create_network(
 
     // unbox the parameters
     let chain_id = params.chain_id;
-    let new_network_info = params.new_network_info;
+    let create_network_request = params.create_network_request;
 
     let local_var_client = &local_var_configuration.client;
 
@@ -139,7 +139,7 @@ pub async fn create_network(
             local_var_auth_conf.1.to_owned(),
         );
     };
-    local_var_req_builder = local_var_req_builder.json(&new_network_info);
+    local_var_req_builder = local_var_req_builder.json(&create_network_request);
 
     let local_var_req = local_var_req_builder.build()?;
     let local_var_resp = local_var_client.execute(local_var_req).await?;
@@ -215,7 +215,7 @@ pub async fn create_relayer(
 
 pub async fn get_networks(
     configuration: &configuration::Configuration,
-) -> Result<Vec<models::NetworkInfo>, Error<GetNetworksError>> {
+) -> Result<Vec<models::NetworkResponse>, Error<GetNetworksError>> {
     let local_var_configuration = configuration;
 
     // unbox the parameters
@@ -263,7 +263,7 @@ pub async fn get_networks(
 pub async fn get_relayer(
     configuration: &configuration::Configuration,
     params: GetRelayerParams,
-) -> Result<models::RelayerInfo, Error<GetRelayerError>> {
+) -> Result<models::RelayerResponse, Error<GetRelayerError>> {
     let local_var_configuration = configuration;
 
     // unbox the parameters
@@ -314,7 +314,7 @@ pub async fn get_relayer(
 
 pub async fn get_relayers(
     configuration: &configuration::Configuration,
-) -> Result<Vec<models::RelayerInfo>, Error<GetRelayersError>> {
+) -> Result<Vec<models::RelayerResponse>, Error<GetRelayersError>> {
     let local_var_configuration = configuration;
 
     // unbox the parameters
@@ -472,7 +472,7 @@ pub async fn update_relayer(
 
     // unbox the parameters
     let relayer_id = params.relayer_id;
-    let relayer_update = params.relayer_update;
+    let relayer_update_request = params.relayer_update_request;
 
     let local_var_client = &local_var_configuration.client;
 
@@ -494,7 +494,7 @@ pub async fn update_relayer(
             local_var_auth_conf.1.to_owned(),
         );
     };
-    local_var_req_builder = local_var_req_builder.json(&relayer_update);
+    local_var_req_builder = local_var_req_builder.json(&relayer_update_request);
 
     let local_var_req = local_var_req_builder.build()?;
     let local_var_resp = local_var_client.execute(local_var_req).await?;

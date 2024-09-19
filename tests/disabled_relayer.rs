@@ -45,7 +45,7 @@ async fn disabled_relayer() -> eyre::Result<()> {
         &client,
         UpdateRelayerParams {
             relayer_id: relayer_id.clone(),
-            relayer_update: RelayerUpdate {
+            relayer_update_request: RelayerUpdateRequest {
                 enabled: Some(false),
                 ..Default::default()
             },

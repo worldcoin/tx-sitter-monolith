@@ -6,7 +6,7 @@
 A transaction relayer service!
 
 ## Operating a relayer
-Below is a guide on using this service. Note that septs 1 through 4 require authentication using HTTP Basic auth. Using swagger explorer make sure to click the authorize button and use the correct credentials. Default dev creds are `admin:admin`.
+Below is a guide on using this service. Note that steps 1 through 4 require authentication using HTTP Basic auth. Using swagger explorer make sure to click the authorize button and use the correct credentials. Default dev creds are `admin:admin`.
 
 ### 1. Setup a network
 tx-sitter keeps track of supported networks in its internal database. In order to be able to create any relayers at least one network must be present. To add a network use the `POST /1/admin/networks/:chain_id` endpoint.
@@ -47,7 +47,7 @@ tx-sitter-client = { path = "./tx-sitter-client" }
 
 ## Documentation for API Endpoints
 
-All URIs are relative to *http://localhost:3000*
+All URIs are relative to *http://localhost:8000*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
@@ -69,15 +69,15 @@ Class | Method | HTTP request | Description
 ## Documentation For Models
 
  - [CreateApiKeyResponse](docs/CreateApiKeyResponse.md)
+ - [CreateNetworkRequest](docs/CreateNetworkRequest.md)
  - [CreateRelayerRequest](docs/CreateRelayerRequest.md)
  - [CreateRelayerResponse](docs/CreateRelayerResponse.md)
  - [GetTxResponse](docs/GetTxResponse.md)
  - [JsonRpcVersion](docs/JsonRpcVersion.md)
- - [NetworkInfo](docs/NetworkInfo.md)
- - [NewNetworkInfo](docs/NewNetworkInfo.md)
- - [RelayerGasPriceLimit](docs/RelayerGasPriceLimit.md)
- - [RelayerInfo](docs/RelayerInfo.md)
- - [RelayerUpdate](docs/RelayerUpdate.md)
+ - [NetworkResponse](docs/NetworkResponse.md)
+ - [RelayerGasPriceLimitResponse](docs/RelayerGasPriceLimitResponse.md)
+ - [RelayerResponse](docs/RelayerResponse.md)
+ - [RelayerUpdateRequest](docs/RelayerUpdateRequest.md)
  - [RpcRequest](docs/RpcRequest.md)
  - [SendTxRequest](docs/SendTxRequest.md)
  - [SendTxResponse](docs/SendTxResponse.md)

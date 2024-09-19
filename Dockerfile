@@ -23,16 +23,22 @@ RUN rustup component add cargo
 
 # TODO: Hacky but it works
 RUN mkdir -p ./src
+RUN mkdir -p ./crates/base-api-types/src
 RUN mkdir -p ./crates/postgres-docker-utils/src
+RUN mkdir -p ./crates/tx-sitter-client/src
 
 # Copy only Cargo.toml for better caching
 COPY .cargo/config.toml .cargo/config.toml
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./Cargo.lock ./Cargo.lock
+COPY ./crates/base-api-types/Cargo.toml ./crates/base-api-types/Cargo.toml
 COPY ./crates/postgres-docker-utils/Cargo.toml ./crates/postgres-docker-utils/Cargo.toml
+COPY ./crates/tx-sitter-client/Cargo.toml ./crates/tx-sitter-client/Cargo.toml
 
 RUN echo "fn main() {}" > ./src/main.rs
+RUN echo "fn main() {}" > ./crates/base-api-types/src/main.rs
 RUN echo "fn main() {}" > ./crates/postgres-docker-utils/src/main.rs
+RUN echo "fn main() {}" > ./crates/tx-sitter-client/src/main.rs
 
 # Prebuild dependencies
 RUN cargo fetch

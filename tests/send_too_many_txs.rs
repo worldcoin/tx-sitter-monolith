@@ -85,7 +85,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         &client,
         UpdateRelayerParams {
             relayer_id: secondary_relayer_id.clone(),
-            relayer_update: RelayerUpdate {
+            relayer_update_request: RelayerUpdateRequest {
                 max_queued_txs: Some(MAX_QUEUED_TXS as i32),
                 ..Default::default()
             },

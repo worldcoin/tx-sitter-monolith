@@ -12,46 +12,59 @@ use serde::{Deserialize, Serialize};
 
 use crate::models;
 
-///
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-    Serialize,
-    Deserialize,
-)]
-pub enum TransactionPriority {
-    #[serde(rename = "slowest")]
-    Slowest,
-    #[serde(rename = "slow")]
-    Slow,
-    #[serde(rename = "regular")]
-    Regular,
-    #[serde(rename = "fast")]
-    Fast,
-    #[serde(rename = "fastest")]
-    Fastest,
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RelayerResponse {
+    #[serde(rename = "id")]
+    pub id: String,
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "chainId")]
+    pub chain_id: i32,
+    #[serde(rename = "keyId")]
+    pub key_id: String,
+    /// Hex encoded ethereum address
+    #[serde(rename = "address")]
+    pub address: base_api_types::Address,
+    #[serde(rename = "nonce")]
+    pub nonce: i32,
+    #[serde(rename = "currentNonce")]
+    pub current_nonce: i32,
+    #[serde(rename = "maxInflightTxs")]
+    pub max_inflight_txs: i32,
+    #[serde(rename = "maxQueuedTxs")]
+    pub max_queued_txs: i32,
+    #[serde(rename = "gasPriceLimits")]
+    pub gas_price_limits: Vec<models::RelayerGasPriceLimitResponse>,
+    #[serde(rename = "enabled")]
+    pub enabled: bool,
 }
 
-impl std::fmt::Display for TransactionPriority {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Slowest => write!(f, "slowest"),
-            Self::Slow => write!(f, "slow"),
-            Self::Regular => write!(f, "regular"),
-            Self::Fast => write!(f, "fast"),
-            Self::Fastest => write!(f, "fastest"),
+impl RelayerResponse {
+    pub fn new(
+        id: String,
+        name: String,
+        chain_id: i32,
+        key_id: String,
+        address: base_api_types::Address,
+        nonce: i32,
+        current_nonce: i32,
+        max_inflight_txs: i32,
+        max_queued_txs: i32,
+        gas_price_limits: Vec<models::RelayerGasPriceLimitResponse>,
+        enabled: bool,
+    ) -> RelayerResponse {
+        RelayerResponse {
+            id,
+            name,
+            chain_id,
+            key_id,
+            address,
+            nonce,
+            current_nonce,
+            max_inflight_txs,
+            max_queued_txs,
+            gas_price_limits,
+            enabled,
         }
-    }
-}
-
-impl Default for TransactionPriority {
-    fn default() -> TransactionPriority {
-        Self::Slowest
     }
 }
