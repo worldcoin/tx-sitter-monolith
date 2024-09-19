@@ -108,20 +108,33 @@ pub async fn backfill_to_block(
     rpc: &Provider<Http>,
     latest_block: Block<H256>,
 ) -> eyre::Result<()> {
-    let next_block_number: u64 = if let Some(latest_db_block_number) =
-        app.db.get_latest_block_number(chain_id).await?
-    {
-        latest_db_block_number + 1
-    } else {
-        tracing::info!(chain_id, "No latest block");
-        0
-    };
-
     // Get the first block from the stream and backfill any missing blocks
     let latest_block_number = latest_block
         .number
         .context("Missing block number")?
         .as_u64();
+
+    let next_block_number: u64 = if let Some(latest_db_block_number) =
+        app.db.get_latest_block_number(chain_id).await?
+    {
+        latest_db_block_number + 1
+    } else {
+        tracing::info!(
+            chain_id,
+            "No latest block in database. Will choose best candidate."
+        );
+
+        // Because we do not store all the blocks (we clean up older blocks) there is no need
+        // to scan ALL the blocks. Especially as this may take a lot of time... We are trying
+        // here to move back in time "enough" to get some estimates later.
+        let jump_back_blocks = 60u64;
+
+        if latest_block_number > jump_back_blocks {
+            latest_block_number - jump_back_blocks
+        } else {
+            0
+        }
+    };
 
     tracing::info!(
         latest_block_number,
