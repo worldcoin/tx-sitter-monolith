@@ -1,15 +1,10 @@
+use base_api_types::{Address, DecimalU256, HexBytes, H256};
 use poem_openapi::{Enum, Object};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::prelude::FromRow;
-use wrappers::address::AddressWrapper;
-use wrappers::decimal_u256::DecimalU256;
-use wrappers::h256::H256Wrapper;
-use wrappers::hex_bytes::HexBytes;
 
 use crate::api_key::ApiKey;
-
-pub mod wrappers;
+use crate::db::data::{NetworkInfo, RelayerGasPriceLimit, RelayerInfo};
 
 #[derive(
     Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type, Enum,
@@ -37,33 +32,49 @@ impl TransactionPriority {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, FromRow, Object)]
+#[derive(Deserialize, Serialize, Debug, Clone, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
-pub struct RelayerInfo {
+pub struct RelayerResponse {
     pub id: String,
     pub name: String,
-    #[sqlx(try_from = "i64")]
     pub chain_id: u64,
     pub key_id: String,
-    pub address: AddressWrapper,
-    #[sqlx(try_from = "i64")]
+    pub address: Address,
     pub nonce: u64,
-    #[sqlx(try_from = "i64")]
     pub current_nonce: u64,
-    #[sqlx(try_from = "i64")]
     pub max_inflight_txs: u64,
-    #[sqlx(try_from = "i64")]
     pub max_queued_txs: u64,
-    #[sqlx(json)]
-    pub gas_price_limits: Vec<RelayerGasPriceLimit>,
+    pub gas_price_limits: Vec<RelayerGasPriceLimitResponse>,
     pub enabled: bool,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Default, Object)]
+impl From<RelayerInfo> for RelayerResponse {
+    fn from(value: RelayerInfo) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            chain_id: value.chain_id,
+            key_id: value.key_id,
+            address: value.address.into(),
+            nonce: value.nonce,
+            current_nonce: value.current_nonce,
+            max_inflight_txs: value.max_inflight_txs,
+            max_queued_txs: value.max_queued_txs,
+            gas_price_limits: value
+                .gas_price_limits
+                .into_iter()
+                .map(|v| v.into())
+                .collect(),
+            enabled: value.enabled,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
-pub struct RelayerUpdate {
+pub struct RelayerUpdateRequest {
     #[serde(default)]
     pub relayer_name: Option<String>,
     #[serde(default)]
@@ -71,17 +82,26 @@ pub struct RelayerUpdate {
     #[serde(default)]
     pub max_queued_txs: Option<u64>,
     #[serde(default)]
-    pub gas_price_limits: Option<Vec<RelayerGasPriceLimit>>,
+    pub gas_price_limits: Option<Vec<RelayerGasPriceLimitResponse>>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Object)]
+#[derive(Deserialize, Serialize, Debug, Clone, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
-pub struct RelayerGasPriceLimit {
+pub struct RelayerGasPriceLimitResponse {
     pub value: DecimalU256,
     pub chain_id: i64,
+}
+
+impl From<RelayerGasPriceLimit> for RelayerGasPriceLimitResponse {
+    fn from(value: RelayerGasPriceLimit) -> Self {
+        Self {
+            value: value.value.into(),
+            chain_id: value.chain_id,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Object)]
@@ -91,24 +111,34 @@ pub struct CreateApiKeyResponse {
     pub api_key: ApiKey,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, Object)]
+#[derive(Debug, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
-pub struct NewNetworkInfo {
+pub struct CreateNetworkRequest {
     pub name: String,
     pub http_rpc: String,
     pub ws_rpc: String,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, FromRow, Object)]
+#[derive(Debug, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
-pub struct NetworkInfo {
-    #[sqlx(try_from = "i64")]
+pub struct NetworkResponse {
     pub chain_id: u64,
     pub name: String,
     pub http_rpc: String,
     pub ws_rpc: String,
+}
+
+impl From<NetworkInfo> for NetworkResponse {
+    fn from(value: NetworkInfo) -> Self {
+        Self {
+            chain_id: value.chain_id,
+            name: value.name,
+            http_rpc: value.http_rpc,
+            ws_rpc: value.ws_rpc,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]
@@ -128,14 +158,14 @@ pub struct CreateRelayerResponse {
     /// ID of the created relayer
     pub relayer_id: String,
     /// Address of the created relayer
-    pub address: AddressWrapper,
+    pub address: Address,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
 pub struct SendTxRequest {
-    pub to: AddressWrapper,
+    pub to: Address,
     /// Transaction value
     pub value: DecimalU256,
     #[serde(default)]
@@ -185,7 +215,7 @@ pub struct SendTxResponse {
 #[oai(rename_all = "camelCase")]
 pub struct GetTxResponse {
     pub tx_id: String,
-    pub to: AddressWrapper,
+    pub to: Address,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<HexBytes>,
     pub value: DecimalU256,
@@ -194,7 +224,7 @@ pub struct GetTxResponse {
 
     // Sent tx data
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tx_hash: Option<H256Wrapper>,
+    pub tx_hash: Option<H256>,
     #[serde(default)]
     #[oai(default)]
     pub status: Option<TxStatus>,
@@ -251,36 +281,6 @@ impl TxStatus {
     }
 }
 
-impl RelayerUpdate {
-    pub fn with_relayer_name(mut self, relayer_name: String) -> Self {
-        self.relayer_name = Some(relayer_name);
-        self
-    }
-
-    pub fn with_max_inflight_txs(mut self, max_inflight_txs: u64) -> Self {
-        self.max_inflight_txs = Some(max_inflight_txs);
-        self
-    }
-
-    pub fn with_max_queued_txs(mut self, max_queued_txs: u64) -> Self {
-        self.max_queued_txs = Some(max_queued_txs);
-        self
-    }
-
-    pub fn with_gas_price_limits(
-        mut self,
-        gas_price_limits: Vec<RelayerGasPriceLimit>,
-    ) -> Self {
-        self.gas_price_limits = Some(gas_price_limits);
-        self
-    }
-
-    pub fn with_enabled(mut self, enabled: bool) -> Self {
-        self.enabled = Some(enabled);
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ethers::types::{Address, U256};
@@ -289,18 +289,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relayer_info_serialize() {
-        let info = RelayerInfo {
+    fn relayer_response_serialize() {
+        let info = RelayerResponse {
             id: "id".to_string(),
             name: "name".to_string(),
             chain_id: 1,
             key_id: "key_id".to_string(),
-            address: AddressWrapper(Address::zero()),
+            address: Address::zero().into(),
             nonce: 0,
             current_nonce: 0,
             max_inflight_txs: 0,
             max_queued_txs: 0,
-            gas_price_limits: vec![RelayerGasPriceLimit {
+            gas_price_limits: vec![RelayerGasPriceLimitResponse {
                 value: U256::zero().into(),
                 chain_id: 1,
             }],
@@ -338,7 +338,7 @@ mod tests {
         let value: U256 = parse_units("1", "ether").unwrap().into();
 
         let request = SendTxRequest {
-            to: AddressWrapper(Address::zero()),
+            to: Address(Address::zero()),
             value: value.into(),
             data: Some(HexBytes::from(vec![0])),
             gas_limit: U256::zero().into(),

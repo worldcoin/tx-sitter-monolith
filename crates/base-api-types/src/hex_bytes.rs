@@ -3,7 +3,7 @@ use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
 use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct HexBytes(pub Bytes);
 

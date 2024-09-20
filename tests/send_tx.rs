@@ -1,5 +1,8 @@
 mod common;
 
+use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
+use tx_sitter_client::apis::relayer_v1_api::CreateTransactionParams;
+
 use crate::common::prelude::*;
 
 #[tokio::test]
@@ -12,33 +15,33 @@ async fn send_tx() -> eyre::Result<()> {
     let (_service, client) =
         ServiceBuilder::default().build(&anvil, &db_url).await?;
     let CreateApiKeyResponse { api_key } =
-        client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
+        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
+            &client,
+            RelayerCreateApiKeyParams {
+                relayer_id: DEFAULT_RELAYER_ID.to_string(),
+            },
+        )
+        .await?;
 
     let provider = setup_provider(anvil.endpoint()).await?;
 
     // Send a transaction
     let value: U256 = parse_units("1", "ether")?.into();
-    client
-        .send_tx(
-            &api_key,
-            &SendTxRequest {
+    tx_sitter_client::apis::relayer_v1_api::create_transaction(
+        &client,
+        CreateTransactionParams {
+            api_token: api_key.clone(),
+            send_tx_request: SendTxRequest {
                 to: ARBITRARY_ADDRESS.into(),
                 value: value.into(),
                 gas_limit: U256::from(21_000).into(),
                 ..Default::default()
             },
-        )
-        .await?;
+        },
+    )
+    .await?;
 
-    for _ in 0..10 {
-        let balance = provider.get_balance(ARBITRARY_ADDRESS, None).await?;
+    await_balance(&provider, value, ARBITRARY_ADDRESS).await?;
 
-        if balance == value {
-            return Ok(());
-        } else {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    }
-
-    panic!("Transaction was not sent")
+    Ok(())
 }

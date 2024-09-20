@@ -1,5 +1,11 @@
 mod common;
 
+use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
+use tx_sitter_client::apis::configuration::Configuration;
+use tx_sitter_client::apis::relayer_v1_api::{
+    CreateTransactionParams, GetTransactionParams,
+};
+
 use crate::common::prelude::*;
 
 const ESCALATION_INTERVAL: Duration = Duration::from_secs(2);
@@ -21,23 +27,30 @@ async fn escalation() -> eyre::Result<()> {
         .await?;
 
     let CreateApiKeyResponse { api_key } =
-        client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
-
+        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
+            &client,
+            RelayerCreateApiKeyParams {
+                relayer_id: DEFAULT_RELAYER_ID.to_string(),
+            },
+        )
+        .await?;
     let provider = setup_provider(anvil.endpoint()).await?;
 
     // Send a transaction
     let value: U256 = parse_units("1", "ether")?.into();
-    let tx = client
-        .send_tx(
-            &api_key,
-            &SendTxRequest {
+    let tx = tx_sitter_client::apis::relayer_v1_api::create_transaction(
+        &client,
+        CreateTransactionParams {
+            api_token: api_key.clone(),
+            send_tx_request: SendTxRequest {
                 to: ARBITRARY_ADDRESS.into(),
                 value: value.into(),
                 gas_limit: U256::from(21_000).into(),
                 ..Default::default()
             },
-        )
-        .await?;
+        },
+    )
+    .await?;
 
     let initial_tx_hash = get_tx_hash(&client, &api_key, &tx.tx_id).await?;
 
@@ -70,12 +83,19 @@ async fn await_balance(
 }
 
 async fn get_tx_hash(
-    client: &TxSitterClient,
-    api_key: &ApiKey,
+    client: &Configuration,
+    api_key: &str,
     tx_id: &str,
 ) -> eyre::Result<H256> {
     loop {
-        let tx = client.get_tx(api_key, tx_id).await?;
+        let tx = tx_sitter_client::apis::relayer_v1_api::get_transaction(
+            client,
+            GetTransactionParams {
+                api_token: api_key.to_owned(),
+                tx_id: tx_id.to_owned(),
+            },
+        )
+        .await?;
 
         if let Some(tx_hash) = tx.tx_hash {
             return Ok(tx_hash.0);

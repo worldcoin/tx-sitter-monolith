@@ -1,0 +1,141 @@
+{{>partial_header}}
+
+{{#withAWSV4Signature}}
+use std::time::SystemTime;
+use aws_sigv4::http_request::{sign, SigningSettings, SigningParams, SignableRequest};
+use http;
+use secrecy::{SecretString, ExposeSecret};
+{{/withAWSV4Signature}}
+
+#[derive(Debug, Clone)]
+pub struct Configuration {
+    pub base_path: String,
+    pub user_agent: Option<String>,
+    pub client: {{#supportMiddleware}}reqwest_middleware::ClientWithMiddleware{{/supportMiddleware}}{{^supportMiddleware}}reqwest{{^supportAsync}}::blocking{{/supportAsync}}::Client{{/supportMiddleware}},
+    pub basic_auth: Option<BasicAuth>,
+    pub oauth_access_token: Option<String>,
+    pub bearer_access_token: Option<String>,
+    pub api_key: Option<ApiKey>,
+    {{#withAWSV4Signature}}
+    pub aws_v4_key: Option<AWSv4Key>,
+    {{/withAWSV4Signature}}
+    // TODO: take an oauth2 token source, similar to the go one
+}
+
+pub type BasicAuth = (String, Option<String>);
+
+#[derive(Debug, Clone)]
+pub struct ApiKey {
+    pub prefix: Option<String>,
+    pub key: String,
+}
+
+{{#withAWSV4Signature}}
+#[derive(Debug, Clone)]
+pub struct AWSv4Key {
+    pub access_key: String,
+    pub secret_key: SecretString,
+    pub region: String,
+    pub service: String,
+}
+
+impl AWSv4Key {
+    pub fn sign(&self, uri: &str, method: &str, body: &str) -> Result<Vec::<(String, String)>, aws_sigv4::http_request::Error> {
+	let request = http::Request::builder()
+	    .uri(uri)
+	    .method(method)
+	    .body(body).unwrap();
+	let signing_settings = SigningSettings::default();
+	let signing_params = SigningParams::builder()
+	    .access_key(self.access_key.as_str())
+	    .secret_key(self.secret_key.expose_secret().as_str())
+	    .region(self.region.as_str())
+	    .service_name(self.service.as_str())
+	    .time(SystemTime::now())
+	    .settings(signing_settings)
+	    .build()
+	    .unwrap();
+	let signable_request = SignableRequest::from(&request);
+	let (mut signing_instructions, _signature) = sign(signable_request, &signing_params)?.into_parts();
+	let mut additional_headers = Vec::<(String, String)>::new();
+	if let Some(new_headers) = signing_instructions.take_headers() {
+            for (name, value) in new_headers.into_iter() {
+		additional_headers.push((name.expect("header should have name").to_string(),
+		                         value.to_str().expect("header value should be a string").to_string()));
+            }
+        }
+	Ok(additional_headers)
+    }
+}
+{{/withAWSV4Signature}}
+
+impl Default for Configuration {
+    fn default() -> Self {
+        Configuration {
+            base_path: "{{{basePath}}}".to_owned(),
+            user_agent: {{#httpUserAgent}}Some("{{{.}}}".to_owned()){{/httpUserAgent}}{{^httpUserAgent}}Some("OpenAPI-Generator/{{{version}}}/rust".to_owned()){{/httpUserAgent}},
+            client: {{#supportMiddleware}}reqwest_middleware::ClientBuilder::new(reqwest{{^supportAsync}}::blocking{{/supportAsync}}::Client::new()).build(){{/supportMiddleware}}{{^supportMiddleware}}reqwest{{^supportAsync}}::blocking{{/supportAsync}}::Client::new(){{/supportMiddleware}},
+            basic_auth: None,
+            oauth_access_token: None,
+            bearer_access_token: None,
+            api_key: None,
+{{#withAWSV4Signature}}            aws_v4_key: None,{{/withAWSV4Signature}}
+        }
+    }
+}
+
+pub struct ConfigurationBuilder {
+    pub base_path: Option<String>,
+    pub user_agent: Option<String>,
+    pub basic_auth: Option<BasicAuth>,
+}
+
+impl ConfigurationBuilder {
+    pub fn new() -> ConfigurationBuilder {
+        ConfigurationBuilder {
+            base_path: None,
+            user_agent: None,
+            basic_auth: None,
+        }
+    }
+
+    pub fn base_path(mut self, base_path: String) -> Self {
+        self.base_path = Some(base_path);
+        self
+    }
+
+    pub fn user_agent(mut self, user_agent: String) -> Self {
+        self.user_agent = Some(user_agent);
+        self
+    }
+
+    pub fn basic_auth(mut self, user: String, pass: Option<String>) -> Self {
+        self.basic_auth = Some((user, pass));
+        self
+    }
+
+    pub fn build(self) -> Configuration {
+        let mut conf: Configuration = Default::default();
+
+        if let Some(base_path) = self.base_path {
+            conf.base_path = base_path;
+        }
+
+        if let Some(user_agent) = self.user_agent {
+            conf.user_agent = Some(user_agent);
+        }
+
+        if let Some(basic_auth) = self.basic_auth {
+            conf.basic_auth = Some(basic_auth);
+        }
+
+        conf
+    }
+}
+
+impl Default for ConfigurationBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+

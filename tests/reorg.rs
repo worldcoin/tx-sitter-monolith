@@ -1,5 +1,8 @@
 mod common;
 
+use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
+use tx_sitter_client::apis::relayer_v1_api::CreateTransactionParams;
+
 use crate::common::prelude::*;
 
 #[tokio::test]
@@ -16,25 +19,33 @@ async fn reorg() -> eyre::Result<()> {
         .await?;
 
     let CreateApiKeyResponse { api_key } =
-        client.create_relayer_api_key(DEFAULT_RELAYER_ID).await?;
+        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
+            &client,
+            RelayerCreateApiKeyParams {
+                relayer_id: DEFAULT_RELAYER_ID.to_string(),
+            },
+        )
+        .await?;
 
     let provider = setup_provider(anvil.endpoint()).await?;
 
     // Send a transaction
     let value: U256 = parse_units("1", "ether")?.into();
-    client
-        .send_tx(
-            &api_key,
-            &SendTxRequest {
+    tx_sitter_client::apis::relayer_v1_api::create_transaction(
+        &client,
+        CreateTransactionParams {
+            api_token: api_key.clone(),
+            send_tx_request: SendTxRequest {
                 to: ARBITRARY_ADDRESS.into(),
                 value: value.into(),
                 gas_limit: U256::from(21_000).into(),
                 ..Default::default()
             },
-        )
-        .await?;
+        },
+    )
+    .await?;
 
-    await_balance(&provider, value).await?;
+    await_balance(&provider, value, ARBITRARY_ADDRESS).await?;
 
     // Drop anvil to simulate a reorg
     tracing::warn!("Dropping anvil & restarting at port {anvil_port}");
@@ -43,32 +54,7 @@ async fn reorg() -> eyre::Result<()> {
     let anvil = AnvilBuilder::default().port(anvil_port).spawn().await?;
     let provider = setup_provider(anvil.endpoint()).await?;
 
-    await_balance(&provider, value).await?;
+    await_balance(&provider, value, ARBITRARY_ADDRESS).await?;
 
     Ok(())
-}
-
-async fn await_balance(
-    provider: &Provider<Http>,
-    value: U256,
-) -> eyre::Result<()> {
-    for _ in 0..24 {
-        let balance = match provider.get_balance(ARBITRARY_ADDRESS, None).await
-        {
-            Ok(balance) => balance,
-            Err(err) => {
-                tracing::warn!("Error getting balance: {:?}", err);
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                continue;
-            }
-        };
-
-        if balance == value {
-            return Ok(());
-        } else {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-        }
-    }
-
-    eyre::bail!("Balance not updated in time");
 }

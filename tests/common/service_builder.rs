@@ -3,12 +3,12 @@ use std::time::Duration;
 
 use ethers::utils::AnvilInstance;
 use tx_sitter::api_key::ApiKey;
-use tx_sitter::client::TxSitterClient;
 use tx_sitter::config::{
     Config, DatabaseConfig, KeysConfig, LocalKeysConfig, Predefined,
     PredefinedNetwork, PredefinedRelayer, ServerConfig, TxSitterConfig,
 };
 use tx_sitter::service::Service;
+use tx_sitter_client::apis::configuration::Configuration;
 
 use super::prelude::{
     DEFAULT_ANVIL_CHAIN_ID, DEFAULT_ANVIL_PRIVATE_KEY, DEFAULT_RELAYER_ID,
@@ -50,7 +50,7 @@ impl ServiceBuilder {
         self,
         anvil: &AnvilInstance,
         db_url: &str,
-    ) -> eyre::Result<(Service, TxSitterClient)> {
+    ) -> eyre::Result<(Service, Configuration)> {
         let anvil_private_key = hex::encode(DEFAULT_ANVIL_PRIVATE_KEY);
 
         let config = Config {
@@ -91,9 +91,6 @@ impl ServiceBuilder {
 
         let service = Service::new(config).await?;
 
-        let client =
-            TxSitterClient::new(format!("http://{}", service.local_addr()));
-
         // Awaits for estimates to be ready
         let mut are_estimates_ready = false;
         for _ in 0..30 {
@@ -110,6 +107,12 @@ impl ServiceBuilder {
             eyre::bail!("Estimates were not ready!");
         }
 
-        Ok((service, client))
+        let client_config =
+            tx_sitter_client::apis::configuration::ConfigurationBuilder::new()
+                .base_path(format!("http://{}", service.local_addr()))
+                .basic_auth("".to_string(), Some("".to_string()))
+                .build();
+
+        Ok((service, client_config))
     }
 }

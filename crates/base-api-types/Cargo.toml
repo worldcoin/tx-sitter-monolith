@@ -1,0 +1,23 @@
+[package]
+name = "base-api-types"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ethers = { version = "2.0.11" }
+poem = { version = "3", features = ["eyre06"] }
+poem-openapi = { version = "5", features = [
+    "openapi-explorer",
+    "rapidoc",
+    "redoc",
+    "swagger-ui",
+] }
+serde = "1.0.136"
+serde_json = "1.0.91"
+
+[dev-dependencies]
+hex = "0.4.3"
+hex-literal = "0.4.1"
+test-case = "3.1.0"
