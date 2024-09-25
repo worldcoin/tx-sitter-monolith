@@ -6,6 +6,8 @@ use serde_json::Value;
 use crate::api_key::ApiKey;
 use crate::db::data::{NetworkInfo, RelayerGasPriceLimit, RelayerInfo};
 
+pub mod secret_string;
+
 #[derive(
     Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type, Enum,
 )]
