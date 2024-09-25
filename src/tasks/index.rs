@@ -20,6 +20,8 @@ const TIME_BETWEEN_FEE_ESTIMATION_SECONDS: u64 = 30;
 
 const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
 
+const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
+
 pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
         index_inner(app.clone(), chain_id).await?;
@@ -127,10 +129,8 @@ pub async fn backfill_to_block(
         // Because we do not store all the blocks (we clean up older blocks) there is no need
         // to scan ALL the blocks. Especially as this may take a lot of time... We are trying
         // here to move back in time "enough" to get some estimates later.
-        let jump_back_blocks = 60u64;
-
-        if latest_block_number > jump_back_blocks {
-            latest_block_number - jump_back_blocks
+        if latest_block_number > MAX_RECENT_BLOCKS_TO_CHECK {
+            latest_block_number - MAX_RECENT_BLOCKS_TO_CHECK
         } else {
             0
         }
