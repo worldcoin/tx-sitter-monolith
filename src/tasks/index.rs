@@ -20,6 +20,8 @@ const TIME_BETWEEN_FEE_ESTIMATION_SECONDS: u64 = 30;
 
 const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
 
+const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
+
 pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
         index_inner(app.clone(), chain_id).await?;
@@ -108,20 +110,31 @@ pub async fn backfill_to_block(
     rpc: &Provider<Http>,
     latest_block: Block<H256>,
 ) -> eyre::Result<()> {
-    let next_block_number: u64 = if let Some(latest_db_block_number) =
-        app.db.get_latest_block_number(chain_id).await?
-    {
-        latest_db_block_number + 1
-    } else {
-        tracing::info!(chain_id, "No latest block");
-        0
-    };
-
     // Get the first block from the stream and backfill any missing blocks
     let latest_block_number = latest_block
         .number
         .context("Missing block number")?
         .as_u64();
+
+    let next_block_number: u64 = if let Some(latest_db_block_number) =
+        app.db.get_latest_block_number(chain_id).await?
+    {
+        latest_db_block_number + 1
+    } else {
+        tracing::info!(
+            chain_id,
+            "No latest block in database. Will choose best candidate."
+        );
+
+        // Because we do not store all the blocks (we clean up older blocks) there is no need
+        // to scan ALL the blocks. Especially as this may take a lot of time... We are trying
+        // here to move back in time "enough" to get some estimates later.
+        if latest_block_number > MAX_RECENT_BLOCKS_TO_CHECK {
+            latest_block_number - MAX_RECENT_BLOCKS_TO_CHECK
+        } else {
+            0
+        }
+    };
 
     tracing::info!(
         latest_block_number,

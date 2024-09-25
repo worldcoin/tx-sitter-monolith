@@ -8,16 +8,16 @@ use crate::app::App;
 const BLOCK_PRUNING_INTERVAL: Duration = Duration::from_secs(60);
 const TX_PRUNING_INTERVAL: Duration = Duration::from_secs(60);
 
-const fn minutes(seconds: i64) -> i64 {
-    seconds * 60
+const fn minutes(minutes: i64) -> i64 {
+    minutes * 60
 }
 
-const fn hours(seconds: i64) -> i64 {
-    minutes(seconds) * 60
+const fn hours(hours: i64) -> i64 {
+    minutes(hours) * 60
 }
 
-const fn days(seconds: i64) -> i64 {
-    hours(seconds) * 24
+const fn days(days: i64) -> i64 {
+    hours(days) * 24
 }
 
 // TODO: This should be a per network setting
