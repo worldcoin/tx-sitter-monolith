@@ -6,6 +6,7 @@ use config::FileFormat;
 use serde::{Deserialize, Serialize};
 
 use crate::api_key::ApiKey;
+use crate::types::secret_string::SecretString;
 
 pub fn load_config<'a>(
     config_files: impl Iterator<Item = &'a Path>,
@@ -100,8 +101,8 @@ pub struct PredefinedRelayer {
 pub struct ServerConfig {
     pub host: SocketAddr,
 
-    pub username: Option<String>,
-    pub password: Option<String>,
+    pub username: Option<SecretString>,
+    pub password: Option<SecretString>,
 
     // Optional address to show in API explorer
     pub server_address: Option<String>,
@@ -126,18 +127,18 @@ pub enum DatabaseConfig {
 impl DatabaseConfig {
     pub fn connection_string(s: impl ToString) -> Self {
         Self::ConnectionString(DbConnectionString {
-            connection_string: s.to_string(),
+            connection_string: SecretString::new(s.to_string()),
         })
     }
 
     pub fn to_connection_string(&self) -> String {
         match self {
-            Self::ConnectionString(s) => s.connection_string.clone(),
+            Self::ConnectionString(s) => s.connection_string.clone().into(),
             Self::Parts(parts) => {
                 format!(
                     "postgres://{}:{}@{}:{}/{}",
-                    parts.username,
-                    parts.password,
+                    parts.username.expose(),
+                    parts.password.expose(),
                     parts.host,
                     parts.port,
                     parts.database
@@ -150,7 +151,7 @@ impl DatabaseConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DbConnectionString {
-    pub connection_string: String,
+    pub connection_string: SecretString,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,8 +159,8 @@ pub struct DbConnectionString {
 pub struct DbParts {
     pub host: String,
     pub port: String,
-    pub username: String,
-    pub password: String,
+    pub username: SecretString,
+    pub password: SecretString,
     pub database: String,
 }
 
@@ -328,8 +329,8 @@ mod tests {
             database: DatabaseConfig::Parts(DbParts {
                 host: "host".to_string(),
                 port: "5432".to_string(),
-                username: "user".to_string(),
-                password: "pass".to_string(),
+                username: SecretString::new("user".to_string()),
+                password: SecretString::new("pass".to_string()),
                 database: "db".to_string(),
             }),
             keys: KeysConfig::Local(LocalKeysConfig::default()),
