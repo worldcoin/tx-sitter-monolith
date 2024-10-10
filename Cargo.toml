@@ -25,7 +25,7 @@ base-api-types = { path = "crates/base-api-types" }
 tx-sitter-client = { path = "crates/tx-sitter-client" }
 
 # Company
-telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "e0891328b29d9f85df037633feccca2f74a291a6" }
+telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "12cc036234b4e9b86f22ff7e35d499e2ff1e6304" }
 
 ## External
 async-trait = "0.1.74"
