@@ -63,6 +63,13 @@ pub struct TxSitterConfig {
     )]
     pub hard_reorg_interval: Duration,
 
+    /// Max amount of time to wait for a new block from the RPC block stream
+    #[serde(
+        with = "humantime_serde",
+        default = "default::block_stream_timeout"
+    )]
+    pub block_stream_timeout: Duration,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predefined: Option<Predefined>,
 
@@ -219,6 +226,10 @@ mod default {
         Duration::from_secs(60 * 60)
     }
 
+    pub fn block_stream_timeout() -> Duration {
+        Duration::from_secs(60)
+    }
+
     pub mod metrics {
         pub fn host() -> String {
             "127.0.0.1".to_string()
@@ -249,6 +260,7 @@ mod tests {
         escalation_interval = "1h"
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
+        block_stream_timeout = "1m"
 
         [server]
         host = "127.0.0.1:3000"
@@ -266,6 +278,7 @@ mod tests {
         escalation_interval = "1h"
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
+        block_stream_timeout = "1m"
 
         [server]
         host = "127.0.0.1:3000"
@@ -289,6 +302,7 @@ mod tests {
                 escalation_interval: Duration::from_secs(60 * 60),
                 soft_reorg_interval: default::soft_reorg_interval(),
                 hard_reorg_interval: default::hard_reorg_interval(),
+                block_stream_timeout: default::block_stream_timeout(),
                 predefined: None,
                 telemetry: None,
             },
@@ -317,6 +331,7 @@ mod tests {
                 escalation_interval: Duration::from_secs(60 * 60),
                 soft_reorg_interval: default::soft_reorg_interval(),
                 hard_reorg_interval: default::hard_reorg_interval(),
+                block_stream_timeout: default::block_stream_timeout(),
                 predefined: None,
                 telemetry: None,
             },
