@@ -7,6 +7,7 @@ use ethers::types::{Block, BlockNumber, H256};
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use tokio::time::timeout;
 
 use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
@@ -22,6 +23,8 @@ const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
 
 const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
 
+const NEXT_BLOCK_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
         index_inner(app.clone(), chain_id).await?;
@@ -34,18 +37,32 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     let rpc = app.http_provider(chain_id).await?;
 
     tracing::info!("Subscribing to new blocks");
-    // Subscribe to new block with the WS client which uses an unbounded receiver, buffering the stream
     let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
 
-    // Get the first block from the stream, backfilling any missing blocks from the latest block in the db to the chain head
     tracing::info!("Backfilling blocks");
     if let Some(latest_block) = blocks_stream.next().await {
         backfill_to_block(app.clone(), chain_id, &rpc, latest_block).await?;
     }
 
-    // Index incoming blocks from the stream
-    while let Some(block) = blocks_stream.next().await {
-        index_block(app.clone(), chain_id, &rpc, block).await?;
+    loop {
+        let next_block =
+            timeout(NEXT_BLOCK_TIMEOUT, blocks_stream.next()).await;
+
+        match next_block {
+            Ok(Some(block)) => {
+                index_block(app.clone(), chain_id, &rpc, block).await?;
+            }
+            Ok(None) => {
+                // Stream ended, break out of the loop
+                tracing::info!("Block stream ended");
+                break;
+            }
+            Err(_) => {
+                // Timeout occurred
+                tracing::warn!("Timed out waiting for a block");
+                break;
+            }
+        }
     }
 
     Ok(())
