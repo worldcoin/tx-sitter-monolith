@@ -23,8 +23,6 @@ const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
 
 const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
 
-const NEXT_BLOCK_TIMEOUT: Duration = Duration::from_secs(60);
-
 pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     loop {
         index_inner(app.clone(), chain_id).await?;
@@ -45,8 +43,11 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     }
 
     loop {
-        let next_block =
-            timeout(NEXT_BLOCK_TIMEOUT, blocks_stream.next()).await;
+        let next_block = timeout(
+            app.config.service.block_stream_timeout,
+            blocks_stream.next(),
+        )
+        .await;
 
         match next_block {
             Ok(Some(block)) => {
