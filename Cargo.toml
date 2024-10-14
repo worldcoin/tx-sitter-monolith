@@ -25,7 +25,7 @@ base-api-types = { path = "crates/base-api-types" }
 tx-sitter-client = { path = "crates/tx-sitter-client" }
 
 # Company
-telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "12cc036234b4e9b86f22ff7e35d499e2ff1e6304" }
+telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "1b11fa889e9fea6513f474aa968948fb0b386b4e" }
 
 ## External
 async-trait = "0.1.74"
@@ -39,7 +39,6 @@ ethers = { version = "2.0.11", features = ["ws"] }
 eyre = "0.6.3"
 color-eyre = "0.6.3"
 futures = "0.3"
-headers = "0.3.9"
 hex = "0.4.3"
 hex-literal = "0.4.1"
 humantime = "2.1.0"
@@ -56,7 +55,7 @@ poem-openapi = { version = "5", features = [
     "swagger-ui",
 ] }
 rand = "0.8.5"
-reqwest = { version = "0.11.24", default-features = false, features = [
+reqwest = { version = "0.12.8", default-features = false, features = [
     "rustls-tls",
 ] }
 serde = "1.0.136"

@@ -1,5 +1,6 @@
 use poem::http::uri::Builder;
 use poem::{Endpoint, IntoResponse, Middleware, Request, Response, Result};
+use telemetry_batteries::tracing::{trace_from_headers, trace_to_headers};
 use tracing::{Instrument, Level};
 
 pub struct TraceMiddleware;
@@ -41,14 +42,15 @@ impl<E: Endpoint> Endpoint for TraceMiddlwareImpl<E> {
 
         let req_uri = req_uri_builder.build().expect("Invalid URI");
 
-        let span = tracing::span!(Level::DEBUG, "request", method = %req.method(), uri = %req_uri);
+        let span = tracing::span!(Level::INFO, "request", method = %req.method(), uri = %req_uri);
 
         let res = async move {
-            // TODO: Propagate span from request headers
+            trace_from_headers(req.headers());
+
             tracing::debug!("started processing request");
 
             let res = self.0.call(req).await;
-            let response = match res {
+            let mut response = match res {
                 Ok(r) => r.into_response(),
                 Err(err) => {
                     let stacktrace = format!("{:?}", err);
@@ -67,6 +69,8 @@ impl<E: Endpoint> Endpoint for TraceMiddlwareImpl<E> {
             } else {
                 tracing::debug!(status = %response.status(), "finished processing request");
             }
+
+            trace_to_headers(response.headers_mut());
 
             response
         }.instrument(span).await;
