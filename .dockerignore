@@ -4,3 +4,6 @@ README.md
 TODO.md
 manual_test.nu
 config.toml
+# Added by SEC-1406 patch
+.git
+.gitignore
