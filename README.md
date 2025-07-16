@@ -44,6 +44,7 @@ The Tx Sitter can be configured in 2 ways:
     Can also be expressed with env vars
     ```
     TX_SITTER__SERVICE__ESCALATION_INTERVAL="1m"
+    TX_SITTER__SERVICE__MAX_ESCALATIONS="100"
     TX_SITTER__SERVER__HOST="127.0.0.1:3000"
     TX_SITTER__SERVER__DISABLE_AUTH="true"
     TX_SITTER__DATABASE__CONNECTION_STRING="postgres://postgres:postgres@127.0.0.1:5432/database"
