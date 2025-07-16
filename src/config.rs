@@ -52,7 +52,7 @@ pub struct TxSitterConfig {
     pub escalation_interval: Duration,
 
     /// Maximum number of escalations of a given transaction
-    #[serde(default = "default::escalation_max_per_relayer")]
+    #[serde(default = "default::max_escalations")]
     pub max_escalations: usize,
 
     #[serde(
@@ -266,7 +266,7 @@ mod tests {
     const WITH_DB_CONNECTION_STRING: &str = indoc! {r#"
         [service]
         escalation_interval = "1h"
-        escalation_max_per_relayer = 100
+        max_escalations = 100
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
@@ -285,7 +285,7 @@ mod tests {
     const WITH_DB_PARTS: &str = indoc! {r#"
         [service]
         escalation_interval = "1h"
-        escalation_max_per_relayer = 100
+        max_escalations = 100
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
