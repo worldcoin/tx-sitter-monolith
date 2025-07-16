@@ -8,7 +8,7 @@ use ethers::types::{NameOrAddress, U256};
 use crate::app::App;
 
 const INTERVAL: Duration = Duration::from_secs(15);
-const LOW_BALANCE_THRESHOLD: u64 = 1000000000000000000;
+const LOW_BALANCE_THRESHOLD: u64 = 1000000000000000000; // 1 ETH
 const REPORTING_INTERVAL: Duration = Duration::from_secs(60);
 
 pub async fn monitor_funds(app: Arc<App>) -> eyre::Result<()> {
