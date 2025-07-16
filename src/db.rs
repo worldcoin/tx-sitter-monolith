@@ -811,6 +811,7 @@ impl Database {
     pub async fn get_txs_for_escalation(
         &self,
         escalation_interval: Duration,
+        max_escalations: usize,
     ) -> eyre::Result<Vec<TxForEscalation>> {
         Ok(sqlx::query_as(
             r#"
@@ -824,10 +825,12 @@ impl Database {
             WHERE  now() - h.created_at > $1
             AND    s.status = $2
             AND    NOT h.escalated
+            AND    s.escalation_count < $3
             "#,
         )
         .bind(escalation_interval)
         .bind(TxStatus::Pending)
+        .bind(max_escalations as i64)
         .fetch_all(&self.pool)
         .await?)
     }

@@ -28,7 +28,10 @@ async fn escalate_txs(app: &App) -> eyre::Result<()> {
 
     let txs_for_escalation = app
         .db
-        .get_txs_for_escalation(app.config.service.escalation_interval)
+        .get_txs_for_escalation(
+            app.config.service.escalation_interval,
+            app.config.service.max_escalations,
+        )
         .await?;
 
     tracing::info!("Got {} transactions to escalate", txs_for_escalation.len());
@@ -81,17 +84,6 @@ async fn escalate_relayer_tx(
 ) -> eyre::Result<()> {
     if !should_send_relayer_transactions(app, relayer).await? {
         tracing::warn!(relayer_id = relayer.id, "Skipping relayer escalations");
-
-        return Ok(());
-    }
-
-    if tx.escalation_count > app.config.service.max_escalations {
-        tracing::warn!(
-            relayer_id = relayer.id,
-            tx_id = tx.id,
-            escalation_count = tx.escalation_count,
-            "Too many escalations"
-        );
 
         return Ok(());
     }
@@ -168,6 +160,15 @@ async fn escalate_relayer_tx(
         ?pending_tx,
         "Escalated transaction"
     );
+
+    if tx.escalation_count + 1 >= app.config.service.max_escalations {
+        tracing::warn!(
+            relayer_id = relayer.id,
+            tx_id = tx.id,
+            escalation_count = tx.escalation_count,
+            "Too many escalations"
+        );
+    }
 
     app.db
         .escalate_tx(&tx.id, tx_hash, max_fee_per_gas, max_fee_per_gas)
