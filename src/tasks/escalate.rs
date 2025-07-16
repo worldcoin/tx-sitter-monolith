@@ -88,17 +88,6 @@ async fn escalate_relayer_tx(
         return Ok(());
     }
 
-    if tx.escalation_count > app.config.service.max_escalations {
-        tracing::warn!(
-            relayer_id = relayer.id,
-            tx_id = tx.id,
-            escalation_count = tx.escalation_count,
-            "Too many escalations"
-        );
-
-        return Ok(());
-    }
-
     tracing::info!(
         tx_id = tx.id,
         escalation_count = tx.escalation_count,
