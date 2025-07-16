@@ -46,13 +46,15 @@ pub async fn setup() -> eyre::Result<DockerContainerGuard> {
         run_cmd_to_output("docker run --rm -d -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432 postgres")
             .context("Starting the Postgres container")?;
 
+    std::thread::sleep(Duration::from_secs_f32(1.0));
+
     let exposed_port = run_cmd_to_output(&format!(
         "docker container port {container_id} 5432"
     ))
     .context("Fetching container exposed port")?;
     let socket_addr = parse_exposed_port(&exposed_port)?;
 
-    std::thread::sleep(Duration::from_secs_f32(2.0));
+    std::thread::sleep(Duration::from_secs_f32(1.0));
 
     Ok(DockerContainerGuard {
         container_id,
@@ -69,7 +71,11 @@ fn run_cmd_to_output(cmd_str: &str) -> eyre::Result<String> {
     }
 
     command.stdout(Stdio::piped());
-    command.stderr(Stdio::null());
+    command.stderr(Stdio::inherit());
+
+    if !command.status()?.success() {
+        eyre::bail!("Running {cmd_str} failed");
+    }
 
     let Ok(output) = command.output() else {
         return Ok(String::new());
@@ -97,7 +103,7 @@ fn parse_exposed_port(s: &str) -> eyre::Result<SocketAddr> {
         .iter()
         .map(|p| p.parse::<SocketAddr>())
         .next()
-        .context("Missing exposed port")??)
+        .with_context(|| format!("Missing exposed port in '{s}'"))??)
 }
 
 #[cfg(test)]
