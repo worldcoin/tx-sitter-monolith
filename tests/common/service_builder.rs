@@ -18,6 +18,7 @@ pub struct ServiceBuilder {
     escalation_interval: Duration,
     soft_reorg_interval: Duration,
     hard_reorg_interval: Duration,
+    max_escalations: usize,
 }
 
 impl Default for ServiceBuilder {
@@ -26,6 +27,7 @@ impl Default for ServiceBuilder {
             escalation_interval: Duration::from_secs(5),
             soft_reorg_interval: Duration::from_secs(10),
             hard_reorg_interval: Duration::from_secs(15),
+            max_escalations: 100,
         }
     }
 }
@@ -46,6 +48,11 @@ impl ServiceBuilder {
         self
     }
 
+    pub fn max_escalations(mut self, max: usize) -> Self {
+        self.max_escalations = max;
+        self
+    }
+
     pub async fn build(
         self,
         anvil: &AnvilInstance,
@@ -56,6 +63,7 @@ impl ServiceBuilder {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: self.escalation_interval,
+                max_escalations: self.max_escalations,
                 soft_reorg_interval: self.soft_reorg_interval,
                 hard_reorg_interval: self.hard_reorg_interval,
                 block_stream_timeout: Duration::from_secs(60),

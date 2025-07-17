@@ -28,7 +28,10 @@ async fn escalate_txs(app: &App) -> eyre::Result<()> {
 
     let txs_for_escalation = app
         .db
-        .get_txs_for_escalation(app.config.service.escalation_interval)
+        .get_txs_for_escalation(
+            app.config.service.escalation_interval,
+            app.config.service.max_escalations,
+        )
         .await?;
 
     tracing::info!("Got {} transactions to escalate", txs_for_escalation.len());
@@ -97,15 +100,11 @@ async fn escalate_relayer_tx(
         .signer_middleware(tx.chain_id, tx.key_id.clone())
         .await?;
 
-    tracing::info!("Escalating transaction - got middleware");
-
     let fees = app
         .db
         .get_latest_block_fees_by_chain_id(tx.chain_id)
         .await?
         .context("Missing block")?;
-
-    tracing::info!("Escalating transaction - got block fees");
 
     // Min increase of 20% on the priority fee required for a replacement tx
     let factor = U256::from(100);
@@ -137,13 +136,9 @@ async fn escalate_relayer_tx(
         chain_id: Some(tx.chain_id.into()),
     };
 
-    tracing::info!("Escalating transaction - assembled tx");
-
     let pending_tx = middleware
         .send_transaction(TypedTransaction::Eip1559(eip1559_tx), None)
         .await;
-
-    tracing::info!("Escalating transaction - sent tx");
 
     let pending_tx = match pending_tx {
         Ok(pending_tx) => pending_tx,
@@ -152,8 +147,6 @@ async fn escalate_relayer_tx(
             return Ok(());
         }
     };
-
-    tracing::info!("Escalating transaction - got pending tx");
 
     let tx_hash = pending_tx.tx_hash();
 
@@ -167,6 +160,15 @@ async fn escalate_relayer_tx(
         ?pending_tx,
         "Escalated transaction"
     );
+
+    if tx.escalation_count + 1 >= app.config.service.max_escalations {
+        tracing::warn!(
+            relayer_id = relayer.id,
+            tx_id = tx.id,
+            escalation_count = tx.escalation_count,
+            "Too many escalations"
+        );
+    }
 
     app.db
         .escalate_tx(&tx.id, tx_hash, max_fee_per_gas, max_fee_per_gas)

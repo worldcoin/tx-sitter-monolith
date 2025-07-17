@@ -51,6 +51,10 @@ pub struct TxSitterConfig {
     #[serde(with = "humantime_serde")]
     pub escalation_interval: Duration,
 
+    /// Maximum number of escalations of a given transaction
+    #[serde(default = "default::max_escalations")]
+    pub max_escalations: usize,
+
     #[serde(
         with = "humantime_serde",
         default = "default::soft_reorg_interval"
@@ -230,6 +234,10 @@ mod default {
         Duration::from_secs(60)
     }
 
+    pub fn max_escalations() -> usize {
+        100
+    }
+
     pub mod metrics {
         pub fn host() -> String {
             "127.0.0.1".to_string()
@@ -258,6 +266,7 @@ mod tests {
     const WITH_DB_CONNECTION_STRING: &str = indoc! {r#"
         [service]
         escalation_interval = "1h"
+        max_escalations = 100
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
@@ -276,6 +285,7 @@ mod tests {
     const WITH_DB_PARTS: &str = indoc! {r#"
         [service]
         escalation_interval = "1h"
+        max_escalations = 100
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
@@ -300,6 +310,7 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
+                max_escalations: default::max_escalations(),
                 soft_reorg_interval: default::soft_reorg_interval(),
                 hard_reorg_interval: default::hard_reorg_interval(),
                 block_stream_timeout: default::block_stream_timeout(),
@@ -329,6 +340,7 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 escalation_interval: Duration::from_secs(60 * 60),
+                max_escalations: default::max_escalations(),
                 soft_reorg_interval: default::soft_reorg_interval(),
                 hard_reorg_interval: default::hard_reorg_interval(),
                 block_stream_timeout: default::block_stream_timeout(),
