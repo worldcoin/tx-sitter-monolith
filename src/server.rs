@@ -9,7 +9,7 @@ use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::middleware::Cors;
 use poem::web::{Data, LocalAddr};
-use poem::{EndpointExt, Result, Route};
+use poem::{EndpointExt, IntoResponse, Result, Route};
 use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::Json;
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService, Tags};
@@ -24,8 +24,9 @@ use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
     CreateApiKeyResponse, CreateNetworkRequest, CreateRelayerRequest,
-    CreateRelayerResponse, GetTxResponse, NetworkResponse, RelayerResponse,
-    RelayerUpdateRequest, RpcRequest, SendTxRequest, SendTxResponse, TxStatus,
+    CreateRelayerResponse, ErrorResponse, GetTxResponse, NetworkResponse,
+    RelayerResponse, RelayerUpdateRequest, RpcRequest, SendTxRequest,
+    SendTxResponse, TxStatus,
 };
 
 mod security;
@@ -352,9 +353,13 @@ impl RelayerApi {
             .await?;
 
         if let CreateResult::CONFLICT = res {
-            return Err(poem::error::Error::from_string(
-                "Transaction with same id already exists.".to_string(),
-                StatusCode::CONFLICT,
+            return Err(poem::error::Error::from_response(
+                ErrorResponse::new(
+                    StatusCode::CONFLICT,
+                    "transaction_already_exists",
+                    "Transaction with same id already exists.",
+                )
+                .into_response(),
             ));
         }
 
