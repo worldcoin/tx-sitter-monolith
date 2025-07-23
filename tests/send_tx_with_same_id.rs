@@ -1,6 +1,7 @@
 mod common;
 
 use poem::http;
+use tx_sitter::types::ErrorResponseBody;
 use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
 use tx_sitter_client::apis::relayer_v1_api::CreateTransactionParams;
 use tx_sitter_client::apis::Error;
@@ -61,7 +62,9 @@ async fn send_tx_with_same_id() -> eyre::Result<()> {
 
     if let Err(Error::ResponseError(e)) = res {
         assert_eq!(e.status, http::StatusCode::CONFLICT);
-        assert_eq!(e.content, "Transaction with same id already exists.");
+        let resp: ErrorResponseBody = serde_json::from_str(&e.content)?;
+        assert_eq!(resp.error_id, "transaction_already_exists");
+        assert_eq!(resp.error_message, "Transaction with same id already exists.");
 
         return Ok(());
     }

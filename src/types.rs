@@ -1,3 +1,5 @@
+use poem::{IntoResponse, Response};
+use poem::http::{header, StatusCode};
 use base_api_types::{Address, DecimalU256, HexBytes, H256};
 use poem_openapi::{Enum, Object};
 use serde::{Deserialize, Serialize};
@@ -280,6 +282,49 @@ impl TxStatus {
             Self::Mined => Self::Pending,
             Self::Finalized => Self::Mined,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ErrorResponse {
+    pub status: StatusCode,
+    pub body: ErrorResponseBody
+}
+
+impl ErrorResponse {
+    pub fn new(status: StatusCode, error_id: impl Into<String>, error_message: impl Into<String>) -> Self {
+        Self {
+            status,
+            body: ErrorResponseBody{
+                error_id: error_id.into(),
+                error_message: error_message.into(),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct ErrorResponseBody {
+    pub error_id: String,
+    pub error_message: String,
+}
+
+impl IntoResponse for ErrorResponse {
+    fn into_response(self) -> Response {
+        let data = match serde_json::to_vec(&self.body) {
+            Ok(data) => data,
+            Err(err) => {
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(err.to_string())
+            }
+        };
+        Response::builder()
+            .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+            .status(self.status)
+            .body(data)
     }
 }
 
