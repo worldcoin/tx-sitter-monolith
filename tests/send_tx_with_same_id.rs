@@ -64,7 +64,10 @@ async fn send_tx_with_same_id() -> eyre::Result<()> {
         assert_eq!(e.status, http::StatusCode::CONFLICT);
         let resp: ErrorResponseBody = serde_json::from_str(&e.content)?;
         assert_eq!(resp.error_id, "transaction_already_exists");
-        assert_eq!(resp.error_message, "Transaction with same id already exists.");
+        assert_eq!(
+            resp.error_message,
+            "Transaction with same id already exists."
+        );
 
         return Ok(());
     }

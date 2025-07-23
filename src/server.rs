@@ -22,7 +22,12 @@ use crate::app::App;
 use crate::db::CreateResult;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
-use crate::types::{CreateApiKeyResponse, CreateNetworkRequest, CreateRelayerRequest, CreateRelayerResponse, ErrorResponse, GetTxResponse, NetworkResponse, RelayerResponse, RelayerUpdateRequest, RpcRequest, SendTxRequest, SendTxResponse, TxStatus};
+use crate::types::{
+    CreateApiKeyResponse, CreateNetworkRequest, CreateRelayerRequest,
+    CreateRelayerResponse, ErrorResponse, GetTxResponse, NetworkResponse,
+    RelayerResponse, RelayerUpdateRequest, RpcRequest, SendTxRequest,
+    SendTxResponse, TxStatus,
+};
 
 mod security;
 mod trace_middleware;
@@ -353,7 +358,8 @@ impl RelayerApi {
                     StatusCode::CONFLICT,
                     "transaction_already_exists",
                     "Transaction with same id already exists.",
-                ).into_response()
+                )
+                .into_response(),
             ));
         }
 

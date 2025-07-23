@@ -1,6 +1,6 @@
-use poem::{IntoResponse, Response};
-use poem::http::{header, StatusCode};
 use base_api_types::{Address, DecimalU256, HexBytes, H256};
+use poem::http::{header, StatusCode};
+use poem::{IntoResponse, Response};
 use poem_openapi::{Enum, Object};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -288,17 +288,21 @@ impl TxStatus {
 #[derive(Debug, Clone)]
 pub struct ErrorResponse {
     pub status: StatusCode,
-    pub body: ErrorResponseBody
+    pub body: ErrorResponseBody,
 }
 
 impl ErrorResponse {
-    pub fn new(status: StatusCode, error_id: impl Into<String>, error_message: impl Into<String>) -> Self {
+    pub fn new(
+        status: StatusCode,
+        error_id: impl Into<String>,
+        error_message: impl Into<String>,
+    ) -> Self {
         Self {
             status,
-            body: ErrorResponseBody{
+            body: ErrorResponseBody {
                 error_id: error_id.into(),
                 error_message: error_message.into(),
-            }
+            },
         }
     }
 }
