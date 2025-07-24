@@ -24,13 +24,13 @@ impl Drop for DockerContainerGuard {
         if let Err(err) =
             run_cmd(&format!("docker stop {}", &self.container_id))
         {
-            eprintln!("Failed to stop docker container: {}", err);
+            eprintln!("Failed to stop docker container: {err}");
         }
 
         // Redundant, but better safe than sorry
         if let Err(err) = run_cmd(&format!("docker rm {}", &self.container_id))
         {
-            eprintln!("Failed to remove docker container: {}", err);
+            eprintln!("Failed to remove docker container: {err}");
         }
     }
 }
