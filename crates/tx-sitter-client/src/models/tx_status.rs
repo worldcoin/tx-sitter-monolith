@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::models;
 
-///
 #[derive(
     Clone,
     Copy,

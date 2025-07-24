@@ -70,6 +70,7 @@ pub(super) fn verifying_key_to_address(key: &VerifyingKey) -> Address {
     Address::from_slice(&hash[12..])
 }
 
+#[allow(clippy::result_large_err)]
 /// Decode an AWS KMS Pubkey response
 pub(super) fn decode_pubkey(
     resp: GetPublicKeyOutput,
@@ -85,6 +86,7 @@ pub(super) fn decode_pubkey(
     Ok(key)
 }
 
+#[allow(clippy::result_large_err)]
 /// Decode an AWS KMS Signature response
 pub(super) fn decode_signature(
     resp: SignOutput,

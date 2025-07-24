@@ -29,7 +29,7 @@ impl<T> fmt::Display for Error<T> {
                 ("response", format!("status code {}", e.status))
             }
         };
-        write!(f, "error in {}: {}", module, e)
+        write!(f, "error in {module}: {e}")
     }
 }
 
@@ -82,25 +82,23 @@ pub fn parse_deep_object(
 
         for (key, value) in object {
             match value {
-                serde_json::Value::Object(_) => {
-                    params.append(&mut parse_deep_object(
-                        &format!("{}[{}]", prefix, key),
-                        value,
-                    ))
-                }
+                serde_json::Value::Object(_) => params.append(
+                    &mut parse_deep_object(&format!("{prefix}[{key}]"), value),
+                ),
                 serde_json::Value::Array(array) => {
                     for (i, value) in array.iter().enumerate() {
                         params.append(&mut parse_deep_object(
-                            &format!("{}[{}][{}]", prefix, key, i),
+                            &format!("{prefix}[{key}][{i}]"),
                             value,
                         ));
                     }
                 }
                 serde_json::Value::String(s) => {
-                    params.push((format!("{}[{}]", prefix, key), s.clone()))
+                    params.push((format!("{prefix}[{key}]"), s.clone()))
                 }
-                _ => params
-                    .push((format!("{}[{}]", prefix, key), value.to_string())),
+                _ => {
+                    params.push((format!("{prefix}[{key}]"), value.to_string()))
+                }
             }
         }
 

@@ -63,7 +63,7 @@ impl KeysSource for KmsKeys {
         self.kms_client
             .update_alias()
             .target_key_id(key_id.clone())
-            .alias_name(format!("{meta_name}-{:?}", address));
+            .alias_name(format!("{meta_name}-{address:?}"));
 
         self.kms_client
             .tag_resource()
@@ -77,7 +77,7 @@ impl KeysSource for KmsKeys {
             .tags(
                 Tag::builder()
                     .tag_key("RelayerAddress")
-                    .tag_value(format!("{:?}", address))
+                    .tag_value(format!("{address:?}"))
                     .build()?,
             )
             .send()

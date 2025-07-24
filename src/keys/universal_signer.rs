@@ -28,6 +28,7 @@ impl UniversalSigner {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Error)]
 pub enum UniversalError {
     #[error("AWS Signer Error: {0}")]
