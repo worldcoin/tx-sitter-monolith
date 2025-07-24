@@ -61,12 +61,12 @@ impl Service {
         chain_id: u64,
     ) -> eyre::Result<()> {
         task_runner.add_task(
-            format!("Index blocks (chain id: {})", chain_id),
+            format!("Index blocks (chain id: {chain_id})"),
             move |app| crate::tasks::index::index_chain(app, chain_id),
         );
 
         task_runner.add_task(
-            format!("Estimate fees (chain id: {})", chain_id),
+            format!("Estimate fees (chain id: {chain_id})"),
             move |app| crate::tasks::index::estimate_gas(app, chain_id),
         );
 

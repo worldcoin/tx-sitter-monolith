@@ -53,7 +53,7 @@ impl<E: Endpoint> Endpoint for TraceMiddlwareImpl<E> {
             let mut response = match res {
                 Ok(r) => r.into_response(),
                 Err(err) => {
-                    let stacktrace = format!("{:?}", err);
+                    let stacktrace = format!("{err:?}");
                     let message = err.to_string();
 
                     tracing::error!(error.message = message, error.stack = stacktrace, error.kind = "Error", "error processing request");

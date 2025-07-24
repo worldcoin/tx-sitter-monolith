@@ -147,11 +147,7 @@ pub async fn backfill_to_block(
         // Because we do not store all the blocks (we clean up older blocks) there is no need
         // to scan ALL the blocks. Especially as this may take a lot of time... We are trying
         // here to move back in time "enough" to get some estimates later.
-        if latest_block_number > MAX_RECENT_BLOCKS_TO_CHECK {
-            latest_block_number - MAX_RECENT_BLOCKS_TO_CHECK
-        } else {
-            0
-        }
+        latest_block_number.saturating_sub(MAX_RECENT_BLOCKS_TO_CHECK)
     };
 
     tracing::info!(
@@ -167,8 +163,7 @@ pub async fn backfill_to_block(
                 .get_block::<BlockNumber>(block_number.into())
                 .await?
                 .context(format!(
-                    "Could not get block at height {}",
-                    block_number
+                    "Could not get block at height {block_number}"
                 ))?;
 
             index_block(app.clone(), chain_id, rpc, block).await?;

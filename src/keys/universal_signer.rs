@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::aws::ethers_signer::AwsSigner;
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum UniversalSigner {
     Aws(AwsSigner),
     Local(Wallet<SigningKey>),

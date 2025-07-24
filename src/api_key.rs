@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn assert_api_secret_debug() {
         let api_secret = random_api_key().secret;
-        assert_eq!(&format!("{:?}", api_secret), "ApiSecret(\"***\")");
+        assert_eq!(&format!("{api_secret:?}"), "ApiSecret(\"***\")");
     }
 
     #[test]
