@@ -1,14 +1,10 @@
-FROM debian:12 as build-env
+FROM rust:1.88-slim-bookworm AS build-env
 
 WORKDIR /src
 
 # Install dependencies
 RUN apt-get update && \
     apt-get install -y curl build-essential libssl-dev texinfo libcap2-bin pkg-config
-
-# TODO: Use a specific version of rustup
-# Install rustup
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 
 # Copy only rust-toolchain.toml for better caching
 COPY ./rust-toolchain.toml ./rust-toolchain.toml
