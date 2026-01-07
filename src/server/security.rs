@@ -66,24 +66,32 @@ mod tests {
     #[test]
     fn check_credentials_succeeds_with_correct_credentials() {
         let expected = Some(("admin", "secret"));
-        assert!(BasicAuth::check_credentials(expected, "admin", "secret").is_ok());
+        assert!(
+            BasicAuth::check_credentials(expected, "admin", "secret").is_ok()
+        );
     }
 
     #[test]
     fn check_credentials_fails_with_wrong_username() {
         let expected = Some(("admin", "secret"));
-        assert!(BasicAuth::check_credentials(expected, "wrong", "secret").is_err());
+        assert!(
+            BasicAuth::check_credentials(expected, "wrong", "secret").is_err()
+        );
     }
 
     #[test]
     fn check_credentials_fails_with_wrong_password() {
         let expected = Some(("admin", "secret"));
-        assert!(BasicAuth::check_credentials(expected, "admin", "wrong").is_err());
+        assert!(
+            BasicAuth::check_credentials(expected, "admin", "wrong").is_err()
+        );
     }
 
     #[test]
     fn check_credentials_fails_with_both_wrong() {
         let expected = Some(("admin", "secret"));
-        assert!(BasicAuth::check_credentials(expected, "wrong", "wrong").is_err());
+        assert!(
+            BasicAuth::check_credentials(expected, "wrong", "wrong").is_err()
+        );
     }
 }
