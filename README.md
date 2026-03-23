@@ -1,5 +1,7 @@
 # Tx Sitter Monolith
 
+> ⚠️ **Internal Service — Do Not Expose to the Internet**
+
 **Note that this software is still under development. Use at your own discretion**
 
 An easy to run transaction relayer.
