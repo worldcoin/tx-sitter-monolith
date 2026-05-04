@@ -4,7 +4,7 @@ use std::sync::Arc;
 use ethers::middleware::Middleware;
 use ethers::providers::{Http, Provider};
 use ethers::signers::Signer;
-use ethers::types::{NameOrAddress, TransactionRequest, U256};
+use ethers::types::{NameOrAddress, TransactionRequest, U256, U64};
 use eyre::ContextCompat;
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
@@ -359,12 +359,14 @@ impl ApiAdminApi {
             .await?
             .ok_or_else(relayer_not_found)?;
 
-        if req.drain_to.0 == relayer.address.0 {
-            return Err(poem::error::Error::from_string(
-                "drain_to must be different from the relayer address"
-                    .to_string(),
-                StatusCode::BAD_REQUEST,
-            ));
+        if let Some(ref drain_to) = req.drain_to {
+            if drain_to.0 == relayer.address.0 {
+                return Err(poem::error::Error::from_string(
+                    "drain_to must be different from the relayer address"
+                        .to_string(),
+                    StatusCode::BAD_REQUEST,
+                ));
+            }
         }
 
         app.db
@@ -381,8 +383,11 @@ impl ApiAdminApi {
             .await?;
         app.db.purge_unsent_txs(&relayer_id).await?;
 
-        let drain_tx_hash =
-            drain_relayer_funds(app, &relayer, req.drain_to.0).await?;
+        let drain_tx_hash = if let Some(drain_to) = req.drain_to {
+            drain_relayer_funds(app, &relayer, drain_to.0).await?
+        } else {
+            None
+        };
 
         if !app.db.delete_relayer(&relayer_id).await? {
             return Err(relayer_not_found());
@@ -687,7 +692,31 @@ async fn drain_relayer_funds(
         "Submitted relayer drain transaction"
     );
 
-    Ok(Some(base_api_types::H256(tx_hash)))
+    let receipt = pending_tx
+        .await
+        .map_err(|err| {
+            eyre::eyre!("Error waiting for drain transaction receipt: {}", err)
+        })?
+        .ok_or_else(|| {
+            eyre::eyre!("Drain transaction dropped from mempool: {:?}", tx_hash)
+        })?;
+
+    if receipt.status != Some(U64::from(1)) {
+        return Err(eyre::eyre!(
+            "Drain transaction failed: {:?}, status: {:?}",
+            receipt.transaction_hash,
+            receipt.status
+        )
+        .into());
+    }
+
+    tracing::info!(
+        relayer_id = relayer.id,
+        tx_hash = ?receipt.transaction_hash,
+        "Confirmed relayer drain transaction"
+    );
+
+    Ok(Some(base_api_types::H256(receipt.transaction_hash)))
 }
 
 fn tx_response(tx: crate::db::data::ReadTxData) -> GetTxResponse {

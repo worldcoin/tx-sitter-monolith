@@ -178,8 +178,8 @@ pub struct CreateRelayerResponse {
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
 pub struct DeleteRelayerRequest {
-    /// Wallet address that should receive any remaining relayer funds before deletion.
-    pub drain_to: Address,
+    /// Optional wallet address that should receive any remaining relayer funds before deletion.
+    pub drain_to: Option<Address>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]
