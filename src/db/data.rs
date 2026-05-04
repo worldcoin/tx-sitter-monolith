@@ -49,10 +49,12 @@ pub struct TxForEscalation {
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct ReadTxData {
     pub tx_id: String,
+    pub relayer_id: String,
     pub to: AddressWrapper,
     pub data: Vec<u8>,
     pub value: HexU256Wrapper,
     pub gas_limit: HexU256Wrapper,
+    pub priority: TransactionPriority,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
     pub blobs: Option<Vec<Vec<u8>>>,
