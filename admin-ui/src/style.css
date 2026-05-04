@@ -1,0 +1,12 @@
+html, body, #root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+.mantine-Code-root {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
