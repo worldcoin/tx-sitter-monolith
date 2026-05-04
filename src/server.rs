@@ -310,9 +310,9 @@ impl ApiAdminApi {
     ) -> Result<Json<Vec<AdminTxResponse>>> {
         basic_auth.validate(app).await?;
 
-        ensure_relayer_exists(&app, &relayer_id).await?;
+        ensure_relayer_exists(app, &relayer_id).await?;
 
-        let txs = read_relayer_txs(&app, &relayer_id, status, unsent).await?;
+        let txs = read_relayer_txs(app, &relayer_id, status, unsent).await?;
         let txs = txs.into_iter().map(admin_tx_response).collect();
 
         Ok(Json(txs))
@@ -334,7 +334,7 @@ impl ApiAdminApi {
     ) -> Result<Json<SendTxResponse>> {
         basic_auth.validate(app).await?;
 
-        create_tx_for_relayer(&app, &relayer_id, req).await
+        create_tx_for_relayer(app, &relayer_id, req).await
     }
 
     /// Delete Relayer
@@ -357,7 +357,7 @@ impl ApiAdminApi {
             .db
             .get_relayer(&relayer_id)
             .await?
-            .ok_or_else(|| relayer_not_found())?;
+            .ok_or_else(relayer_not_found)?;
 
         if req.drain_to.0 == relayer.address.0 {
             return Err(poem::error::Error::from_string(
@@ -382,7 +382,7 @@ impl ApiAdminApi {
         app.db.purge_unsent_txs(&relayer_id).await?;
 
         let drain_tx_hash =
-            drain_relayer_funds(&app, &relayer, req.drain_to.0).await?;
+            drain_relayer_funds(app, &relayer, req.drain_to.0).await?;
 
         if !app.db.delete_relayer(&relayer_id).await? {
             return Err(relayer_not_found());
@@ -413,7 +413,7 @@ impl RelayerApi {
 
         tracing::info!(?req, "Send tx");
 
-        create_tx_for_relayer(&app, api_token.relayer_id(), req).await
+        create_tx_for_relayer(app, api_token.relayer_id(), req).await
     }
 
     /// Get Transaction
@@ -466,9 +466,8 @@ impl RelayerApi {
     ) -> Result<Json<Vec<GetTxResponse>>> {
         api_token.validate(app).await?;
 
-        let txs =
-            read_relayer_txs(&app, api_token.relayer_id(), status, unsent)
-                .await?;
+        let txs = read_relayer_txs(app, api_token.relayer_id(), status, unsent)
+            .await?;
         let txs = txs.into_iter().map(tx_response).collect();
 
         Ok(Json(txs))
@@ -531,7 +530,7 @@ async fn create_tx_for_relayer(
         .db
         .get_relayer(relayer_id)
         .await?
-        .ok_or_else(|| relayer_not_found())?;
+        .ok_or_else(relayer_not_found)?;
 
     if !relayer.enabled {
         return Err(poem::error::Error::from_string(
