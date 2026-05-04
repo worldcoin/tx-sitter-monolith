@@ -188,6 +188,7 @@ pub struct DeleteRelayerRequest {
 pub struct DeleteRelayerResponse {
     /// Hash of the drain transaction, if a drain transfer was needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[oai(skip_serializing_if_is_none)]
     pub drain_tx_hash: Option<H256>,
 }
 

@@ -1019,7 +1019,7 @@ impl Database {
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.relayer_id = $1
-            AND   (($2 = true AND s.status = $3) OR $2 = false)
+            AND   (($2 = true AND s.status IS NOT DISTINCT FROM $3) OR $2 = false)
             "#,
         )
         .bind(relayer_id)
@@ -1046,7 +1046,7 @@ impl Database {
             FROM transactions t
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
-            WHERE ($1 = true AND s.status = $2) OR $1 = false
+            WHERE ($1 = true AND s.status IS NOT DISTINCT FROM $2) OR $1 = false
             "#,
         )
         .bind(should_filter)
