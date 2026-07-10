@@ -70,7 +70,7 @@ impl ApiKey {
 
         Self {
             relayer_id,
-            secret: ApiSecret(OsRng.gen::<[u8; DEFAULT_SECRET_LEN]>().into()),
+            secret: ApiSecret(OsRng.random::<[u8; DEFAULT_SECRET_LEN]>().into()),
         }
     }
 
@@ -208,7 +208,7 @@ mod tests {
     fn random_api_key() -> ApiKey {
         ApiKey::new(
             uuid::Uuid::new_v4().to_string(),
-            OsRng.gen::<[u8; DEFAULT_SECRET_LEN]>().into(),
+            OsRng.random::<[u8; DEFAULT_SECRET_LEN]>().into(),
         )
         .unwrap()
     }
