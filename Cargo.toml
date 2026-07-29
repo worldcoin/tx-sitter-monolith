@@ -45,7 +45,7 @@ humantime = "2.1.0"
 humantime-serde = "1.1.1"
 hyper = "0.14.27"
 itertools = "0.12.0"
-metrics = "0.22.1"
+metrics = "0.23.0"
 num-bigint = "0.4.4"
 poem = { version = "3", features = ["eyre06"] }
 poem-openapi = { version = "5", features = [

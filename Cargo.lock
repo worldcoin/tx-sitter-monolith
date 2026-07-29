@@ -2877,16 +2877,6 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.22.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be3cbd384d4e955b231c895ce10685e3d8260c5ccffae898c96c723b0772835"
-dependencies = [
- "ahash 0.8.11",
- "portable-atomic",
-]
-
-[[package]]
-name = "metrics"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "884adb57038347dfbaf2d5065887b6cf4312330dc8e94bc30a1a839bd79d3261"
@@ -2908,7 +2898,7 @@ dependencies = [
  "hyper-util",
  "indexmap 2.1.0",
  "ipnet",
- "metrics 0.23.0",
+ "metrics",
  "metrics-util",
  "quanta",
  "thiserror",
@@ -2923,7 +2913,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0905009f54328c743a2046a86c88157621f473a2202cfa922cb716615c4b292"
 dependencies = [
  "cadence",
- "metrics 0.23.0",
+ "metrics",
  "thiserror",
 ]
 
@@ -2936,7 +2926,7 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.14.2",
- "metrics 0.23.0",
+ "metrics",
  "num_cpus",
  "quanta",
  "sketches-ddsketch",
@@ -5333,7 +5323,7 @@ dependencies = [
  "chrono",
  "dirs",
  "http 1.1.0",
- "metrics 0.23.0",
+ "metrics",
  "metrics-exporter-prometheus",
  "metrics-exporter-statsd",
  "opentelemetry",
@@ -5870,7 +5860,7 @@ dependencies = [
  "hyper 0.14.27",
  "indoc",
  "itertools 0.12.0",
- "metrics 0.22.3",
+ "metrics",
  "num-bigint",
  "poem",
  "poem-openapi",
