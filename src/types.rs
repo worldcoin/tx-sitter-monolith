@@ -11,7 +11,16 @@ use crate::db::data::{NetworkInfo, RelayerGasPriceLimit, RelayerInfo};
 pub mod secret_string;
 
 #[derive(
-    Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type, Enum,
+    Deserialize,
+    Serialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    sqlx::Type,
+    Enum,
 )]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
@@ -165,6 +174,24 @@ pub struct CreateRelayerResponse {
     pub address: Address,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct DeleteRelayerRequest {
+    /// Optional wallet address that should receive any remaining relayer funds before deletion.
+    pub drain_to: Option<Address>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct DeleteRelayerResponse {
+    /// Hash of the drain transaction, if a drain transfer was needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[oai(skip_serializing_if_is_none)]
+    pub drain_tx_hash: Option<H256>,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, Object)]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
@@ -212,6 +239,31 @@ pub struct SendTxRequest {
 #[oai(rename_all = "camelCase")]
 pub struct SendTxResponse {
     pub tx_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct AdminTxResponse {
+    pub tx_id: String,
+    pub relayer_id: String,
+    pub to: Address,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<HexBytes>,
+    pub value: DecimalU256,
+    pub gas_limit: DecimalU256,
+    pub priority: TransactionPriority,
+    pub nonce: u64,
+    #[serde(default, with = "crate::serde_utils::base64_binary")]
+    #[oai(default)]
+    pub blobs: Option<Vec<Vec<u8>>>,
+
+    // Sent tx data
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<H256>,
+    #[serde(default)]
+    #[oai(default)]
+    pub status: Option<TxStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]

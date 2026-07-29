@@ -172,6 +172,69 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
+    pub async fn delete_relayer(&self, relayer_id: &str) -> eyre::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM sent_transactions
+            WHERE tx_id IN (
+                SELECT id FROM transactions WHERE relayer_id = $1
+            )
+            "#,
+        )
+        .bind(relayer_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM tx_hashes
+            WHERE tx_id IN (
+                SELECT id FROM transactions WHERE relayer_id = $1
+            )
+            "#,
+        )
+        .bind(relayer_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM transactions
+            WHERE relayer_id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM api_keys
+            WHERE relayer_id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        let res = sqlx::query(
+            r#"
+            DELETE FROM relayers
+            WHERE id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(res.rows_affected() > 0)
+    }
+
+    #[instrument(skip(self), level = "debug")]
     pub async fn get_relayers(&self) -> eyre::Result<Vec<RelayerInfo>> {
         Ok(sqlx::query_as(
             r#"
@@ -901,7 +964,7 @@ impl Database {
     ) -> eyre::Result<Option<ReadTxData>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
+            SELECT t.id as tx_id, t.relayer_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.priority, t.nonce,
                    t.blobs, h.tx_hash, s.status
             FROM transactions t
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
@@ -922,7 +985,7 @@ impl Database {
     ) -> eyre::Result<Option<ReadTxData>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
+            SELECT t.id as tx_id, t.relayer_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.priority, t.nonce,
                    t.blobs, h.tx_hash, s.status
             FROM transactions t
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
@@ -950,13 +1013,13 @@ impl Database {
 
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
-                   t. blobs, h.tx_hash, s.status
+            SELECT t.id as tx_id, t.relayer_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.priority, t.nonce,
+                   t.blobs, h.tx_hash, s.status
             FROM transactions t
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.relayer_id = $1
-            AND   (($2 = true AND s.status = $3) OR $2 = false)
+            AND   (($2 = true AND s.status IS NOT DISTINCT FROM $3) OR $2 = false)
             "#,
         )
         .bind(relayer_id)
@@ -978,12 +1041,12 @@ impl Database {
 
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
-                   t. blobs, h.tx_hash, s.status
+            SELECT t.id as tx_id, t.relayer_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.priority, t.nonce,
+                   t.blobs, h.tx_hash, s.status
             FROM transactions t
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
-            WHERE ($1 = true AND s.status = $2) OR $1 = false
+            WHERE ($1 = true AND s.status IS NOT DISTINCT FROM $2) OR $1 = false
             "#,
         )
         .bind(should_filter)

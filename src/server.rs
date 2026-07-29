@@ -4,6 +4,7 @@ use std::sync::Arc;
 use ethers::middleware::Middleware;
 use ethers::providers::{Http, Provider};
 use ethers::signers::Signer;
+use ethers::types::{NameOrAddress, TransactionRequest, U256, U64};
 use eyre::ContextCompat;
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
@@ -23,8 +24,9 @@ use crate::db::CreateResult;
 use crate::service::Service;
 use crate::task_runner::TaskRunner;
 use crate::types::{
-    CreateApiKeyResponse, CreateNetworkRequest, CreateRelayerRequest,
-    CreateRelayerResponse, ErrorResponse, GetTxResponse, NetworkResponse,
+    AdminTxResponse, CreateApiKeyResponse, CreateNetworkRequest,
+    CreateRelayerRequest, CreateRelayerResponse, DeleteRelayerRequest,
+    DeleteRelayerResponse, ErrorResponse, GetTxResponse, NetworkResponse,
     RelayerResponse, RelayerUpdateRequest, RpcRequest, SendTxRequest,
     SendTxResponse, TxStatus,
 };
@@ -254,6 +256,147 @@ impl AdminApi {
     }
 }
 
+struct ApiAdminApi;
+
+#[OpenApi(prefix_path = "/1/api/admin/")]
+impl ApiAdminApi {
+    /// Get Transaction
+    #[oai(
+        path = "/relayer/:relayer_id/tx/:tx_id",
+        method = "get",
+        operation_id = "admin_get_transaction",
+        tag = "OpenAPITags::AdminV1"
+    )]
+    async fn get_tx(
+        &self,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
+        Path(relayer_id): Path<String>,
+        Path(tx_id): Path<String>,
+    ) -> Result<Json<AdminTxResponse>> {
+        basic_auth.validate(app).await?;
+
+        let tx = app
+            .db
+            .read_relayer_tx(&relayer_id, &tx_id)
+            .await?
+            .ok_or_else(|| {
+                poem::error::Error::from_string(
+                    "Transaction not found".to_string(),
+                    StatusCode::NOT_FOUND,
+                )
+            })?;
+
+        Ok(Json(admin_tx_response(tx)))
+    }
+
+    /// Get Transactions
+    #[oai(
+        path = "/relayer/:relayer_id/txs",
+        method = "get",
+        operation_id = "admin_get_transactions",
+        tag = "OpenAPITags::AdminV1"
+    )]
+    async fn get_txs(
+        &self,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
+        Path(relayer_id): Path<String>,
+        /// Optional tx status to filter by
+        Query(status): Query<Option<TxStatus>>,
+        /// Fetch unsent txs, overrides the status query
+        #[oai(default = "default_false")]
+        Query(unsent): Query<bool>,
+    ) -> Result<Json<Vec<AdminTxResponse>>> {
+        basic_auth.validate(app).await?;
+
+        ensure_relayer_exists(app, &relayer_id).await?;
+
+        let txs = read_relayer_txs(app, &relayer_id, status, unsent).await?;
+        let txs = txs.into_iter().map(admin_tx_response).collect();
+
+        Ok(Json(txs))
+    }
+
+    /// Send Transaction
+    #[oai(
+        path = "/relayer/:relayer_id/tx",
+        method = "post",
+        operation_id = "admin_create_transaction",
+        tag = "OpenAPITags::AdminV1"
+    )]
+    async fn send_tx(
+        &self,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
+        Path(relayer_id): Path<String>,
+        Json(req): Json<SendTxRequest>,
+    ) -> Result<Json<SendTxResponse>> {
+        basic_auth.validate(app).await?;
+
+        create_tx_for_relayer(app, &relayer_id, req).await
+    }
+
+    /// Delete Relayer
+    #[oai(
+        path = "/relayer/:relayer_id",
+        method = "delete",
+        operation_id = "admin_delete_relayer",
+        tag = "OpenAPITags::AdminV1"
+    )]
+    async fn delete_relayer(
+        &self,
+        basic_auth: BasicAuth,
+        Data(app): Data<&Arc<App>>,
+        Path(relayer_id): Path<String>,
+        Json(req): Json<DeleteRelayerRequest>,
+    ) -> Result<Json<DeleteRelayerResponse>> {
+        basic_auth.validate(app).await?;
+
+        let relayer = app
+            .db
+            .get_relayer(&relayer_id)
+            .await?
+            .ok_or_else(relayer_not_found)?;
+
+        if let Some(ref drain_to) = req.drain_to {
+            if drain_to.0 == relayer.address.0 {
+                return Err(poem::error::Error::from_string(
+                    "drain_to must be different from the relayer address"
+                        .to_string(),
+                    StatusCode::BAD_REQUEST,
+                ));
+            }
+        }
+
+        app.db
+            .update_relayer(
+                &relayer_id,
+                &RelayerUpdateRequest {
+                    relayer_name: None,
+                    max_inflight_txs: None,
+                    max_queued_txs: None,
+                    gas_price_limits: None,
+                    enabled: Some(false),
+                },
+            )
+            .await?;
+        app.db.purge_unsent_txs(&relayer_id).await?;
+
+        let drain_tx_hash = if let Some(drain_to) = req.drain_to {
+            drain_relayer_funds(app, &relayer, drain_to.0).await?
+        } else {
+            None
+        };
+
+        if !app.db.delete_relayer(&relayer_id).await? {
+            return Err(relayer_not_found());
+        }
+
+        Ok(Json(DeleteRelayerResponse { drain_tx_hash }))
+    }
+}
+
 struct RelayerApi;
 
 #[OpenApi(prefix_path = "/1/api/")]
@@ -275,97 +418,7 @@ impl RelayerApi {
 
         tracing::info!(?req, "Send tx");
 
-        let tx_id = if let Some(id) = req.tx_id {
-            id
-        } else {
-            uuid::Uuid::new_v4().to_string()
-        };
-
-        let relayer = app
-            .db
-            .get_relayer(api_token.relayer_id())
-            .await?
-            .context("Missing relayer")?;
-
-        if !relayer.enabled {
-            return Err(poem::error::Error::from_string(
-                "Relayer is disabled".to_string(),
-                StatusCode::FORBIDDEN,
-            ));
-        }
-
-        let relayer_queued_tx_count = app
-            .db
-            .get_relayer_pending_txs(api_token.relayer_id())
-            .await?;
-
-        if relayer_queued_tx_count > relayer.max_queued_txs as usize {
-            return Err(poem::error::Error::from_string(
-                "Relayer queue is full".to_string(),
-                StatusCode::TOO_MANY_REQUESTS,
-            ));
-        }
-
-        let relayer_queued_tx_gas_limit_sum = app
-            .db
-            .get_relayer_pending_txs_gas_limit_sum(api_token.relayer_id())
-            .await?;
-
-        let block_fees = app
-            .db
-            .get_latest_block_fees_by_chain_id(relayer.chain_id)
-            .await?;
-        if let Some(block_fees) = block_fees {
-            let gas_limit = relayer_queued_tx_gas_limit_sum + req.gas_limit.0;
-            let estimated_transactions_cost = block_fees.gas_price * gas_limit;
-
-            // TODO: Cache?
-            let http_provider: Provider<Http> =
-                app.http_provider(relayer.chain_id).await?;
-
-            let balance = http_provider
-                .get_balance(relayer.address.0, None)
-                .await
-                .map_err(|err| {
-                    eyre::eyre!("Error checking balance: {}", err)
-                })?;
-
-            if balance < estimated_transactions_cost {
-                return Err(poem::error::Error::from_string(
-                    "Relayer funds are insufficient for transaction to be mined.".to_string(),
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                ));
-            }
-        }
-
-        let res = app
-            .db
-            .create_transaction(
-                &tx_id,
-                req.to.0,
-                req.data.as_ref().map(|d| &d.0[..]).unwrap_or(&[]),
-                req.value.0,
-                req.gas_limit.0,
-                req.priority,
-                req.blobs,
-                api_token.relayer_id(),
-            )
-            .await?;
-
-        if let CreateResult::CONFLICT = res {
-            return Err(poem::error::Error::from_response(
-                ErrorResponse::new(
-                    StatusCode::CONFLICT,
-                    "transaction_already_exists",
-                    "Transaction with same id already exists.",
-                )
-                .into_response(),
-            ));
-        }
-
-        tracing::info!(tx_id, "Transaction created");
-
-        Ok(Json(SendTxResponse { tx_id }))
+        create_tx_for_relayer(app, api_token.relayer_id(), req).await
     }
 
     /// Get Transaction
@@ -396,22 +449,7 @@ impl RelayerApi {
                 )
             })?;
 
-        let get_tx_response = GetTxResponse {
-            tx_id: tx.tx_id,
-            to: tx.to.into(),
-            data: if tx.data.is_empty() {
-                None
-            } else {
-                Some(tx.data.into())
-            },
-            value: tx.value.into(),
-            gas_limit: tx.gas_limit.into(),
-            nonce: tx.nonce,
-            tx_hash: tx.tx_hash.map(|v| v.into()),
-            status: tx.status,
-        };
-
-        Ok(Json(get_tx_response))
+        Ok(Json(tx_response(tx)))
     }
 
     /// Get Transactions
@@ -433,37 +471,9 @@ impl RelayerApi {
     ) -> Result<Json<Vec<GetTxResponse>>> {
         api_token.validate(app).await?;
 
-        let txs = if unsent {
-            app.db
-                .read_relayer_txs(api_token.relayer_id(), Some(None))
-                .await?
-        } else if let Some(status) = status {
-            app.db
-                .read_relayer_txs(api_token.relayer_id(), Some(Some(status)))
-                .await?
-        } else {
-            app.db
-                .read_relayer_txs(api_token.relayer_id(), None)
-                .await?
-        };
-
-        let txs = txs
-            .into_iter()
-            .map(|tx| GetTxResponse {
-                tx_id: tx.tx_id,
-                to: tx.to.into(),
-                data: if tx.data.is_empty() {
-                    None
-                } else {
-                    Some(tx.data.into())
-                },
-                value: tx.value.into(),
-                gas_limit: tx.gas_limit.into(),
-                nonce: tx.nonce,
-                tx_hash: tx.tx_hash.map(|v| v.into()),
-                status: tx.status,
-            })
-            .collect();
+        let txs = read_relayer_txs(app, api_token.relayer_id(), status, unsent)
+            .await?;
+        let txs = txs.into_iter().map(tx_response).collect();
 
         Ok(Json(txs))
     }
@@ -508,6 +518,249 @@ impl RelayerApi {
 
         Ok(Json(response))
     }
+}
+
+async fn create_tx_for_relayer(
+    app: &Arc<App>,
+    relayer_id: &str,
+    req: SendTxRequest,
+) -> Result<Json<SendTxResponse>> {
+    let tx_id = if let Some(id) = req.tx_id {
+        id
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
+
+    let relayer = app
+        .db
+        .get_relayer(relayer_id)
+        .await?
+        .ok_or_else(relayer_not_found)?;
+
+    if !relayer.enabled {
+        return Err(poem::error::Error::from_string(
+            "Relayer is disabled".to_string(),
+            StatusCode::FORBIDDEN,
+        ));
+    }
+
+    let relayer_queued_tx_count =
+        app.db.get_relayer_pending_txs(relayer_id).await?;
+
+    if relayer_queued_tx_count > relayer.max_queued_txs as usize {
+        return Err(poem::error::Error::from_string(
+            "Relayer queue is full".to_string(),
+            StatusCode::TOO_MANY_REQUESTS,
+        ));
+    }
+
+    let relayer_queued_tx_gas_limit_sum = app
+        .db
+        .get_relayer_pending_txs_gas_limit_sum(relayer_id)
+        .await?;
+
+    let block_fees = app
+        .db
+        .get_latest_block_fees_by_chain_id(relayer.chain_id)
+        .await?;
+    if let Some(block_fees) = block_fees {
+        let gas_limit = relayer_queued_tx_gas_limit_sum + req.gas_limit.0;
+        let estimated_transactions_cost = block_fees.gas_price * gas_limit;
+
+        // TODO: Cache?
+        let http_provider: Provider<Http> =
+            app.http_provider(relayer.chain_id).await?;
+
+        let balance = http_provider
+            .get_balance(relayer.address.0, None)
+            .await
+            .map_err(|err| eyre::eyre!("Error checking balance: {}", err))?;
+
+        if balance < estimated_transactions_cost {
+            return Err(poem::error::Error::from_string(
+                "Relayer funds are insufficient for transaction to be mined."
+                    .to_string(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ));
+        }
+    }
+
+    let res = app
+        .db
+        .create_transaction(
+            &tx_id,
+            req.to.0,
+            req.data.as_ref().map(|d| &d.0[..]).unwrap_or(&[]),
+            req.value.0,
+            req.gas_limit.0,
+            req.priority,
+            req.blobs,
+            relayer_id,
+        )
+        .await?;
+
+    if let CreateResult::CONFLICT = res {
+        return Err(poem::error::Error::from_response(
+            ErrorResponse::new(
+                StatusCode::CONFLICT,
+                "transaction_already_exists",
+                "Transaction with same id already exists.",
+            )
+            .into_response(),
+        ));
+    }
+
+    tracing::info!(tx_id, relayer_id, "Transaction created");
+
+    Ok(Json(SendTxResponse { tx_id }))
+}
+
+async fn read_relayer_txs(
+    app: &Arc<App>,
+    relayer_id: &str,
+    status: Option<TxStatus>,
+    unsent: bool,
+) -> Result<Vec<crate::db::data::ReadTxData>> {
+    let txs = if unsent {
+        app.db.read_relayer_txs(relayer_id, Some(None)).await?
+    } else if let Some(status) = status {
+        app.db
+            .read_relayer_txs(relayer_id, Some(Some(status)))
+            .await?
+    } else {
+        app.db.read_relayer_txs(relayer_id, None).await?
+    };
+
+    Ok(txs)
+}
+
+async fn ensure_relayer_exists(app: &Arc<App>, relayer_id: &str) -> Result<()> {
+    if app.db.get_relayer(relayer_id).await?.is_none() {
+        return Err(relayer_not_found());
+    }
+
+    Ok(())
+}
+
+async fn drain_relayer_funds(
+    app: &Arc<App>,
+    relayer: &crate::db::data::RelayerInfo,
+    drain_to: ethers::types::Address,
+) -> Result<Option<base_api_types::H256>> {
+    const TRANSFER_GAS_LIMIT: u64 = 21_000;
+
+    let provider = app.http_provider(relayer.chain_id).await?;
+    let balance = provider
+        .get_balance(relayer.address.0, None)
+        .await
+        .map_err(|err| eyre::eyre!("Error checking balance: {}", err))?;
+    let gas_price = provider
+        .get_gas_price()
+        .await
+        .map_err(|err| eyre::eyre!("Error getting gas price: {}", err))?;
+    let gas_cost = gas_price * U256::from(TRANSFER_GAS_LIMIT);
+
+    if balance <= gas_cost {
+        tracing::info!(
+            relayer_id = relayer.id,
+            balance = %balance,
+            gas_cost = %gas_cost,
+            "Skipping relayer drain because balance is not enough to pay gas"
+        );
+        return Ok(None);
+    }
+
+    let middleware = app
+        .signer_middleware(relayer.chain_id, relayer.key_id.clone())
+        .await?;
+    let tx = TransactionRequest::new()
+        .to(NameOrAddress::Address(drain_to))
+        .from(relayer.address.0)
+        .gas(TRANSFER_GAS_LIMIT)
+        .gas_price(gas_price)
+        .value(balance - gas_cost);
+
+    let pending_tx =
+        middleware.send_transaction(tx, None).await.map_err(|err| {
+            eyre::eyre!("Error sending drain transaction: {}", err)
+        })?;
+    let tx_hash = *pending_tx;
+
+    tracing::info!(
+        relayer_id = relayer.id,
+        ?tx_hash,
+        "Submitted relayer drain transaction"
+    );
+
+    let receipt = pending_tx
+        .await
+        .map_err(|err| {
+            eyre::eyre!("Error waiting for drain transaction receipt: {}", err)
+        })?
+        .ok_or_else(|| {
+            eyre::eyre!("Drain transaction dropped from mempool: {:?}", tx_hash)
+        })?;
+
+    if receipt.status != Some(U64::from(1)) {
+        return Err(eyre::eyre!(
+            "Drain transaction failed: {:?}, status: {:?}",
+            receipt.transaction_hash,
+            receipt.status
+        )
+        .into());
+    }
+
+    tracing::info!(
+        relayer_id = relayer.id,
+        tx_hash = ?receipt.transaction_hash,
+        "Confirmed relayer drain transaction"
+    );
+
+    Ok(Some(base_api_types::H256(receipt.transaction_hash)))
+}
+
+fn tx_response(tx: crate::db::data::ReadTxData) -> GetTxResponse {
+    GetTxResponse {
+        tx_id: tx.tx_id,
+        to: tx.to.into(),
+        data: if tx.data.is_empty() {
+            None
+        } else {
+            Some(tx.data.into())
+        },
+        value: tx.value.into(),
+        gas_limit: tx.gas_limit.into(),
+        nonce: tx.nonce,
+        tx_hash: tx.tx_hash.map(|v| v.into()),
+        status: tx.status,
+    }
+}
+
+fn admin_tx_response(tx: crate::db::data::ReadTxData) -> AdminTxResponse {
+    AdminTxResponse {
+        tx_id: tx.tx_id,
+        relayer_id: tx.relayer_id,
+        to: tx.to.into(),
+        data: if tx.data.is_empty() {
+            None
+        } else {
+            Some(tx.data.into())
+        },
+        value: tx.value.into(),
+        gas_limit: tx.gas_limit.into(),
+        priority: tx.priority,
+        nonce: tx.nonce,
+        blobs: tx.blobs,
+        tx_hash: tx.tx_hash.map(|v| v.into()),
+        status: tx.status,
+    }
+}
+
+fn relayer_not_found() -> poem::Error {
+    poem::error::Error::from_string(
+        "Relayer not found".to_string(),
+        StatusCode::NOT_FOUND,
+    )
 }
 
 fn default_false() -> bool {
@@ -593,9 +846,9 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
 
 fn create_api_service(
     server_address: Option<&String>,
-) -> OpenApiService<(AdminApi, RelayerApi, ServiceApi), ()> {
+) -> OpenApiService<(AdminApi, ApiAdminApi, RelayerApi, ServiceApi), ()> {
     let mut api_service = OpenApiService::new(
-        (AdminApi, RelayerApi, ServiceApi),
+        (AdminApi, ApiAdminApi, RelayerApi, ServiceApi),
         "Tx Sitter",
         version::version!(),
     )
