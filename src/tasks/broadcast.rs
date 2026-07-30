@@ -15,6 +15,7 @@ use crate::app::App;
 use crate::broadcast_utils::{
     calculate_gas_fees_from_estimates, should_send_relayer_transactions,
 };
+use crate::db::data::RelayerInfo;
 use crate::db::UnsentTx;
 
 const NO_TXS_SLEEP_DURATION: Duration = Duration::from_secs(2);
@@ -61,27 +62,49 @@ async fn broadcast_relayer_txs(
         .context("Missing relayer")?;
 
     if !should_send_relayer_transactions(app, &relayer).await? {
-        tracing::warn!(relayer_id = relayer_id, "Skipping relayer broadcasts");
+        tracing::warn!(
+            relayer_id,
+            relayer_address = %relayer.address,
+            "Skipping relayer broadcasts"
+        );
 
         return Ok(());
     }
 
     tracing::info!(
         relayer_id,
+        relayer_address = %relayer.address,
         num_txs = txs.len(),
         "Broadcasting relayer transactions"
     );
 
     for tx in txs {
-        broadcast_relayer_tx(app, tx).await?;
+        broadcast_relayer_tx(app, &relayer, tx).await?;
     }
 
     Ok(())
 }
 
-#[tracing::instrument(skip(app, tx), fields(relayer_id = tx.relayer_id, tx_id = tx.id))]
-async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
-    tracing::info!(tx_id = tx.id, nonce = tx.nonce, "Sending transaction");
+#[tracing::instrument(
+    skip(app, relayer, tx),
+    fields(
+        relayer_id = tx.relayer_id,
+        relayer_address = %relayer.address,
+        tx_id = tx.id
+    )
+)]
+async fn broadcast_relayer_tx(
+    app: &App,
+    relayer: &RelayerInfo,
+    tx: UnsentTx,
+) -> eyre::Result<()> {
+    tracing::info!(
+        relayer_id = relayer.id,
+        relayer_address = %relayer.address,
+        tx_id = tx.id,
+        nonce = tx.nonce,
+        "Sending transaction"
+    );
 
     let middleware = app
         .signer_middleware(tx.chain_id, tx.key_id.clone())
@@ -128,7 +151,12 @@ async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
         .await?;
     let tx_hash = H256::from(ethers::utils::keccak256(&raw_signed_tx));
 
-    tracing::debug!(tx_id = tx.id, "Saving transaction");
+    tracing::debug!(
+        relayer_id = relayer.id,
+        relayer_address = %relayer.address,
+        tx_id = tx.id,
+        "Saving transaction"
+    );
     app.db
         .insert_tx_broadcast(
             &tx.id,
@@ -138,19 +166,32 @@ async fn broadcast_relayer_tx(app: &App, tx: UnsentTx) -> eyre::Result<()> {
         )
         .await?;
 
-    tracing::debug!(tx_id = tx.id, "Sending transaction");
+    tracing::debug!(
+        relayer_id = relayer.id,
+        relayer_address = %relayer.address,
+        tx_id = tx.id,
+        "Sending transaction"
+    );
 
     let pending_tx = middleware.send_raw_transaction(raw_signed_tx).await;
 
     let pending_tx = match pending_tx {
         Ok(pending_tx) => pending_tx,
         Err(err) => {
-            tracing::error!(tx_id = tx.id, error = ?err, "Failed to send transaction");
+            tracing::error!(
+                relayer_id = relayer.id,
+                relayer_address = %relayer.address,
+                tx_id = tx.id,
+                error = ?err,
+                "Failed to send transaction"
+            );
             return Ok(());
         }
     };
 
     tracing::info!(
+        relayer_id = relayer.id,
+        relayer_address = %relayer.address,
         tx_id = tx.id,
         tx_nonce = tx.nonce,
         tx_hash = ?tx_hash,

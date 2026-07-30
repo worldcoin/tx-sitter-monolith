@@ -1,3 +1,5 @@
+use std::fmt;
+
 use ethers::types::Address;
 use serde::{Deserialize, Serialize};
 use sqlx::database::HasValueRef;
@@ -6,6 +8,12 @@ use sqlx::Database;
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AddressWrapper(pub Address);
+
+impl fmt::Display for AddressWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#x}", self.0)
+    }
+}
 
 impl<'r, DB> sqlx::Decode<'r, DB> for AddressWrapper
 where
@@ -51,5 +59,22 @@ impl From<base_api_types::Address> for AddressWrapper {
 impl From<AddressWrapper> for base_api_types::Address {
     fn from(value: AddressWrapper) -> Self {
         Self(value.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_outputs_full_address() {
+        let address = "0x0123456789abcdef0123456789abcdef01234567"
+            .parse()
+            .unwrap();
+
+        assert_eq!(
+            AddressWrapper(address).to_string(),
+            "0x0123456789abcdef0123456789abcdef01234567"
+        );
     }
 }

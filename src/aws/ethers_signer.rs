@@ -69,7 +69,7 @@ impl std::fmt::Display for AwsSigner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "AwsSigner {{ address: {}, chain_id: {}, key_id: {} }}",
+            "AwsSigner {{ address: {:#x}, chain_id: {}, key_id: {} }}",
             self.address, self.chain_id, self.key_id
         )
     }

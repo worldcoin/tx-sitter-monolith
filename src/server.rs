@@ -331,6 +331,14 @@ impl RelayerApi {
                 })?;
 
             if balance < estimated_transactions_cost {
+                tracing::warn!(
+                    relayer_id = relayer.id,
+                    relayer_address = %relayer.address,
+                    balance = %balance,
+                    estimated_transactions_cost = %estimated_transactions_cost,
+                    "Relayer funds are insufficient for transaction to be mined"
+                );
+
                 return Err(poem::error::Error::from_string(
                     "Relayer funds are insufficient for transaction to be mined.".to_string(),
                     StatusCode::UNPROCESSABLE_ENTITY,
@@ -363,7 +371,12 @@ impl RelayerApi {
             ));
         }
 
-        tracing::info!(tx_id, "Transaction created");
+        tracing::info!(
+            relayer_id = relayer.id,
+            relayer_address = %relayer.address,
+            tx_id,
+            "Transaction created"
+        );
 
         Ok(Json(SendTxResponse { tx_id }))
     }

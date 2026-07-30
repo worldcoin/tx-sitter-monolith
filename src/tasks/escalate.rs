@@ -76,19 +76,32 @@ async fn escalate_relayer_txs(
     Ok(())
 }
 
-#[tracing::instrument(skip(app, relayer, tx), fields(tx_id = tx.id))]
+#[tracing::instrument(
+    skip(app, relayer, tx),
+    fields(
+        relayer_id = relayer.id,
+        relayer_address = %relayer.address,
+        tx_id = tx.id
+    )
+)]
 async fn escalate_relayer_tx(
     app: &App,
     relayer: &RelayerInfo,
     tx: TxForEscalation,
 ) -> eyre::Result<()> {
     if !should_send_relayer_transactions(app, relayer).await? {
-        tracing::warn!(relayer_id = relayer.id, "Skipping relayer escalations");
+        tracing::warn!(
+            relayer_id = relayer.id,
+            relayer_address = %relayer.address,
+            "Skipping relayer escalations"
+        );
 
         return Ok(());
     }
 
     tracing::info!(
+        relayer_id = relayer.id,
+        relayer_address = %relayer.address,
         tx_id = tx.id,
         escalation_count = tx.escalation_count,
         "Escalating transaction"
@@ -143,7 +156,13 @@ async fn escalate_relayer_tx(
     let pending_tx = match pending_tx {
         Ok(pending_tx) => pending_tx,
         Err(err) => {
-            tracing::error!(tx_id = tx.id, error = ?err, "Failed to escalate transaction");
+            tracing::error!(
+                relayer_id = relayer.id,
+                relayer_address = %relayer.address,
+                tx_id = tx.id,
+                error = ?err,
+                "Failed to escalate transaction"
+            );
             return Ok(());
         }
     };
@@ -151,6 +170,8 @@ async fn escalate_relayer_tx(
     let tx_hash = pending_tx.tx_hash();
 
     tracing::info!(
+        relayer_id = relayer.id,
+        relayer_address = %relayer.address,
         tx_id = tx.id,
         ?tx_hash,
         ?initial_max_priority_fee_per_gas,
@@ -164,6 +185,7 @@ async fn escalate_relayer_tx(
     if tx.escalation_count + 1 >= app.config.service.max_escalations {
         tracing::warn!(
             relayer_id = relayer.id,
+            relayer_address = %relayer.address,
             tx_id = tx.id,
             escalation_count = tx.escalation_count,
             "Too many escalations"
@@ -174,7 +196,12 @@ async fn escalate_relayer_tx(
         .escalate_tx(&tx.id, tx_hash, max_fee_per_gas, max_fee_per_gas)
         .await?;
 
-    tracing::info!(tx_id = tx.id, "Escalated transaction saved");
+    tracing::info!(
+        relayer_id = relayer.id,
+        relayer_address = %relayer.address,
+        tx_id = tx.id,
+        "Escalated transaction saved"
+    );
 
     Ok(())
 }
