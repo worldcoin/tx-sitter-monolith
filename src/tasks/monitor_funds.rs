@@ -44,7 +44,7 @@ pub async fn monitor_funds(app: Arc<App>) -> eyre::Result<()> {
                 .get_balance(NameOrAddress::Address(relayer.address.0), None)
                 .await?;
 
-            let address = format!("{:#x}", relayer.address.0);
+            let address = relayer.address.to_string();
             let labels = [
                 ("relayer_id", relayer.id.clone()),
                 ("relayer_name", relayer.name.clone()),
@@ -57,7 +57,7 @@ pub async fn monitor_funds(app: Arc<App>) -> eyre::Result<()> {
             if balance < low_balance_threshold {
                 tracing::warn!(
                     relayer_id = relayer.id,
-                    address = %relayer.address.0,
+                    relayer_address = %address,
                     balance = %balance,
                     "Relayer has low balance"
                 );

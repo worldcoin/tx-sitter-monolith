@@ -27,6 +27,7 @@ pub async fn should_send_relayer_transactions(
     if !relayer.enabled {
         tracing::warn!(
             relayer_id = relayer.id,
+            relayer_address = %relayer.address,
             chain_id = relayer.chain_id,
             "Relayer is disabled, skipping transactions broadcast"
         );
@@ -44,6 +45,7 @@ pub async fn should_send_relayer_transactions(
         if chain_fees.gas_price > gas_limit.value.0 {
             tracing::warn!(
                 relayer_id = relayer.id,
+                relayer_address = %relayer.address,
                 chain_id = relayer.chain_id,
                 gas_price = ?chain_fees.gas_price,
                 gas_limit = ?gas_limit.value.0,

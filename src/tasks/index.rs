@@ -279,7 +279,7 @@ async fn update_relayer_nonce(
         current_nonce = %relayer.current_nonce,
         nonce = %relayer.nonce,
         new_current_nonce = %tx_count.as_u64(),
-        relayer_address = ?relayer.address.0,
+        relayer_address = %relayer.address,
         "Updating relayer nonce"
     );
 
