@@ -52,7 +52,7 @@ RUN cargo fetch \
 RUN /src/target/release/tx-sitter --version
 
 # cc variant because we need libgcc and others
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 
 # Copy the tx-sitter binary
 COPY --from=build-env --chown=0:10001 --chmod=010 /src/target/release/tx-sitter /bin/tx-sitter
