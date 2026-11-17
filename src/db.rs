@@ -404,11 +404,17 @@ impl Database {
         .await?)
     }
 
-    #[instrument(skip(self), level = "debug")]
+    /// Records the first signed version of `tx_id`, which must be stored
+    /// before it is sent.
+    ///
+    /// Fails if `tx_id` was already broadcast, so that two broadcasts of the
+    /// same transaction can't both be sent.
+    #[instrument(skip(self, raw_signed_tx), level = "debug")]
     pub async fn insert_tx_broadcast(
         &self,
         tx_id: &str,
         tx_hash: B256,
+        raw_signed_tx: &[u8],
         initial_max_fee_per_gas: U256,
         initial_max_priority_fee_per_gas: U256,
     ) -> eyre::Result<()> {
@@ -421,12 +427,13 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO tx_hashes (tx_id, tx_hash, raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas)
+            VALUES ($1, $2, $3, $4, $5)
             "#,
         )
         .bind(tx_id)
         .bind(tx_hash.as_slice())
+        .bind(raw_signed_tx)
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
         .execute(tx.as_mut())
@@ -1649,6 +1656,7 @@ mod tests {
         db.insert_tx_broadcast(
             tx_id,
             tx_hash_1,
+            &[1],
             initial_max_fee_per_gas,
             initial_max_priority_fee_per_gas,
         )
@@ -1749,6 +1757,37 @@ mod tests {
 
         assert_eq!(tx.tx_hash.unwrap().0, tx_hash_2);
         assert_eq!(tx.status, Some(TxStatus::Finalized));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn second_broadcast_of_a_tx_fails() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        create_tx(&db, &relayer_id, "tx_id").await?;
+
+        let fee = U256::from(1);
+        db.insert_tx_broadcast(
+            "tx_id",
+            B256::with_last_byte(1),
+            &[1],
+            fee,
+            fee,
+        )
+        .await?;
+        let second_broadcast = db
+            .insert_tx_broadcast(
+                "tx_id",
+                B256::with_last_byte(2),
+                &[2],
+                fee,
+                fee,
+            )
+            .await;
+
+        assert!(second_broadcast.is_err());
+        assert_eq!(tx_hashes(&db, "tx_id").await?, [B256::with_last_byte(1)]);
 
         Ok(())
     }
@@ -1981,6 +2020,7 @@ mod tests {
         db.insert_tx_broadcast(
             tx_id,
             tx_hash,
+            &[0x02, 0xf8],
             U256::from(2_000_000_000u64),
             U256::from(1_000_000_000u64),
         )
@@ -2030,18 +2070,20 @@ mod tests {
         assert_eq!(value, u256_be_bytes(1_000_000_000_000_000_000));
         assert_eq!(gas_limit, u256_be_bytes(21_000));
 
-        let (hash, max_fee_per_gas, max_priority_fee_per_gas): (
+        let (hash, raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas): (
+            Vec<u8>,
             Vec<u8>,
             Vec<u8>,
             Vec<u8>,
         ) = sqlx::query_as(
-            "SELECT tx_hash, max_fee_per_gas, max_priority_fee_per_gas FROM tx_hashes WHERE tx_id = $1",
+            "SELECT tx_hash, raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas FROM tx_hashes WHERE tx_id = $1",
         )
         .bind(tx_id)
         .fetch_one(&db.pool)
         .await?;
 
         assert_eq!(hash, HASH);
+        assert_eq!(raw_signed_tx, [0x02, 0xf8]);
         assert_eq!(max_fee_per_gas, u256_be_bytes(2_000_000_000));
         assert_eq!(max_priority_fee_per_gas, u256_be_bytes(1_000_000_000));
 
@@ -2089,6 +2131,55 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Creates a network with a relayer and returns the relayer id.
+    async fn create_relayer(db: &Database) -> eyre::Result<String> {
+        let chain_id = 123;
+        db.upsert_network(chain_id, "network_name", "http_rpc", "ws_rpc")
+            .await?;
+
+        let relayer_id = uuid();
+        db.create_relayer(
+            &relayer_id,
+            "relayer_name",
+            chain_id,
+            "key_id",
+            Address::with_last_byte(1),
+        )
+        .await?;
+
+        Ok(relayer_id)
+    }
+
+    async fn create_tx(
+        db: &Database,
+        relayer_id: &str,
+        tx_id: &str,
+    ) -> eyre::Result<CreateResult> {
+        db.create_transaction(
+            tx_id,
+            Address::with_last_byte(1),
+            &[],
+            U256::ZERO,
+            U256::from(21_000),
+            TransactionPriority::Regular,
+            None,
+            relayer_id,
+        )
+        .await
+    }
+
+    /// Returns the hashes stored for `tx_id`, oldest first.
+    async fn tx_hashes(db: &Database, tx_id: &str) -> eyre::Result<Vec<B256>> {
+        let hashes: Vec<(H256Wrapper,)> = sqlx::query_as(
+            "SELECT tx_hash FROM tx_hashes WHERE tx_id = $1 ORDER BY created_at, tx_hash",
+        )
+        .bind(tx_id)
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(hashes.into_iter().map(|(hash,)| hash.0).collect())
     }
 
     /// Big-endian 32-byte encoding of a U256 that fits in a `u64`.

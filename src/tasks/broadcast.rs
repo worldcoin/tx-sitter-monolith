@@ -167,6 +167,7 @@ async fn broadcast_relayer_tx(
         .insert_tx_broadcast(
             &tx.id,
             tx_hash,
+            &raw_signed_tx,
             max_fee_per_gas,
             max_priority_fee_per_gas,
         )
