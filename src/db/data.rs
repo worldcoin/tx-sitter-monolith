@@ -44,6 +44,9 @@ pub struct TxForEscalation {
     pub initial_max_priority_fee_per_gas: HexU256Wrapper,
     #[sqlx(try_from = "i64")]
     pub escalation_count: usize,
+    /// The bytes of the latest signed version, `None` if it was stored
+    /// before signed bytes were kept
+    pub raw_signed_tx: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
