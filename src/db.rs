@@ -1677,42 +1677,6 @@ impl Database {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn get_network_rpc(
-        &self,
-        chain_id: u64,
-        rpc_kind: RpcKind,
-    ) -> eyre::Result<String> {
-        let row: (String,) = sqlx::query_as(
-            r#"
-            SELECT url
-            FROM   rpcs
-            WHERE  chain_id = $1
-            AND    kind = $2
-            "#,
-        )
-        .bind(chain_id as i64)
-        .bind(rpc_kind)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(row.0)
-    }
-
-    #[instrument(skip(self), level = "debug")]
-    pub async fn get_network_chain_ids(&self) -> eyre::Result<Vec<u64>> {
-        let items: Vec<(i64,)> = sqlx::query_as(
-            r#"
-            SELECT chain_id
-            FROM   networks
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(items.into_iter().map(|(x,)| x as u64).collect())
-    }
-
-    #[instrument(skip(self), level = "debug")]
     pub async fn get_networks(&self) -> eyre::Result<Vec<NetworkInfo>> {
         select_networks(&self.pool).await
     }

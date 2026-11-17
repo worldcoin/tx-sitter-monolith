@@ -5,6 +5,7 @@ pub mod app;
 pub mod broadcast_utils;
 pub mod config;
 pub mod db;
+pub mod failover_transport;
 pub mod keys;
 pub mod serde_utils;
 pub mod server;

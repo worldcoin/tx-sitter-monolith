@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use poem::listener::{Acceptor, Listener};
 use postgres_docker_utils::DockerContainerGuard;
 use tokio::net::TcpListener;
 
@@ -55,6 +56,71 @@ impl UnresponsiveServer {
     }
 }
 
+/// An HTTP JSON-RPC server that answers every request the same way.
+pub struct StubRpc {
+    pub url: String,
+    requests: Arc<AtomicUsize>,
+}
+
+impl StubRpc {
+    /// Starts a server that answers with `status` and a JSON-RPC response
+    /// with the request's id and `payload`, such as `{"result": "0x2a"}`.
+    ///
+    /// The server's URL ends in `/v2/secret-key`, like a provider URL.
+    pub async fn spawn(
+        status: poem::http::StatusCode,
+        payload: serde_json::Value,
+    ) -> eyre::Result<Self> {
+        let acceptor = poem::listener::TcpListener::bind("127.0.0.1:0")
+            .into_acceptor()
+            .await?;
+        let addr = acceptor.local_addr()[0]
+            .as_socket_addr()
+            .copied()
+            .ok_or_else(|| eyre::eyre!("Stub RPC has no socket address"))?;
+        let requests = Arc::new(AtomicUsize::new(0));
+
+        let counter = requests.clone();
+        let answer = poem::endpoint::make(move |request: poem::Request| {
+            let counter = counter.clone();
+            let payload = payload.clone();
+
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let body: serde_json::Value =
+                    request.into_body().into_json().await?;
+
+                let mut response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                });
+                response
+                    .as_object_mut()
+                    .expect("Response is an object")
+                    .extend(payload.as_object().cloned().unwrap_or_default());
+
+                Ok::<_, poem::Error>(
+                    poem::Response::builder()
+                        .status(status)
+                        .content_type("application/json")
+                        .body(response.to_string()),
+                )
+            }
+        });
+        tokio::spawn(poem::Server::new_with_acceptor(acceptor).run(answer));
+
+        Ok(Self {
+            url: format!("http://{addr}/v2/secret-key"),
+            requests,
+        })
+    }
+
+    /// Returns how many requests the server has answered so far.
+    pub fn requests(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
+}
+
 /// Starts an app with local keys, `RPC_TIMEOUT` and `BLOCK_STREAM_TIMEOUT`,
 /// and a network `CHAIN_ID` that uses the given RPC URLs.
 pub async fn setup_app(
@@ -100,9 +166,6 @@ pub async fn setup_app(
     };
 
     let app = init_app(config).await?;
-    app.db
-        .apply_static_config(&app.config.networks, &[], None)
-        .await?;
 
     Ok((app, db_container))
 }

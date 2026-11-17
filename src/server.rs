@@ -15,7 +15,7 @@ use poem::{EndpointExt, IntoResponse, Result, Route};
 use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService, Tags};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use self::v2::RelayerApiV2;
@@ -241,37 +241,33 @@ impl RelayerApi {
             .await?
             .context("Missing relayer")?;
 
-        // TODO: Cache?
-        let url = app.http_rpc_url(relayer_info.chain_id).await?;
+        let provider = app.http_provider(relayer_info.chain_id).await?;
+        let response = provider
+            .client()
+            .request::<_, Value>(req.method, req.params)
+            .await;
 
-        // RPC URLs usually embed a provider API key, so neither the error
-        // returned to the caller nor the log may contain the URL.
-        let upstream_error = |stage: &str, err: reqwest::Error| {
-            tracing::warn!(
-                relayer_id = relayer_info.id,
-                chain_id = relayer_info.chain_id,
-                error = %err.without_url(),
-                "RPC proxy {stage} failed"
-            );
+        let response = match response {
+            Ok(result) => {
+                json!({ "jsonrpc": "2.0", "id": req.id, "result": result })
+            }
+            Err(RpcError::ErrorResp(error)) => {
+                json!({ "jsonrpc": "2.0", "id": req.id, "error": error })
+            }
+            Err(err) => {
+                tracing::warn!(
+                    relayer_id = relayer_info.id,
+                    chain_id = relayer_info.chain_id,
+                    error = %err,
+                    "RPC proxy request failed"
+                );
 
-            poem::Error::from_string(
-                "RPC request to the upstream node failed",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )
+                return Err(poem::Error::from_string(
+                    "RPC request to the upstream node failed",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ));
+            }
         };
-
-        let response = app
-            .rpc_client
-            .post(url)
-            .json(&req)
-            .send()
-            .await
-            .map_err(|err| upstream_error("request", err))?;
-
-        let response: Value = response
-            .json()
-            .await
-            .map_err(|err| upstream_error("response parsing", err))?;
 
         Ok(Json(response))
     }

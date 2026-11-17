@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use eyre::Context;
 use tokio::task::JoinHandle;
@@ -9,11 +8,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::App;
 use crate::config::Config;
-use crate::task_runner::{TaskContext, TaskRunner};
+use crate::task_runner::TaskRunner;
 use crate::tx_events::{self, EventNotifier};
 use crate::{static_config, tasks};
-
-const NETWORK_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct Service {
     app: Arc<App>,
@@ -146,33 +143,16 @@ fn add_background_tasks(task_runner: &Arc<TaskRunner<App>>, app: &App) {
         }
     }
 
-    let runner = task_runner.clone();
-    task_runner.add_task("reconcile_networks", move |app, ctx| {
-        reconcile_networks(app, ctx, runner.clone())
-    });
-}
+    for network in &app.config.networks {
+        let chain_id = network.chain_id;
 
-/// Keeps one set of chain tasks running for every network in the database,
-/// including networks added after startup.
-async fn reconcile_networks(
-    app: Arc<App>,
-    ctx: TaskContext,
-    task_runner: Arc<TaskRunner<App>>,
-) -> eyre::Result<()> {
-    while !ctx.is_shutting_down() {
-        for chain_id in app.db.get_network_chain_ids().await? {
-            task_runner.add_task(
-                format!("index_blocks/{chain_id}"),
-                move |app, ctx| tasks::index::index_chain(app, ctx, chain_id),
-            );
-            task_runner.add_task(
-                format!("estimate_fees/{chain_id}"),
-                move |app, ctx| tasks::index::estimate_gas(app, ctx, chain_id),
-            );
-        }
-
-        ctx.idle(NETWORK_RECONCILIATION_INTERVAL).await;
+        task_runner
+            .add_task(format!("index_blocks/{chain_id}"), move |app, ctx| {
+                tasks::index::index_chain(app, ctx, chain_id)
+            });
+        task_runner
+            .add_task(format!("estimate_fees/{chain_id}"), move |app, ctx| {
+                tasks::index::estimate_gas(app, ctx, chain_id)
+            });
     }
-
-    Ok(())
 }
