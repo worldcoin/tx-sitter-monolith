@@ -123,15 +123,12 @@ mod tests {
 
     #[test]
     fn run_cmd_to_output_runs_the_command_once() {
-        let dir = std::env::temp_dir().join(format!(
-            "postgres-docker-utils-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir()
+            .join(format!("postgres-docker-utils-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let created =
-            run_cmd_to_output(&format!("mktemp -p {}", dir.display()))
-                .unwrap();
+            run_cmd_to_output(&format!("mktemp -p {}", dir.display())).unwrap();
 
         let files: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
         std::fs::remove_dir_all(&dir).unwrap();
