@@ -1,7 +1,10 @@
 mod common;
 
 use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
-use tx_sitter_client::apis::relayer_v1_api::CreateTransactionParams;
+use tx_sitter_client::apis::configuration::Configuration;
+use tx_sitter_client::apis::relayer_v1_api::{
+    CreateTransactionParams, GetTransactionParams,
+};
 
 use crate::common::prelude::*;
 
@@ -27,7 +30,7 @@ async fn send_tx() -> eyre::Result<()> {
 
     // Send a transaction
     let value: U256 = parse_units("1", "ether")?.into();
-    tx_sitter_client::apis::relayer_v1_api::create_transaction(
+    let tx = tx_sitter_client::apis::relayer_v1_api::create_transaction(
         &client,
         CreateTransactionParams {
             api_token: api_key.clone(),
@@ -43,5 +46,42 @@ async fn send_tx() -> eyre::Result<()> {
 
     await_balance(&provider, value, ARBITRARY_ADDRESS).await?;
 
+    let tx_hash = await_mined_tx_hash(&client, &api_key, &tx.tx_id).await?;
+    let receipt = provider.get_transaction_receipt(tx_hash.0).await?;
+
+    assert!(
+        receipt.is_some(),
+        "No receipt for stored tx hash {tx_hash:?}"
+    );
+
     Ok(())
+}
+
+/// Waits until tx-sitter reports the transaction as mined and returns the
+/// hash it stored when broadcasting.
+async fn await_mined_tx_hash(
+    client: &Configuration,
+    api_key: &str,
+    tx_id: &str,
+) -> eyre::Result<base_api_types::H256> {
+    for _ in 0..30 {
+        let tx = tx_sitter_client::apis::relayer_v1_api::get_transaction(
+            client,
+            GetTransactionParams {
+                api_token: api_key.to_owned(),
+                tx_id: tx_id.to_owned(),
+            },
+        )
+        .await?;
+
+        if let (Some(TxStatus::Mined | TxStatus::Finalized), Some(tx_hash)) =
+            (tx.status, tx.tx_hash)
+        {
+            return Ok(tx_hash);
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    eyre::bail!("Transaction {tx_id} was not mined in time");
 }

@@ -1341,11 +1341,20 @@ impl Database {
 mod tests {
     use chrono::NaiveDate;
     use eyre::ContextCompat;
+    use hex_literal::hex;
     use postgres_docker_utils::DockerContainerGuard;
+    use serde_json::json;
 
     use super::*;
     use crate::db::data::RelayerGasPriceLimit;
+    use crate::db::wrappers::address::AddressWrapper;
+    use crate::db::wrappers::decimal_u256::DecimalU256Wrapper;
     use crate::types::{RelayerGasPriceLimitResponse, RelayerUpdateRequest};
+
+    const ADDRESS: [u8; 20] = hex!("1ed53d680b8890dae2a63f673a85ffde1fd5c7a2");
+    const HASH: [u8; 32] = hex!(
+        "46239dbfe5502b9f82c3dff992927d8d9b3168e732b4fd5771288569f5a1813d"
+    );
 
     async fn setup_db() -> eyre::Result<(Database, DockerContainerGuard)> {
         let db_container = postgres_docker_utils::setup().await?;
@@ -1830,6 +1839,220 @@ mod tests {
         assert_eq!(block_fees.gas_price, gas_price);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn wrappers_round_trip_as_raw_bytes() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let u256_cases = [
+            (U256::from(0u64), [0u8; 32]),
+            (U256::from(0x0102u64), u256_be_bytes(0x0102)),
+            (U256::MAX, [0xff; 32]),
+        ];
+
+        for (value, expected_bytes) in u256_cases {
+            let (hex_raw, hex_decoded, decimal_raw, decimal_decoded): (
+                Vec<u8>,
+                HexU256Wrapper,
+                Vec<u8>,
+                DecimalU256Wrapper,
+            ) = sqlx::query_as("SELECT $1, $1, $2, $2")
+                .bind(HexU256Wrapper(value))
+                .bind(DecimalU256Wrapper(value))
+                .fetch_one(&db.pool)
+                .await?;
+
+            assert_eq!(hex_raw, expected_bytes);
+            assert_eq!(hex_decoded.0, value);
+            assert_eq!(decimal_raw, expected_bytes);
+            assert_eq!(decimal_decoded.0, value);
+        }
+
+        let hash = H256Wrapper(HASH.into());
+        let (hash_raw, hash_decoded, hashes_raw): (
+            Vec<u8>,
+            H256Wrapper,
+            Vec<Vec<u8>>,
+        ) = sqlx::query_as("SELECT $1, $1, $2")
+            .bind(&hash)
+            .bind(&[hash.clone(), hash.clone()][..])
+            .fetch_one(&db.pool)
+            .await?;
+
+        assert_eq!(hash_raw, HASH);
+        assert_eq!(hash_decoded, hash);
+        assert_eq!(hashes_raw, vec![HASH.to_vec(), HASH.to_vec()]);
+
+        let (address,): (AddressWrapper,) = sqlx::query_as("SELECT $1::BYTEA")
+            .bind(ADDRESS.to_vec())
+            .fetch_one(&db.pool)
+            .await?;
+
+        assert_eq!(address.0, Address::from(ADDRESS));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn persisted_value_encodings() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let chain_id = 123;
+        db.upsert_network(chain_id, "network_name", "http_rpc", "ws_rpc")
+            .await?;
+
+        let relayer_id = uuid();
+        let address = Address::from(ADDRESS);
+        db.create_relayer(&relayer_id, "relayer", chain_id, "key_id", address)
+            .await?;
+        db.update_relayer(
+            &relayer_id,
+            &RelayerUpdateRequest {
+                relayer_name: None,
+                max_inflight_txs: None,
+                max_queued_txs: None,
+                gas_price_limits: Some(vec![RelayerGasPriceLimitResponse {
+                    chain_id: 1,
+                    value: U256::from(10_123u64).into(),
+                }]),
+                enabled: None,
+            },
+        )
+        .await?;
+
+        let tx_id = "tx_id";
+        db.create_transaction(
+            tx_id,
+            address,
+            &[0xde, 0xad],
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(21_000u64),
+            TransactionPriority::Regular,
+            None,
+            &relayer_id,
+        )
+        .await?;
+
+        let tx_hash = H256::from(HASH);
+        db.insert_tx_broadcast(
+            tx_id,
+            tx_hash,
+            U256::from(2_000_000_000u64),
+            U256::from(1_000_000_000u64),
+        )
+        .await?;
+
+        let block_timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
+        db.save_block(1, chain_id, block_timestamp, &[tx_hash])
+            .await?;
+        db.save_block_fees(
+            1,
+            chain_id,
+            &FeesEstimate {
+                base_fee_per_gas: U256::from(13_132u64),
+                percentile_fees: vec![
+                    U256::from(0u64),
+                    U256::from(100_000_000u64),
+                ],
+            },
+            U256::from(1_000_000_007u64),
+        )
+        .await?;
+
+        let (relayer_address, gas_price_limits): (Vec<u8>, serde_json::Value) =
+            sqlx::query_as(
+                "SELECT address, gas_price_limits::JSONB FROM relayers WHERE id = $1",
+            )
+            .bind(&relayer_id)
+            .fetch_one(&db.pool)
+            .await?;
+
+        assert_eq!(relayer_address, ADDRESS);
+        assert_eq!(
+            gas_price_limits,
+            json!([{ "chainId": 1, "value": "10123" }])
+        );
+
+        let (tx_to, data, value, gas_limit): (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) =
+            sqlx::query_as(
+                "SELECT tx_to, data, value, gas_limit FROM transactions WHERE id = $1",
+            )
+            .bind(tx_id)
+            .fetch_one(&db.pool)
+            .await?;
+
+        assert_eq!(tx_to, ADDRESS);
+        assert_eq!(data, [0xde, 0xad]);
+        assert_eq!(value, u256_be_bytes(1_000_000_000_000_000_000));
+        assert_eq!(gas_limit, u256_be_bytes(21_000));
+
+        let (hash, max_fee_per_gas, max_priority_fee_per_gas): (
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+        ) = sqlx::query_as(
+            "SELECT tx_hash, max_fee_per_gas, max_priority_fee_per_gas FROM tx_hashes WHERE tx_id = $1",
+        )
+        .bind(tx_id)
+        .fetch_one(&db.pool)
+        .await?;
+
+        assert_eq!(hash, HASH);
+        assert_eq!(max_fee_per_gas, u256_be_bytes(2_000_000_000));
+        assert_eq!(max_priority_fee_per_gas, u256_be_bytes(1_000_000_000));
+
+        let (
+            initial_max_fee_per_gas,
+            initial_max_priority_fee_per_gas,
+            valid_tx_hash,
+        ): (Vec<u8>, Vec<u8>, Vec<u8>) = sqlx::query_as(
+            "SELECT initial_max_fee_per_gas, initial_max_priority_fee_per_gas, valid_tx_hash FROM sent_transactions WHERE tx_id = $1",
+        )
+        .bind(tx_id)
+        .fetch_one(&db.pool)
+        .await?;
+
+        assert_eq!(initial_max_fee_per_gas, u256_be_bytes(2_000_000_000));
+        assert_eq!(
+            initial_max_priority_fee_per_gas,
+            u256_be_bytes(1_000_000_000)
+        );
+        assert_eq!(valid_tx_hash, HASH);
+
+        let (block_tx_hash,): (Vec<u8>,) =
+            sqlx::query_as("SELECT tx_hash FROM block_txs WHERE chain_id = $1")
+                .bind(chain_id as i64)
+                .fetch_one(&db.pool)
+                .await?;
+
+        assert_eq!(block_tx_hash, HASH);
+
+        let (gas_price, fee_estimate): (String, serde_json::Value) =
+            sqlx::query_as(
+                "SELECT gas_price::TEXT, fee_estimate::JSONB FROM block_fees WHERE chain_id = $1",
+            )
+            .bind(chain_id as i64)
+            .fetch_one(&db.pool)
+            .await?;
+
+        assert_eq!(gas_price, "1000000007");
+        assert_eq!(
+            fee_estimate,
+            json!({
+                "base_fee_per_gas": "0x334c",
+                "percentile_fees": ["0x0", "0x5f5e100"],
+            })
+        );
+
+        Ok(())
+    }
+
+    /// Big-endian 32-byte encoding of a U256 that fits in a `u64`.
+    fn u256_be_bytes(value: u64) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[24..].copy_from_slice(&value.to_be_bytes());
+        bytes
     }
 
     fn ymd_hms(

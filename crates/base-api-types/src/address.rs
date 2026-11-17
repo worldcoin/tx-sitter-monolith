@@ -64,23 +64,3 @@ impl ToJSON for Address {
         serde_json::to_value(self).ok()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use ethers::types::H160;
-    use hex_literal::hex;
-
-    use super::*;
-
-    #[test]
-    fn deserialize() {
-        let address: Address = serde_json::from_str(
-            r#""1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2""#,
-        )
-        .unwrap();
-
-        let expected = H160(hex!("1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"));
-
-        assert_eq!(address.0, expected);
-    }
-}

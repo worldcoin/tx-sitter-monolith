@@ -65,19 +65,3 @@ impl ToJSON for HexU256 {
         serde_json::to_value(self).ok()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use test_case::test_case;
-
-    use super::*;
-
-    #[test_case("0xff", 255)]
-    #[test_case("0x10", 16)]
-    fn deserialize_string(s: &str, v: u64) {
-        let s = format!("\"{s}\"");
-        let actual: HexU256 = serde_json::from_str(&s).unwrap();
-
-        assert_eq!(actual.0, U256::from(v));
-    }
-}

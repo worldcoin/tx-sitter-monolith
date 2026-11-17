@@ -89,24 +89,3 @@ impl ToJSON for DecimalU256 {
         serde_json::to_value(self).ok()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use test_case::test_case;
-
-    use super::*;
-
-    #[test_case("10", 10)]
-    #[test_case("255", 255)]
-    #[test_case("10000000000000000000", 10000000000000000000)]
-    fn deserialize_string(s: &str, v: u64) {
-        let s = format!("\"{s}\"");
-        let actual: DecimalU256 = serde_json::from_str(&s).unwrap();
-
-        assert_eq!(actual.0, U256::from(v));
-
-        let reserialized = serde_json::to_string(&actual).unwrap();
-
-        assert_eq!(reserialized, s);
-    }
-}

@@ -336,8 +336,130 @@ impl IntoResponse for ErrorResponse {
 mod tests {
     use ethers::types::{Address, U256};
     use ethers::utils::parse_units;
+    use hex_literal::hex;
+    use poem_openapi::types::{ParseFromJSON, ToJSON};
 
     use super::*;
+
+    const ADDRESS: [u8; 20] = hex!("1ed53d680b8890dae2a63f673a85ffde1fd5c7a2");
+    const HASH: [u8; 32] = hex!(
+        "46239dbfe5502b9f82c3dff992927d8d9b3168e732b4fd5771288569f5a1813d"
+    );
+
+    /// Encodes `value` the way the server writes response bodies.
+    fn api_json<T: ToJSON>(value: &T) -> String {
+        serde_json::to_string(&value.to_json().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn send_tx_request_api_json() {
+        let request = SendTxRequest::parse_from_json(Some(serde_json::json!({
+            "to": "0x1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2",
+            "value": "1000000000000000000",
+            "data": "0xDEADBEEF",
+            "gasLimit": "21000",
+            "priority": "fast",
+            "txId": "tx-1",
+            "blobs": [[0, 255]]
+        })))
+        .unwrap();
+
+        assert_eq!(
+            api_json(&request),
+            r#"{"blobs":[[0,255]],"data":"0xdeadbeef","gasLimit":"21000","priority":"fast","to":"0x1ed53d680b8890dae2a63f673a85ffde1fd5c7a2","txId":"tx-1","value":"1000000000000000000"}"#
+        );
+    }
+
+    #[test]
+    fn send_tx_request_api_json_defaults() {
+        let request = SendTxRequest::parse_from_json(Some(serde_json::json!({
+            "to": "0x1ed53d680b8890dae2a63f673a85ffde1fd5c7a2",
+            "value": "0",
+            "gasLimit": "21000"
+        })))
+        .unwrap();
+
+        assert_eq!(
+            api_json(&request),
+            r#"{"blobs":null,"data":null,"gasLimit":"21000","priority":"regular","to":"0x1ed53d680b8890dae2a63f673a85ffde1fd5c7a2","txId":null,"value":"0"}"#
+        );
+    }
+
+    #[test]
+    fn get_tx_response_api_json() {
+        let response = GetTxResponse {
+            tx_id: "tx-1".to_string(),
+            to: Address(ADDRESS.into()),
+            data: Some(HexBytes::from(vec![0xde, 0xad, 0xbe, 0xef])),
+            value: DecimalU256(U256::from(1_000_000_000_000_000_000u64)),
+            gas_limit: DecimalU256(U256::from(21_000u64)),
+            nonce: 7,
+            tx_hash: Some(H256(HASH.into())),
+            status: Some(TxStatus::Mined),
+        };
+
+        assert_eq!(
+            api_json(&response),
+            r#"{"data":"0xdeadbeef","gasLimit":"21000","nonce":7,"status":"mined","to":"0x1ed53d680b8890dae2a63f673a85ffde1fd5c7a2","txHash":"0x46239dbfe5502b9f82c3dff992927d8d9b3168e732b4fd5771288569f5a1813d","txId":"tx-1","value":"1000000000000000000"}"#
+        );
+    }
+
+    #[test]
+    fn get_tx_response_api_json_unsent() {
+        let response = GetTxResponse {
+            tx_id: "tx-1".to_string(),
+            to: Address(ADDRESS.into()),
+            data: None,
+            value: DecimalU256(U256::from(0u64)),
+            gas_limit: DecimalU256(U256::from(21_000u64)),
+            nonce: 0,
+            tx_hash: None,
+            status: None,
+        };
+
+        assert_eq!(
+            api_json(&response),
+            r#"{"data":null,"gasLimit":"21000","nonce":0,"status":null,"to":"0x1ed53d680b8890dae2a63f673a85ffde1fd5c7a2","txHash":null,"txId":"tx-1","value":"0"}"#
+        );
+    }
+
+    #[test]
+    fn relayer_response_api_json() {
+        let response = RelayerResponse {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            chain_id: 1,
+            key_id: "key_id".to_string(),
+            address: Address(ADDRESS.into()),
+            nonce: 2,
+            current_nonce: 1,
+            max_inflight_txs: 5,
+            max_queued_txs: 20,
+            gas_price_limits: vec![RelayerGasPriceLimitResponse {
+                value: DecimalU256(U256::from(100_000_000_000u64)),
+                chain_id: 1,
+            }],
+            enabled: true,
+        };
+
+        assert_eq!(
+            api_json(&response),
+            r#"{"address":"0x1ed53d680b8890dae2a63f673a85ffde1fd5c7a2","chainId":1,"currentNonce":1,"enabled":true,"gasPriceLimits":[{"chainId":1,"value":"100000000000"}],"id":"id","keyId":"key_id","maxInflightTxs":5,"maxQueuedTxs":20,"name":"name","nonce":2}"#
+        );
+    }
+
+    #[test]
+    fn create_relayer_response_api_json() {
+        let response = CreateRelayerResponse {
+            relayer_id: "id".to_string(),
+            address: Address(ADDRESS.into()),
+        };
+
+        assert_eq!(
+            api_json(&response),
+            r#"{"address":"0x1ed53d680b8890dae2a63f673a85ffde1fd5c7a2","relayerId":"id"}"#
+        );
+    }
 
     #[test]
     fn relayer_response_serialize() {

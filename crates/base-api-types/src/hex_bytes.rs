@@ -72,19 +72,3 @@ impl ToJSON for HexBytes {
         serde_json::to_value(&self.0).ok()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use test_case::test_case;
-
-    use super::*;
-
-    #[test_case("0xff", vec![255])]
-    #[test_case("0xffff", vec![255, 255])]
-    #[test_case("0x0101", vec![1, 1])]
-    fn deserialize_string(s: &str, v: Vec<u8>) {
-        let value = serde_json::Value::String(s.to_string());
-        let result = HexBytes::parse_from_json(Some(value)).unwrap();
-        assert_eq!(result.0, Bytes::from(v));
-    }
-}
