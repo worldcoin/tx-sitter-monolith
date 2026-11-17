@@ -25,6 +25,7 @@ pub struct ServiceBuilder {
     max_escalations: usize,
     rpc_timeout: Duration,
     task_stall_timeout: Duration,
+    tx_retention: Duration,
     shutdown_timeout: Duration,
     shutdown: CancellationToken,
     inserts_predefined_values: bool,
@@ -40,6 +41,7 @@ impl Default for ServiceBuilder {
             max_escalations: 100,
             rpc_timeout: Duration::from_secs(10),
             task_stall_timeout: Duration::from_secs(60),
+            tx_retention: Duration::from_secs(30 * 24 * 60 * 60),
             shutdown_timeout: Duration::from_secs(20),
             shutdown: CancellationToken::new(),
             inserts_predefined_values: true,
@@ -80,6 +82,11 @@ impl ServiceBuilder {
 
     pub fn task_stall_timeout(mut self, timeout: Duration) -> Self {
         self.task_stall_timeout = timeout;
+        self
+    }
+
+    pub fn tx_retention(mut self, retention: Duration) -> Self {
+        self.tx_retention = retention;
         self
     }
 
@@ -136,6 +143,7 @@ impl ServiceBuilder {
                 block_stream_timeout: Duration::from_secs(60),
                 rpc_timeout: self.rpc_timeout,
                 task_stall_timeout: self.task_stall_timeout,
+                tx_retention: self.tx_retention,
                 telemetry: None,
                 predefined,
             },

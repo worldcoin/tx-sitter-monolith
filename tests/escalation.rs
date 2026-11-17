@@ -99,6 +99,8 @@ async fn unfunded_tx_mines_once_funded_after_max_escalations(
         TransactionPriority::Regular,
         None,
         DEFAULT_RELAYER_ID,
+        None,
+        None,
     )
     .await?;
 

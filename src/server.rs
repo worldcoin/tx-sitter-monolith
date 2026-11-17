@@ -362,12 +362,16 @@ impl RelayerApi {
                 req.priority,
                 req.blobs,
                 api_token.relayer_id(),
+                None,
+                None,
             )
             .await?;
 
         match res {
             CreateResult::Created => {}
-            CreateResult::Conflict => {
+            // v1 sends store no request hash, so an existing id is always a
+            // conflict
+            CreateResult::Conflict | CreateResult::Repeat => {
                 return Err(poem::error::Error::from_response(
                     ErrorResponse::new(
                         StatusCode::CONFLICT,

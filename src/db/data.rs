@@ -1,4 +1,5 @@
 use alloy::primitives::U256;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
 
@@ -7,7 +8,7 @@ use crate::db::wrappers::address::AddressWrapper;
 use crate::db::wrappers::decimal_u256::DecimalU256Wrapper;
 use crate::db::wrappers::h256::H256Wrapper;
 use crate::db::wrappers::hex_u256::HexU256Wrapper;
-use crate::types::{TransactionPriority, TxStatus};
+use crate::types::{TransactionPriority, TxMetadata, TxStatus};
 
 #[derive(Debug, Clone, FromRow)]
 pub struct UnsentTx {
@@ -78,17 +79,26 @@ pub struct RelayerStaleTxs {
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct ReadTxData {
     pub tx_id: String,
+    pub relayer_id: String,
+    #[sqlx(try_from = "i64")]
+    pub chain_id: u64,
     pub to: AddressWrapper,
     pub data: Vec<u8>,
     pub value: HexU256Wrapper,
     pub gas_limit: HexU256Wrapper,
     #[sqlx(try_from = "i64")]
     pub nonce: u64,
+    pub priority: TransactionPriority,
     pub blobs: Option<Vec<Vec<u8>>>,
+    /// The caller's metadata, which only v2 sends store
+    pub metadata: Option<TxMetadata>,
+    pub created_at: DateTime<Utc>,
 
     // Sent tx data
     pub tx_hash: Option<H256Wrapper>,
     pub status: Option<TxStatus>,
+    /// Timestamp of the block the transaction was mined in
+    pub mined_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]

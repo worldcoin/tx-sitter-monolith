@@ -87,6 +87,14 @@ pub struct TxSitterConfig {
     #[serde(with = "humantime_serde", default = "default::task_stall_timeout")]
     pub task_stall_timeout: Duration,
 
+    /// How long finalized transactions are kept after they are mined.
+    ///
+    /// Sending a `txId` again through the v2 API is idempotent only while its
+    /// transaction is kept. Once it is pruned, the id is free again and a
+    /// repeat creates a new transaction.
+    #[serde(with = "humantime_serde", default = "default::tx_retention")]
+    pub tx_retention: Duration,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predefined: Option<Predefined>,
 
@@ -303,6 +311,10 @@ mod default {
         Duration::from_secs(20)
     }
 
+    pub fn tx_retention() -> Duration {
+        Duration::from_secs(30 * 24 * 60 * 60)
+    }
+
     pub fn max_escalations() -> usize {
         100
     }
@@ -342,6 +354,7 @@ mod tests {
         block_stream_timeout = "1m"
         rpc_timeout = "10s"
         task_stall_timeout = "5m"
+        tx_retention = "30days"
 
         [server]
         host = "127.0.0.1:3000"
@@ -365,6 +378,7 @@ mod tests {
         block_stream_timeout = "1m"
         rpc_timeout = "10s"
         task_stall_timeout = "5m"
+        tx_retention = "30days"
 
         [server]
         host = "127.0.0.1:3000"
@@ -394,6 +408,7 @@ mod tests {
                 block_stream_timeout: default::block_stream_timeout(),
                 rpc_timeout: default::rpc_timeout(),
                 task_stall_timeout: default::task_stall_timeout(),
+                tx_retention: default::tx_retention(),
                 predefined: None,
                 telemetry: None,
             },
@@ -428,6 +443,7 @@ mod tests {
                 block_stream_timeout: default::block_stream_timeout(),
                 rpc_timeout: default::rpc_timeout(),
                 task_stall_timeout: default::task_stall_timeout(),
+                tx_retention: default::tx_retention(),
                 predefined: None,
                 telemetry: None,
             },
@@ -480,6 +496,7 @@ mod tests {
         );
         assert_eq!(config.service.escalation_interval, Duration::from_secs(60));
         assert_eq!(config.service.rpc_timeout, default::rpc_timeout());
+        assert_eq!(config.service.tx_retention, default::tx_retention());
         let KeysConfig::Kms(kms_config) = &config.keys else {
             panic!("Expected KMS keys config");
         };

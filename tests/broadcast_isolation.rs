@@ -93,6 +93,8 @@ async fn create_tx_on_unresponsive_chain(
         TransactionPriority::Regular,
         None,
         &relayer_id,
+        None,
+        None,
     )
     .await?;
 

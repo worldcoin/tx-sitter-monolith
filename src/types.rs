@@ -9,9 +9,21 @@ use crate::api_key::ApiKey;
 use crate::db::data::{NetworkInfo, RelayerGasPriceLimit, RelayerInfo};
 
 pub mod secret_string;
+pub mod tx_metadata;
+
+pub use self::tx_metadata::TxMetadata;
 
 #[derive(
-    Deserialize, Serialize, Debug, Clone, Copy, Default, sqlx::Type, Enum,
+    Deserialize,
+    Serialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    sqlx::Type,
+    Enum,
 )]
 #[serde(rename_all = "camelCase")]
 #[oai(rename_all = "camelCase")]
