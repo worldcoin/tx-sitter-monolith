@@ -511,19 +511,34 @@ impl RelayerApi {
         // TODO: Cache?
         let url = app.http_rpc_url(relayer_info.chain_id).await?;
 
+        // RPC URLs usually embed a provider API key, so neither the error
+        // returned to the caller nor the log may contain the URL.
+        let upstream_error = |stage: &str, err: reqwest::Error| {
+            tracing::warn!(
+                relayer_id = relayer_info.id,
+                chain_id = relayer_info.chain_id,
+                error = %err.without_url(),
+                "RPC proxy {stage} failed"
+            );
+
+            poem::Error::from_string(
+                "RPC request to the upstream node failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        };
+
         let response = app
             .rpc_client
-            .post(url.clone())
+            .post(url)
             .json(&req)
             .send()
             .await
-            .map_err(|err| {
-                eyre::eyre!("Error sending request to {}: {}", url, err)
-            })?;
+            .map_err(|err| upstream_error("request", err))?;
 
-        let response: Value = response.json().await.map_err(|err| {
-            eyre::eyre!("Error parsing response from {}: {}", url, err)
-        })?;
+        let response: Value = response
+            .json()
+            .await
+            .map_err(|err| upstream_error("response parsing", err))?;
 
         Ok(Json(response))
     }

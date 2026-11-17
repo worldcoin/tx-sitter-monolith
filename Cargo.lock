@@ -6807,6 +6807,7 @@ dependencies = [
  "telemetry-batteries",
  "test-case",
  "tokio",
+ "tokio-tungstenite",
  "toml 0.8.8",
  "tracing",
  "tracing-error",

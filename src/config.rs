@@ -74,6 +74,10 @@ pub struct TxSitterConfig {
     )]
     pub block_stream_timeout: Duration,
 
+    /// Max amount of time to wait for a response to an HTTP RPC request
+    #[serde(with = "humantime_serde", default = "default::rpc_timeout")]
+    pub rpc_timeout: Duration,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predefined: Option<Predefined>,
 
@@ -184,7 +188,13 @@ pub enum KeysConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct KmsKeysConfig {}
+pub struct KmsKeysConfig {
+    /// Max amount of time a KMS operation may take, retries included. The
+    /// SDK retries attempts that take longer than 2s, except for CreateKey,
+    /// which gets a single attempt.
+    #[serde(with = "humantime_serde", default = "default::kms_timeout")]
+    pub kms_timeout: Duration,
+}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -234,6 +244,14 @@ mod default {
         Duration::from_secs(60)
     }
 
+    pub fn rpc_timeout() -> Duration {
+        Duration::from_secs(10)
+    }
+
+    pub fn kms_timeout() -> Duration {
+        Duration::from_secs(5)
+    }
+
     pub fn max_escalations() -> usize {
         100
     }
@@ -270,6 +288,7 @@ mod tests {
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
+        rpc_timeout = "10s"
 
         [server]
         host = "127.0.0.1:3000"
@@ -289,6 +308,7 @@ mod tests {
         soft_reorg_interval = "1m"
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
+        rpc_timeout = "10s"
 
         [server]
         host = "127.0.0.1:3000"
@@ -314,6 +334,7 @@ mod tests {
                 soft_reorg_interval: default::soft_reorg_interval(),
                 hard_reorg_interval: default::hard_reorg_interval(),
                 block_stream_timeout: default::block_stream_timeout(),
+                rpc_timeout: default::rpc_timeout(),
                 predefined: None,
                 telemetry: None,
             },
@@ -344,6 +365,7 @@ mod tests {
                 soft_reorg_interval: default::soft_reorg_interval(),
                 hard_reorg_interval: default::hard_reorg_interval(),
                 block_stream_timeout: default::block_stream_timeout(),
+                rpc_timeout: default::rpc_timeout(),
                 predefined: None,
                 telemetry: None,
             },
@@ -393,6 +415,11 @@ mod tests {
             "tx-sitter"
         );
         assert_eq!(config.service.escalation_interval, Duration::from_secs(60));
+        assert_eq!(config.service.rpc_timeout, default::rpc_timeout());
+        let KeysConfig::Kms(kms_config) = &config.keys else {
+            panic!("Expected KMS keys config");
+        };
+        assert_eq!(kms_config.kms_timeout, default::kms_timeout());
         assert_eq!(
             config.database.to_connection_string(),
             "postgres://dbUsername:dbPassword@dbHost:dbPort/dbName"
