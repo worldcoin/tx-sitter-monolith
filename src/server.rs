@@ -511,7 +511,8 @@ impl RelayerApi {
         // TODO: Cache?
         let url = app.http_rpc_url(relayer_info.chain_id).await?;
 
-        let response = reqwest::Client::new()
+        let response = app
+            .rpc_client
             .post(url.clone())
             .json(&req)
             .send()

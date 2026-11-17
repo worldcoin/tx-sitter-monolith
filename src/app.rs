@@ -1,4 +1,5 @@
 use alloy::providers::{ProviderBuilder, RootProvider, WsConnect};
+use alloy::rpc::client::RpcClient;
 use eyre::Context;
 use url::Url;
 
@@ -14,6 +15,10 @@ pub struct App {
     pub keys_source: Box<dyn KeysSource>,
 
     pub db: Database,
+
+    /// Client for HTTP RPC requests, shared by the providers and the RPC
+    /// proxy
+    pub rpc_client: reqwest::Client,
 }
 
 impl App {
@@ -24,10 +29,13 @@ impl App {
         tracing::info!("Initializing db");
         let db = Database::new(&config.database).await?;
 
+        let rpc_client = rpc_http_client()?;
+
         Ok(Self {
             config,
             keys_source,
             db,
+            rpc_client,
         })
     }
 
@@ -43,7 +51,10 @@ impl App {
     ) -> eyre::Result<RootProvider> {
         let url = self.http_rpc_url(chain_id).await?;
 
-        Ok(RootProvider::new_http(url))
+        let client =
+            RpcClient::new_http_with_client(self.rpc_client.clone(), url);
+
+        Ok(RootProvider::new(client))
     }
 
     pub async fn ws_provider(
@@ -96,4 +107,21 @@ async fn init_keys_source(
     };
 
     Ok(keys_source)
+}
+
+/// Builds the client for HTTP RPC requests.
+///
+/// It trusts only the Mozilla root certificates bundled into the binary, the
+/// same roots as alloy's WS transport, which always uses its bundled copy.
+fn rpc_http_client() -> eyre::Result<reqwest::Client> {
+    let root_certs = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+        .iter()
+        .map(|cert| reqwest::Certificate::from_der(cert))
+        .collect::<Result<Vec<_>, _>>()
+        .context("Parsing bundled root certificates")?;
+
+    reqwest::Client::builder()
+        .tls_certs_only(root_certs)
+        .build()
+        .context("Building RPC HTTP client")
 }
