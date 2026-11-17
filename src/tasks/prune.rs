@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use eyre::Context;
 
 use crate::app::App;
 use crate::task_runner::TaskContext;
@@ -27,10 +28,11 @@ const fn days(days: i64) -> i64 {
 }
 
 // TODO: This should be a per network setting
+//
+// Finalized transactions may outlive their blocks, see `service.tx_retention`:
+// reorg handling only looks at mined transactions, which finalize an hour
+// after they are mined.
 const BLOCK_PRUNE_AGE_SECONDS: i64 = days(7);
-// NOTE: We must prune txs earlier than blocks
-//       as a missing block tx indicates a hard reorg
-const TX_PRUNE_AGE_SECONDS: i64 = days(5);
 
 pub async fn prune_blocks(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
     while !ctx.is_shutting_down() {
@@ -51,9 +53,11 @@ pub async fn prune_blocks(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
 }
 
 pub async fn prune_txs(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
+    let retention = chrono::Duration::from_std(app.config.service.tx_retention)
+        .context("service.tx_retention is out of range")?;
+
     while !ctx.is_shutting_down() {
-        let prune_age = chrono::Duration::seconds(TX_PRUNE_AGE_SECONDS);
-        let tx_prune_timestamp = Utc::now() - prune_age;
+        let tx_prune_timestamp = Utc::now() - retention;
 
         tracing::info!(?tx_prune_timestamp, "Pruning txs");
 

@@ -76,6 +76,7 @@ pub async fn setup_app(
             block_stream_timeout: BLOCK_STREAM_TIMEOUT,
             rpc_timeout: RPC_TIMEOUT,
             task_stall_timeout: Duration::from_secs(60),
+            tx_retention: Duration::from_secs(30 * 24 * 60 * 60),
             predefined: None,
             telemetry: None,
         },
