@@ -16,7 +16,8 @@ pub async fn finalize_txs(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
             finalization_timestamp
         );
 
-        app.db.finalize_txs(finalization_timestamp).await?;
+        let finalized_txs = app.db.finalize_txs(finalization_timestamp).await?;
+        metrics::counter!("tx_finalized").increment(finalized_txs.len() as u64);
 
         ctx.idle(Duration::from_secs(
             TIME_BETWEEN_FINALIZATIONS_SECONDS as u64,

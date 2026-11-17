@@ -1,71 +1,129 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::consensus::TxEip1559;
 use alloy::primitives::{keccak256, TxKind};
 use eyre::{Context, ContextCompat};
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures::FutureExt;
 use itertools::Itertools;
+use tokio::task::{JoinError, JoinSet};
+use tokio::time::timeout;
 
 use crate::app::App;
 use crate::broadcast_utils::{
     calculate_gas_fees_from_estimates, send_raw_tx,
-    should_send_relayer_transactions, SendOutcome,
+    should_send_relayer_transactions, SendOutcome, MAX_SEND_ATTEMPTS,
 };
 use crate::db::data::RelayerInfo;
 use crate::db::UnsentTx;
 use crate::task_runner::TaskContext;
 
-const NO_TXS_SLEEP_DURATION: Duration = Duration::from_secs(2);
+const BROADCAST_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How much longer than its send attempts the broadcast of a transaction may
+/// take, for signing, the database and the backoff between attempts
+const TX_BROADCAST_MARGIN: Duration = Duration::from_secs(30);
+
+/// Broadcasts the unsent transactions of every relayer, in nonce order.
+///
+/// Each relayer's transactions are broadcast by a task of their own. A relayer
+/// whose previous broadcast is still running is skipped rather than waited
+/// for, so a slow relayer or chain doesn't delay the others, and counted in
+/// the `relayer_broadcast_skipped_busy` metric. A transaction whose broadcast
+/// outlives its deadline ends its relayer's broadcast, see
+/// [`broadcast_relayer_txs`]. Once shutdown is requested, this waits for the
+/// running broadcasts, which stop after their current transaction.
 pub async fn broadcast_txs(
     app: Arc<App>,
     ctx: TaskContext,
 ) -> eyre::Result<()> {
+    let mut broadcasts = JoinSet::new();
+    let mut busy_relayers = HashSet::new();
+    let tx_deadline = app.config.service.rpc_timeout * MAX_SEND_ATTEMPTS
+        + TX_BROADCAST_MARGIN;
+
     while !ctx.is_shutting_down() {
-        let txs = app.db.get_unsent_txs().await?;
-        let num_txs = txs.len();
-
-        let txs_by_relayer = sort_txs_by_relayer(txs);
-
-        let mut futures = FuturesUnordered::new();
-
-        for (relayer_id, txs) in txs_by_relayer {
-            futures.push(broadcast_relayer_txs(&app, &ctx, relayer_id, txs));
+        while let Some(Some(finished)) = broadcasts.join_next().now_or_never() {
+            finish_broadcast(finished, &mut busy_relayers)?;
         }
 
-        while let Some(result) = futures.next().await {
-            if let Err(err) = result {
-                tracing::error!(error = ?err, "Failed broadcasting transactions");
+        let txs = app.db.get_unsent_txs().await?;
+
+        for (relayer_id, txs) in sort_txs_by_relayer(txs) {
+            if !busy_relayers.insert(relayer_id.clone()) {
+                metrics::counter!(
+                    "relayer_broadcast_skipped_busy",
+                    &[("relayer_id", relayer_id)]
+                )
+                .increment(1);
+                continue;
             }
+
+            let (app, ctx) = (app.clone(), ctx.clone());
+            broadcasts.spawn(async move {
+                let result = broadcast_relayer_txs(
+                    &app,
+                    &ctx,
+                    &relayer_id,
+                    txs,
+                    tx_deadline,
+                )
+                .await;
+
+                (relayer_id, result)
+            });
         }
 
         ctx.report_progress();
+        ctx.idle(BROADCAST_INTERVAL).await;
+    }
 
-        if num_txs == 0 {
-            ctx.idle(NO_TXS_SLEEP_DURATION).await;
-        }
+    while let Some(finished) = broadcasts.join_next().await {
+        finish_broadcast(finished, &mut busy_relayers)?;
     }
 
     Ok(())
 }
 
+fn finish_broadcast(
+    finished: Result<(String, eyre::Result<()>), JoinError>,
+    busy_relayers: &mut HashSet<String>,
+) -> eyre::Result<()> {
+    let (relayer_id, result) =
+        finished.context("Relayer broadcast panicked")?;
+    busy_relayers.remove(&relayer_id);
+
+    if let Err(err) = result {
+        tracing::error!(
+            relayer_id,
+            error = ?err,
+            "Failed broadcasting transactions"
+        );
+    }
+
+    Ok(())
+}
+
+/// Broadcasts `txs` of `relayer_id` in order, until the node is unavailable.
+///
+/// A transaction whose broadcast takes longer than `tx_deadline`, such as one
+/// waiting for a database lock, is given up on with an error log and the
+/// `tx_broadcast_deadline_exceeded` metric, and the rest wait for the next
+/// pass. Giving up is safe at any point: a transaction stored before the
+/// deadline is sent again by escalation, and one that wasn't is still
+/// unsent.
 #[tracing::instrument(skip(app, ctx, txs))]
 async fn broadcast_relayer_txs(
     app: &App,
     ctx: &TaskContext,
-    relayer_id: String,
+    relayer_id: &str,
     txs: Vec<UnsentTx>,
+    tx_deadline: Duration,
 ) -> eyre::Result<()> {
-    if txs.is_empty() {
-        return Ok(());
-    }
-
     let relayer = app
         .db
-        .get_relayer(&relayer_id)
+        .get_relayer(relayer_id)
         .await?
         .context("Missing relayer")?;
 
@@ -91,7 +149,26 @@ async fn broadcast_relayer_txs(
             break;
         }
 
-        let outcome = broadcast_relayer_tx(app, ctx, &relayer, tx).await?;
+        let tx_id = tx.id.clone();
+        let Ok(outcome) =
+            timeout(tx_deadline, broadcast_relayer_tx(app, ctx, &relayer, tx))
+                .await
+        else {
+            tracing::error!(
+                relayer_id,
+                chain_id = relayer.chain_id,
+                tx_id,
+                ?tx_deadline,
+                "Broadcasting transaction took longer than its deadline"
+            );
+            metrics::counter!(
+                "tx_broadcast_deadline_exceeded",
+                &[("chain_id", relayer.chain_id.to_string())]
+            )
+            .increment(1);
+            break;
+        };
+        let outcome = outcome?;
         ctx.report_progress();
 
         // The node is unavailable, so leave the rest unsigned for the next pass
@@ -223,4 +300,94 @@ fn sort_txs_by_relayer(
             (relayer_id, txs)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use alloy::node_bindings::Anvil;
+    use alloy::primitives::{Address, U256};
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::broadcast_utils::gas_estimation::FeesEstimate;
+    use crate::test_utils::{setup_app, CHAIN_ID};
+    use crate::types::TransactionPriority;
+
+    #[tokio::test]
+    async fn gives_up_on_a_tx_waiting_for_a_lock_at_its_deadline(
+    ) -> eyre::Result<()> {
+        let anvil = Anvil::new()
+            .chain_id(CHAIN_ID)
+            .arg("--no-mining")
+            .try_spawn()?;
+        let (app, _db_container) =
+            setup_app(&anvil.endpoint(), &anvil.ws_endpoint()).await?;
+        let relayer_id = uuid::Uuid::new_v4().to_string();
+        app.db
+            .create_relayer(
+                &relayer_id,
+                "relayer",
+                CHAIN_ID,
+                &hex::encode(anvil.keys()[0].to_bytes()),
+                anvil.addresses()[0],
+            )
+            .await?;
+        let gwei = U256::from(1_000_000_000u64);
+        app.db
+            .save_block(1, CHAIN_ID, chrono::Utc::now(), &[])
+            .await?;
+        app.db
+            .save_block_fees(
+                1,
+                CHAIN_ID,
+                &FeesEstimate {
+                    base_fee_per_gas: gwei,
+                    percentile_fees: vec![gwei; 5],
+                },
+                gwei,
+            )
+            .await?;
+        app.db
+            .create_transaction(
+                "tx_id",
+                Address::with_last_byte(1),
+                &[],
+                U256::from(1),
+                U256::from(21_000),
+                TransactionPriority::Regular,
+                None,
+                &relayer_id,
+            )
+            .await?;
+        let ctx = TaskContext::new(CancellationToken::new());
+
+        // Storing the broadcast waits for a reset that holds the relayer
+        let mut reset = app.db.pool.begin().await?;
+        sqlx::query("SELECT 1 FROM relayers WHERE id = $1 FOR UPDATE")
+            .bind(&relayer_id)
+            .execute(reset.as_mut())
+            .await?;
+
+        let tx_deadline = Duration::from_secs(1);
+        let started = Instant::now();
+        let txs = app.db.get_unsent_txs().await?;
+        broadcast_relayer_txs(&app, &ctx, &relayer_id, txs, tx_deadline)
+            .await?;
+        assert!(
+            started.elapsed() < tx_deadline * 2,
+            "{:?}",
+            started.elapsed()
+        );
+
+        reset.rollback().await?;
+        let txs = app.db.get_unsent_txs().await?;
+        assert_eq!(txs.len(), 1);
+        broadcast_relayer_txs(&app, &ctx, &relayer_id, txs, tx_deadline * 10)
+            .await?;
+        assert!(app.db.get_unsent_txs().await?.is_empty());
+
+        Ok(())
+    }
 }

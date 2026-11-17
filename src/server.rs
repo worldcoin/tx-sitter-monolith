@@ -301,16 +301,15 @@ impl RelayerApi {
             ));
         }
 
+        // Rejects early, before the balance check calls the RPC. The
+        // transaction is only admitted by `create_transaction`
         let relayer_queued_tx_count = app
             .db
             .get_relayer_pending_txs(api_token.relayer_id())
             .await?;
 
-        if relayer_queued_tx_count > relayer.max_queued_txs as usize {
-            return Err(poem::error::Error::from_string(
-                "Relayer queue is full".to_string(),
-                StatusCode::TOO_MANY_REQUESTS,
-            ));
+        if relayer_queued_tx_count >= relayer.max_queued_txs as usize {
+            return Err(queue_full_error());
         }
 
         let relayer_queued_tx_gas_limit_sum = app
@@ -366,15 +365,38 @@ impl RelayerApi {
             )
             .await?;
 
-        if let CreateResult::CONFLICT = res {
-            return Err(poem::error::Error::from_response(
-                ErrorResponse::new(
-                    StatusCode::CONFLICT,
-                    "transaction_already_exists",
-                    "Transaction with same id already exists.",
-                )
-                .into_response(),
-            ));
+        match res {
+            CreateResult::Created => {}
+            CreateResult::Conflict => {
+                return Err(poem::error::Error::from_response(
+                    ErrorResponse::new(
+                        StatusCode::CONFLICT,
+                        "transaction_already_exists",
+                        "Transaction with same id already exists.",
+                    )
+                    .into_response(),
+                ));
+            }
+            CreateResult::QueueFull => return Err(queue_full_error()),
+            CreateResult::NonceTaken { nonce } => {
+                tracing::error!(
+                    relayer_id = relayer.id,
+                    relayer_address = %relayer.address,
+                    chain_id = relayer.chain_id,
+                    tx_id,
+                    nonce,
+                    "Relayer's next nonce is taken by another of its transactions, reset the relayer"
+                );
+
+                return Err(poem::error::Error::from_response(
+                    ErrorResponse::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "relayer_nonce_taken",
+                        "The relayer's next nonce is taken by another of its transactions. Resetting the relayer repairs it.",
+                    )
+                    .into_response(),
+                ));
+            }
         }
 
         tracing::info!(
@@ -546,6 +568,13 @@ impl RelayerApi {
 
 fn default_false() -> bool {
     false
+}
+
+fn queue_full_error() -> poem::Error {
+    poem::Error::from_string(
+        "Relayer queue is full".to_string(),
+        StatusCode::TOO_MANY_REQUESTS,
+    )
 }
 
 struct ServiceApi;

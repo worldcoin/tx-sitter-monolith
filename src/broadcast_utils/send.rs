@@ -9,7 +9,8 @@ use alloy::transports::{RpcError, TransportError, TransportErrorKind};
 use crate::db::data::RelayerInfo;
 use crate::task_runner::{with_jitter, TaskContext};
 
-const MAX_SEND_RETRIES: u32 = 3;
+/// How often [`send_raw_tx`] calls the node at most
+pub const MAX_SEND_ATTEMPTS: u32 = 4;
 const INITIAL_SEND_RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
 const JSON_RPC_INTERNAL_ERROR: i64 = -32603;
@@ -157,7 +158,7 @@ pub async fn send_raw_tx(
         )
         .increment(1);
 
-        let will_retry = failure.is_retryable() && attempt <= MAX_SEND_RETRIES;
+        let will_retry = failure.is_retryable() && attempt < MAX_SEND_ATTEMPTS;
 
         // A node that keeps answering with another hash would otherwise log
         // every escalation pass

@@ -112,20 +112,21 @@ pub async fn index_block(
         metrics::counter!("tx_mined", &metric_labels).increment(1);
     }
 
-    let relayers = app.db.get_relayers_by_chain_id(chain_id).await?;
-
-    update_relayer_nonces(&relayers, &app, rpc, chain_id).await?;
-
     Ok(())
 }
 
 /// Indexes `latest_block`, first indexing every block between the latest one
-/// saved in the database and it.
+/// saved in the database and it, and then updates the relayers' nonces to
+/// those as of `latest_block`.
 ///
 /// Every header from the block subscription goes through here, because the
 /// subscription skips headers when indexing falls behind it, and a reconnect
 /// misses the headers produced in the meantime. Once shutdown is requested it
 /// returns before the next block.
+///
+/// Reading the nonces as of the indexed block, rather than the newest one,
+/// keeps a relayer's confirmed nonce from counting transactions that are
+/// mined but not indexed yet.
 #[tracing::instrument(skip(app, ctx, rpc, latest_block), level = "info")]
 pub async fn backfill_to_block(
     app: Arc<App>,
@@ -179,6 +180,11 @@ pub async fn backfill_to_block(
 
     // Index the latest block after backfilling
     index_block(app.clone(), chain_id, rpc, latest_block).await?;
+
+    let relayers = app.db.get_relayers_by_chain_id(chain_id).await?;
+
+    update_relayer_nonces(&relayers, &app, rpc, chain_id, latest_block_number)
+        .await?;
 
     Ok(())
 }
@@ -262,11 +268,18 @@ async fn update_relayer_nonces(
     app: &App,
     rpc: &RootProvider,
     chain_id: u64,
+    block_number: u64,
 ) -> Result<(), eyre::Error> {
     let mut futures = FuturesUnordered::new();
 
     for relayer in relayers {
-        futures.push(update_relayer_nonce(app, rpc, relayer, chain_id));
+        futures.push(update_relayer_nonce(
+            app,
+            rpc,
+            relayer,
+            chain_id,
+            block_number,
+        ));
     }
 
     while let Some(result) = futures.next().await {
@@ -282,10 +295,14 @@ async fn update_relayer_nonce(
     rpc: &RootProvider,
     relayer: &RelayerInfo,
     chain_id: u64,
+    block_number: u64,
 ) -> eyre::Result<()> {
-    let tx_count = rpc.get_transaction_count(relayer.address.0).await?;
+    let tx_count = rpc
+        .get_transaction_count(relayer.address.0)
+        .number(block_number)
+        .await?;
 
-    if tx_count == relayer.current_nonce {
+    if tx_count == relayer.current_nonce && tx_count <= relayer.nonce {
         return Ok(());
     }
 
@@ -298,9 +315,29 @@ async fn update_relayer_nonce(
         "Updating relayer nonce"
     );
 
-    app.db
+    let relayers_behind = app
+        .db
         .update_relayer_nonce(chain_id, relayer.address.0, tx_count)
         .await?;
+
+    for (relayer_id, local_nonce) in relayers_behind {
+        tracing::error!(
+            relayer_id,
+            chain_id,
+            relayer_address = %relayer.address,
+            local_nonce,
+            chain_nonce = tx_count,
+            "Relayer key sent transactions outside tx-sitter, moved its nonce up to the chain's"
+        );
+        metrics::counter!(
+            "relayer_nonce_behind_chain",
+            &[
+                ("chain_id", chain_id.to_string()),
+                ("relayer_id", relayer_id)
+            ]
+        )
+        .increment(1);
+    }
 
     Ok(())
 }

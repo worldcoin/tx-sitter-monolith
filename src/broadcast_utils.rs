@@ -8,7 +8,9 @@ use crate::db::data::RelayerInfo;
 pub mod gas_estimation;
 mod send;
 
-pub use self::send::{send_raw_tx, SendFailure, SendOutcome};
+pub use self::send::{
+    send_raw_tx, SendFailure, SendOutcome, MAX_SEND_ATTEMPTS,
+};
 
 /// Returns a tuple of max and max priority fee per gas
 pub fn calculate_gas_fees_from_estimates(

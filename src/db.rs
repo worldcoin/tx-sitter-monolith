@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::{BigDecimal, Json};
-use sqlx::{Pool, Postgres, Row};
+use sqlx::{PgExecutor, Pool, Postgres, Row};
 use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
@@ -21,7 +21,8 @@ pub mod data;
 pub mod wrappers;
 
 use self::data::{
-    BlockFees, NetworkStats, ReadTxData, RelayerTxsAtMaxEscalations, RpcKind,
+    BlockFees, NetworkStats, ReadTxData, RelayerStaleTxs,
+    RelayerTxsAtMaxEscalations, RpcKind,
 };
 pub use self::data::{TxForEscalation, UnsentTx};
 
@@ -42,9 +43,20 @@ pub struct Database {
     probe_pool: Pool<Postgres>,
 }
 
+/// The outcome of [`Database::create_transaction`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateResult {
-    SUCCESS,
-    CONFLICT,
+    Created,
+    /// A transaction with the same id exists
+    Conflict,
+    /// The relayer already has `max_queued_txs` unsent or pending
+    /// transactions
+    QueueFull,
+    /// Another transaction of the relayer holds the relayer's next nonce,
+    /// which a relayer reset repairs
+    NonceTaken {
+        nonce: u64,
+    },
 }
 
 impl Database {
@@ -282,26 +294,15 @@ impl Database {
         .await?)
     }
 
+    /// Counts the unsent and pending transactions of `relayer_id`, leaving
+    /// out [stale ones](Database::count_stale_txs), which a reset or the
+    /// chain settles.
     #[instrument(skip(self), level = "debug")]
     pub async fn get_relayer_pending_txs(
         &self,
         relayer_id: &str,
     ) -> eyre::Result<usize> {
-        let (tx_count,): (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(1)
-            FROM transactions t
-            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
-            WHERE t.relayer_id = $1
-            AND (s.tx_id IS NULL OR s.status = $2)
-            "#,
-        )
-        .bind(relayer_id)
-        .bind(TxStatus::Pending)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(tx_count as usize)
+        count_queued_txs(&self.pool, relayer_id).await
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -313,8 +314,10 @@ impl Database {
             r#"
             SELECT t.gas_limit
             FROM transactions t
+            JOIN relayers r ON (t.relayer_id = r.id)
             LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
             WHERE t.relayer_id = $1
+            AND t.nonce >= r.current_nonce
             AND (s.tx_id IS NULL OR s.status = $2)
             "#,
         )
@@ -328,6 +331,9 @@ impl Database {
             .fold(U256::ZERO, |acc, (v,)| acc.saturating_add(v.0)))
     }
 
+    /// Creates a transaction of `relayer_id` with the relayer's next nonce,
+    /// unless the relayer's queue is full, `tx_id` exists or the nonce is
+    /// taken.
     #[instrument(skip(self), level = "debug")]
     pub async fn create_transaction(
         &self,
@@ -344,6 +350,27 @@ impl Database {
 
         let value_bytes: [u8; 32] = value.to_be_bytes();
         let gas_limit_bytes: [u8; 32] = gas_limit.to_be_bytes();
+
+        // Locks the relayer, so that concurrent creates count each other's
+        // transactions
+        let (max_queued_txs,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT max_queued_txs
+            FROM   relayers
+            WHERE  id = $1
+            FOR NO KEY UPDATE
+            "#,
+        )
+        .bind(relayer_id)
+        .fetch_one(tx.as_mut())
+        .await?;
+
+        let queued_txs = count_queued_txs(tx.as_mut(), relayer_id).await?;
+
+        if queued_txs >= max_queued_txs as usize {
+            tx.rollback().await?;
+            return Ok(CreateResult::QueueFull);
+        }
 
         let (nonce,): (i64,) = sqlx::query_as(
             r#"
@@ -377,8 +404,14 @@ impl Database {
         .await;
 
         if let Err(sqlx::Error::Database(ref err)) = res {
-            if err.constraint() == Some("transactions_pkey") {
-                return Ok(CreateResult::CONFLICT);
+            match err.constraint() {
+                Some("transactions_pkey") => return Ok(CreateResult::Conflict),
+                Some("unique_relayer_nonce") => {
+                    return Ok(CreateResult::NonceTaken {
+                        nonce: nonce as u64,
+                    })
+                }
+                _ => {}
             }
         }
 
@@ -386,9 +419,14 @@ impl Database {
 
         tx.commit().await?;
 
-        Ok(CreateResult::SUCCESS)
+        Ok(CreateResult::Created)
     }
 
+    /// Returns the transactions that were never broadcast and fit in their
+    /// relayer's in-flight window.
+    ///
+    /// Transactions whose nonce the chain already used are left out, see
+    /// [`Database::count_stale_txs`].
     #[instrument(skip(self), level = "debug")]
     pub async fn get_unsent_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
         Ok(sqlx::query_as(
@@ -398,6 +436,7 @@ impl Database {
             LEFT JOIN  sent_transactions s ON (t.id = s.tx_id)
             INNER JOIN relayers r ON (t.relayer_id = r.id)
             WHERE      s.tx_id IS NULL
+            AND        t.nonce >= r.current_nonce
             AND        (t.nonce - r.current_nonce < r.max_inflight_txs)
             ORDER BY   r.id, t.nonce ASC
             "#,
@@ -410,7 +449,7 @@ impl Database {
     /// before it is sent.
     ///
     /// Fails if `tx_id` was already broadcast, so that two broadcasts of the
-    /// same transaction can't both be sent.
+    /// same transaction can't both be sent, or if a reset deleted it.
     #[instrument(skip(self, raw_signed_tx), level = "debug")]
     pub async fn insert_tx_broadcast(
         &self,
@@ -426,6 +465,20 @@ impl Database {
             initial_max_priority_fee_per_gas.to_be_bytes();
 
         let mut tx = self.pool.begin().await?;
+
+        // A reset of the relayer waits for this, or this waits for the reset
+        // and then fails if the reset deleted the transaction
+        sqlx::query(
+            r#"
+            SELECT 1
+            FROM   relayers
+            WHERE  id = (SELECT relayer_id FROM transactions WHERE id = $1)
+            FOR KEY SHARE
+            "#,
+        )
+        .bind(tx_id)
+        .execute(tx.as_mut())
+        .await?;
 
         sqlx::query(
             r#"
@@ -560,6 +613,11 @@ impl Database {
         Ok(row.try_get::<bool, _>(0)?)
     }
 
+    /// Saves block `block_number` of `chain_id` with those of `txs` that are
+    /// hashes of our transactions, replacing an earlier version of the block.
+    ///
+    /// Saving the same block again, for example from two indexers, keeps its
+    /// fee estimates.
     #[instrument(skip(self), level = "debug")]
     pub async fn save_block(
         &self,
@@ -570,31 +628,31 @@ impl Database {
     ) -> eyre::Result<()> {
         let mut db_tx = self.pool.begin().await?;
 
-        // Prune previously inserted block
+        // Locks the block, so concurrent saves replace its txs one at a time
+        sqlx::query(
+            r#"
+            INSERT INTO blocks (block_number, chain_id, timestamp)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (block_number, chain_id) DO UPDATE
+            SET timestamp = EXCLUDED.timestamp
+            "#,
+        )
+        .bind(block_number as i64)
+        .bind(chain_id as i64)
+        .bind(timestamp)
+        .execute(db_tx.as_mut())
+        .await?;
+
         sqlx::query(
             r#"
             DELETE
-            FROM    blocks
+            FROM    block_txs
             WHERE   block_number = $1
             AND     chain_id = $2
             "#,
         )
         .bind(block_number as i64)
         .bind(chain_id as i64)
-        .execute(db_tx.as_mut())
-        .await?;
-
-        // Insert new block
-        // There can be no conflict since we remove the previous one
-        sqlx::query(
-            r#"
-            INSERT INTO blocks (block_number, chain_id, timestamp)
-            VALUES ($1, $2, $3)
-            "#,
-        )
-        .bind(block_number as i64)
-        .bind(chain_id as i64)
-        .bind(timestamp)
         .execute(db_tx.as_mut())
         .await?;
 
@@ -638,6 +696,9 @@ impl Database {
             r#"
             INSERT INTO block_fees (block_number, chain_id, fee_estimate, gas_price)
             VALUES ($1, $2, $3, $4)
+            ON CONFLICT (block_number, chain_id) DO UPDATE
+            SET fee_estimate = EXCLUDED.fee_estimate,
+                gas_price = EXCLUDED.gas_price
             "#,
         )
         .bind(block_number as i64)
@@ -649,105 +710,62 @@ impl Database {
         Ok(())
     }
 
-    /// Returns a list of soft reorged txs
+    /// Points every mined transaction whose valid hash isn't the one in a
+    /// block at the hash that is, and returns the ids of those it changed.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_soft_reorgs(&self) -> eyre::Result<Vec<String>> {
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch txs which have valid tx hash different than what is actually mined
-        let items: Vec<(String, H256Wrapper)> = sqlx::query_as(
+        let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            SELECT t.id, h.tx_hash
-            FROM  transactions t
-            JOIN  sent_transactions s ON t.id = s.tx_id
-            JOIN  tx_hashes h ON t.id = h.tx_id
-            JOIN  block_txs bt ON h.tx_hash = bt.tx_hash
-            WHERE h.tx_hash <> s.valid_tx_hash
-            AND   s.status = $1
+            UPDATE    sent_transactions s
+            SET       valid_tx_hash = h.tx_hash
+            FROM      tx_hashes h
+            JOIN      block_txs bt ON h.tx_hash = bt.tx_hash
+            WHERE     h.tx_id = s.tx_id
+            AND       h.tx_hash <> s.valid_tx_hash
+            AND       s.status = $1
+            RETURNING s.tx_id
             "#,
         )
         .bind(TxStatus::Mined)
-        .fetch_all(tx.as_mut())
+        .fetch_all(&self.pool)
         .await?;
 
-        let (tx_ids, tx_hashes): (Vec<_>, Vec<_>) = items.into_iter().unzip();
-
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    valid_tx_hash = mined.tx_hash
-            FROM   transactions t,
-                   UNNEST($1::TEXT[], $2::BYTEA[]) AS mined(tx_id, tx_hash)
-            WHERE  t.id = mined.tx_id
-            AND    t.id = s.tx_id
-            "#,
-        )
-        .bind(&tx_ids)
-        .bind(&tx_hashes)
-        .execute(tx.as_mut())
-        .await?;
-
-        tx.commit().await?;
-
-        Ok(tx_ids)
+        Ok(tx_ids.into_iter().map(|(tx_id,)| tx_id).collect())
     }
 
-    /// Returns a list of hard reorged txs
+    /// Moves every mined transaction none of whose hashes is in a block back
+    /// to pending, with its latest hash as the valid one, and returns the ids
+    /// of those it moved.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_hard_reorgs(&self) -> eyre::Result<Vec<String>> {
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch txs which are marked as mined
-        // but none of the associated tx hashes are present in block txs
-        let items: Vec<(String,)> = sqlx::query_as(
+        let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            WITH reorg_candidates AS (
-                SELECT     t.id, h.tx_hash, bt.chain_id
-                FROM       transactions t
-                JOIN       sent_transactions s ON t.id = s.tx_id
-                JOIN       tx_hashes h ON t.id = h.tx_id
-                LEFT JOIN  block_txs bt ON h.tx_hash = bt.tx_hash
-                WHERE      s.status = $1
+            UPDATE    sent_transactions s
+            SET       status = $1,
+                      valid_tx_hash = (
+                          SELECT tx_hash
+                          FROM   tx_hashes h
+                          WHERE  h.tx_id = s.tx_id
+                          ORDER BY created_at DESC
+                          LIMIT  1
+                      ),
+                      mined_at = NULL
+            WHERE     s.status = $2
+            AND       NOT EXISTS (
+                SELECT 1
+                FROM   tx_hashes h
+                JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
+                WHERE  h.tx_id = s.tx_id
             )
-            SELECT    r.id
-            FROM      reorg_candidates r
-            GROUP BY  r.id
-            HAVING    COUNT(r.chain_id) = 0
-            "#,
-        )
-        .bind(TxStatus::Mined)
-        .fetch_all(tx.as_mut())
-        .await?;
-
-        let tx_ids: Vec<_> = items.into_iter().map(|(x,)| x).collect();
-
-        // Set status to pending
-        // and set valid tx hash to the latest tx hash
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    status = $1,
-                   valid_tx_hash = (
-                       SELECT tx_hash
-                       FROM   tx_hashes h
-                       WHERE  h.tx_id = s.tx_id
-                       ORDER BY created_at DESC
-                       LIMIT  1
-                   ),
-                   mined_at = NULL
-            FROM   transactions t, UNNEST($2::TEXT[]) AS reorged(tx_id)
-            WHERE  t.id = reorged.tx_id
-            AND    t.id = s.tx_id
+            RETURNING s.tx_id
             "#,
         )
         .bind(TxStatus::Pending)
-        .bind(&tx_ids)
-        .execute(tx.as_mut())
+        .bind(TxStatus::Mined)
+        .fetch_all(&self.pool)
         .await?;
 
-        tx.commit().await?;
-
-        Ok(tx_ids)
+        Ok(tx_ids.into_iter().map(|(tx_id,)| tx_id).collect())
     }
 
     /// Marks txs as mined if the associated tx hash is present in a block
@@ -778,6 +796,7 @@ impl Database {
                       mined_at = cte.timestamp
             FROM      cte
             WHERE     sent_transactions.tx_id = cte.id
+            AND       sent_transactions.status = $1
             RETURNING sent_transactions.tx_id, sent_transactions.valid_tx_hash
             "#,
         )
@@ -793,56 +812,41 @@ impl Database {
             .collect())
     }
 
-    #[instrument(skip(self), level = "debug")]
+    /// Marks every mined transaction whose valid hash is in a block older
+    /// than `finalization_timestamp` as finalized, and returns the ids of
+    /// those it marked.
+    #[instrument(skip(self), level = "debug", ret)]
     pub async fn finalize_txs(
         &self,
-        finalization_timestmap: DateTime<Utc>,
-    ) -> eyre::Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch txs which are marked as mined, but the associated valid tx hash
-        // is present in a block which is older than the given timestamp
-        let items: Vec<(String,)> = sqlx::query_as(
+        finalization_timestamp: DateTime<Utc>,
+    ) -> eyre::Result<Vec<String>> {
+        let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            SELECT s.tx_id
-            FROM   sent_transactions s
-            JOIN   tx_hashes h ON s.valid_tx_hash = h.tx_hash
-            JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
-            JOIN   blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
-            WHERE  s.status = $1
-            AND    b.timestamp < $2
-            "#,
-        )
-        .bind(TxStatus::Mined)
-        .bind(finalization_timestmap)
-        .fetch_all(tx.as_mut())
-        .await?;
-
-        let tx_ids: Vec<_> = items.into_iter().map(|(x,)| x).collect();
-
-        // Set status to finalized
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    status = $1
-            FROM   transactions t, UNNEST($2::TEXT[]) AS finalized(tx_id)
-            WHERE  t.id = finalized.tx_id
-            AND    t.id = s.tx_id
+            UPDATE    sent_transactions s
+            SET       status = $1
+            FROM      block_txs bt
+            JOIN      blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
+            WHERE     bt.tx_hash = s.valid_tx_hash
+            AND       s.status = $2
+            AND       b.timestamp < $3
+            RETURNING s.tx_id
             "#,
         )
         .bind(TxStatus::Finalized)
-        .bind(&tx_ids)
-        .execute(tx.as_mut())
+        .bind(TxStatus::Mined)
+        .bind(finalization_timestamp)
+        .fetch_all(&self.pool)
         .await?;
 
-        tx.commit().await?;
-
-        Ok(())
+        Ok(tx_ids.into_iter().map(|(tx_id,)| tx_id).collect())
     }
 
     /// Returns the pending transactions whose latest signed version was
     /// stored more than `escalation_interval` ago, however often they were
     /// escalated.
+    ///
+    /// Transactions whose nonce the chain already used are left out, see
+    /// [`Database::count_stale_txs`].
     #[instrument(skip(self), level = "debug")]
     pub async fn get_txs_for_escalation(
         &self,
@@ -862,6 +866,7 @@ impl Database {
             WHERE  now() - h.created_at > $1
             AND    s.status = $2
             AND    NOT h.escalated
+            AND    t.nonce >= r.current_nonce
             "#,
         )
         .bind(escalation_interval)
@@ -1088,17 +1093,41 @@ impl Database {
         .await?)
     }
 
+    /// Records `nonce`, the on-chain transaction count of `relayer_address`,
+    /// as the confirmed nonce of its relayers on `chain_id`, and moves their
+    /// local nonce up to it.
+    ///
+    /// Returns the relayers whose local nonce was behind `nonce`, with that
+    /// local nonce. Their key sent transactions that tx-sitter didn't create.
     #[instrument(skip(self), level = "debug")]
     pub async fn update_relayer_nonce(
         &self,
         chain_id: u64,
         relayer_address: Address,
         nonce: u64,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Vec<(String, u64)>> {
+        let mut tx = self.pool.begin().await?;
+
+        // Locks the relayers, so that no create takes a nonce in between
+        let relayers: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT id, nonce
+            FROM   relayers
+            WHERE  chain_id = $1
+            AND    address = $2
+            FOR NO KEY UPDATE
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(relayer_address.as_slice())
+        .fetch_all(tx.as_mut())
+        .await?;
+
         sqlx::query(
             r#"
             UPDATE relayers
             SET    current_nonce = $3,
+                   nonce = GREATEST(nonce, $3),
                    updated_at = now()
             WHERE  chain_id = $1
             AND    address = $2
@@ -1107,51 +1136,102 @@ impl Database {
         .bind(chain_id as i64)
         .bind(relayer_address.as_slice())
         .bind(nonce as i64)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
 
-        Ok(())
+        tx.commit().await?;
+
+        Ok(relayers
+            .into_iter()
+            .map(|(id, local_nonce)| (id, local_nonce as u64))
+            .filter(|(_, local_nonce)| *local_nonce < nonce)
+            .collect())
     }
 
+    /// Counts, for every relayer, the transactions that aren't mined but
+    /// whose nonce is below the relayer's confirmed nonce.
+    ///
+    /// The chain used those nonces for other transactions, sent with the
+    /// relayer's key outside tx-sitter, so they can never be mined.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn count_stale_txs(&self) -> eyre::Result<Vec<RelayerStaleTxs>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT    r.id AS relayer_id, r.chain_id, r.current_nonce, COUNT(t.id) AS stale_txs
+            FROM      relayers r
+            LEFT JOIN transactions t ON (
+                          t.relayer_id = r.id
+                      AND t.nonce < r.current_nonce
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM   sent_transactions s
+                          WHERE  s.tx_id = t.id
+                          AND    s.status <> $1
+                      )
+                  )
+            GROUP BY  r.id
+            "#,
+        )
+        .bind(TxStatus::Pending)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Deletes up to `batch_size` of the blocks older than `timestamp`, with
+    /// their transactions and fees, and returns how many it deleted.
     #[instrument(skip(self), level = "debug")]
     pub async fn prune_blocks(
         &self,
         timestamp: DateTime<Utc>,
-    ) -> eyre::Result<()> {
-        sqlx::query(
+        batch_size: u64,
+    ) -> eyre::Result<u64> {
+        let pruned = sqlx::query(
             r#"
             DELETE FROM blocks
-            WHERE  timestamp < $1
+            WHERE  (block_number, chain_id) IN (
+                       SELECT block_number, chain_id
+                       FROM   blocks
+                       WHERE  timestamp < $1
+                       LIMIT  $2
+                   )
             "#,
         )
         .bind(timestamp)
+        .bind(batch_size as i64)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(pruned.rows_affected())
     }
 
+    /// Deletes up to `batch_size` of the transactions finalized in a block
+    /// mined before `timestamp`, with their hashes, and returns how many it
+    /// deleted.
     #[instrument(skip(self), level = "debug")]
     pub async fn prune_txs(
         &self,
         timestamp: DateTime<Utc>,
-    ) -> eyre::Result<()> {
-        sqlx::query(
+        batch_size: u64,
+    ) -> eyre::Result<u64> {
+        let pruned = sqlx::query(
             r#"
-            DELETE
-            FROM  transactions t
-            USING sent_transactions s
-            WHERE t.id = s.tx_id
-            AND   s.mined_at < $1
-            AND   s.status = $2
+            DELETE FROM transactions
+            WHERE  id IN (
+                       SELECT tx_id
+                       FROM   sent_transactions
+                       WHERE  mined_at < $1
+                       AND    status = $2
+                       LIMIT  $3
+                   )
             "#,
         )
         .bind(timestamp)
         .bind(TxStatus::Finalized)
+        .bind(batch_size as i64)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(pruned.rows_affected())
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1403,34 +1483,92 @@ impl Database {
         })
     }
 
+    /// Deletes the transactions of `relayer_id` that were never broadcast,
+    /// and moves its nonce back to the first one that no remaining
+    /// transaction holds.
+    ///
+    /// The nonce never goes below the on-chain nonce or the nonce of a
+    /// broadcast transaction, so no nonce is used twice.
     #[instrument(skip(self), level = "debug")]
     pub async fn purge_unsent_txs(&self, relayer_id: &str) -> eyre::Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        // Waits for, and then blocks, creates and broadcasts of this relayer
         sqlx::query(
             r#"
-            UPDATE relayers
-            SET nonce = current_nonce
-            WHERE id = $1
+            SELECT 1
+            FROM   relayers
+            WHERE  id = $1
+            FOR UPDATE
             "#,
         )
         .bind(relayer_id)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
 
         sqlx::query(
             r#"
-            DELETE FROM transactions
-            WHERE relayer_id = $1
-            AND id NOT IN (
-                SELECT tx_id FROM sent_transactions
+            DELETE FROM transactions t
+            WHERE  t.relayer_id = $1
+            AND    NOT EXISTS (
+                SELECT 1 FROM sent_transactions s WHERE s.tx_id = t.id
             )
             "#,
         )
         .bind(relayer_id)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
+
+        sqlx::query(
+            r#"
+            UPDATE relayers r
+            SET    nonce = GREATEST(
+                       r.current_nonce,
+                       COALESCE(
+                           (
+                               SELECT MAX(t.nonce) + 1
+                               FROM   transactions t
+                               JOIN   sent_transactions s ON s.tx_id = t.id
+                               WHERE  t.relayer_id = r.id
+                           ),
+                           0
+                       )
+                   ),
+                   updated_at = now()
+            WHERE  r.id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
+}
+
+async fn count_queued_txs(
+    executor: impl PgExecutor<'_>,
+    relayer_id: &str,
+) -> eyre::Result<usize> {
+    let (tx_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(1)
+        FROM transactions t
+        JOIN relayers r ON (t.relayer_id = r.id)
+        LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+        WHERE t.relayer_id = $1
+        AND t.nonce >= r.current_nonce
+        AND (s.tx_id IS NULL OR s.status = $2)
+        "#,
+    )
+    .bind(relayer_id)
+    .bind(TxStatus::Pending)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(tx_count as usize)
 }
 
 #[cfg(test)]
@@ -1543,6 +1681,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reset_racing_with_sends_reuses_no_nonce() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        // The queue limit must stay above the inflight limit after each update
+        for (max_inflight_txs, max_queued_txs) in
+            [(None, Some(2_000)), (Some(1_000), None)]
+        {
+            db.update_relayer(
+                &relayer_id,
+                &RelayerUpdateRequest {
+                    relayer_name: None,
+                    max_inflight_txs,
+                    max_queued_txs,
+                    gas_price_limits: None,
+                    enabled: None,
+                },
+            )
+            .await?;
+        }
+
+        let creates = async {
+            for i in 0..100 {
+                create_tx(&db, &relayer_id, &format!("tx_{i}")).await?;
+            }
+
+            Ok::<_, eyre::Report>(())
+        };
+        // Broadcasting a transaction that a reset deleted fails
+        let broadcasts = async {
+            let mut broadcast_tx_ids = vec![];
+            for _ in 0..50 {
+                for tx in db.get_unsent_txs().await? {
+                    let fee = U256::from(1);
+                    let tx_hash = alloy::primitives::keccak256(&tx.id);
+                    let broadcast = db
+                        .insert_tx_broadcast(
+                            &tx.id,
+                            tx_hash,
+                            tx.id.as_bytes(),
+                            fee,
+                            fee,
+                        )
+                        .await;
+
+                    if broadcast.is_ok() {
+                        broadcast_tx_ids.push(tx.id);
+                    }
+                }
+            }
+
+            Ok::<_, eyre::Report>(broadcast_tx_ids)
+        };
+        let resets = async {
+            for _ in 0..20 {
+                db.purge_unsent_txs(&relayer_id).await?;
+                tokio::task::yield_now().await;
+            }
+
+            Ok::<_, eyre::Report>(())
+        };
+        let ((), broadcast_tx_ids, ()) =
+            tokio::try_join!(creates, broadcasts, resets)?;
+
+        let (sent_txs,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM sent_transactions WHERE tx_id = ANY($1)",
+        )
+        .bind(&broadcast_tx_ids)
+        .fetch_one(&db.pool)
+        .await?;
+        assert_eq!(sent_txs as usize, broadcast_tx_ids.len());
+
+        let (highest_nonce,): (Option<i64>,) = sqlx::query_as(
+            "SELECT MAX(nonce) FROM transactions WHERE relayer_id = $1",
+        )
+        .bind(&relayer_id)
+        .fetch_one(&db.pool)
+        .await?;
+        let relayer = db
+            .get_relayer(&relayer_id)
+            .await?
+            .context("Missing relayer")?;
+        assert!(highest_nonce.is_none_or(|n| (n as u64) < relayer.nonce));
+
+        db.purge_unsent_txs(&relayer_id).await?;
+        let relayer = db
+            .get_relayer(&relayer_id)
+            .await?
+            .context("Missing relayer")?;
+        assert_eq!(relayer.nonce, broadcast_tx_ids.len() as u64);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn save_and_prune_blocks() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
 
@@ -1568,7 +1800,7 @@ mod tests {
 
         assert!(db.has_blocks_for_chain(1).await?, "Should have blocks");
 
-        db.prune_blocks(prune_timestamp).await?;
+        assert_eq!(db.prune_blocks(prune_timestamp, 10).await?, 1);
 
         assert!(!db.has_blocks_for_chain(1).await?, "Should not have blocks");
 
@@ -1988,6 +2220,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_with_a_taken_nonce_reports_it() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        create_tx(&db, &relayer_id, "first").await?;
+        sqlx::query("UPDATE relayers SET nonce = 0 WHERE id = $1")
+            .bind(&relayer_id)
+            .execute(&db.pool)
+            .await?;
+
+        let result = create_tx(&db, &relayer_id, "second").await?;
+
+        assert_eq!(result, CreateResult::NonceTaken { nonce: 0 });
+        assert!(db.read_tx("second").await?.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn finalize_reports_only_the_txs_it_finalized() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let tx_id = create_broadcast_tx(&db).await?;
+        let chain_id = 123;
+        let mined_at = ymd_hms(2023, 11, 23, 12, 32, 2);
+        db.save_block(1, chain_id, mined_at, &[B256::with_last_byte(1)])
+            .await?;
+        db.mine_txs(chain_id).await?;
+
+        // A hard reorg moves the transaction back to pending while
+        // finalizing waits for its row
+        let mut reorg = db.pool.begin().await?;
+        sqlx::query(
+            "UPDATE sent_transactions SET status = $1 WHERE tx_id = $2",
+        )
+        .bind(TxStatus::Pending)
+        .bind(&tx_id)
+        .execute(reorg.as_mut())
+        .await?;
+        let (finalized, committed) =
+            tokio::join!(db.finalize_txs(Utc::now()), async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                reorg.commit().await
+            });
+        committed?;
+
+        assert_eq!(finalized?, Vec::<String>::new());
+        let tx = db.read_tx(&tx_id).await?.context("Missing tx")?;
+        assert_eq!(tx.status, Some(TxStatus::Pending));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_txs_hold_no_queue_slots() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        for (max_inflight_txs, max_queued_txs) in
+            [(Some(1), None), (None, Some(2))]
+        {
+            db.update_relayer(
+                &relayer_id,
+                &RelayerUpdateRequest {
+                    relayer_name: None,
+                    max_inflight_txs,
+                    max_queued_txs,
+                    gas_price_limits: None,
+                    enabled: None,
+                },
+            )
+            .await?;
+        }
+        create_tx(&db, &relayer_id, "sent").await?;
+        create_tx(&db, &relayer_id, "unsent").await?;
+        let fee = U256::from(1);
+        db.insert_tx_broadcast("sent", B256::with_last_byte(1), &[1], fee, fee)
+            .await?;
+        assert_eq!(
+            create_tx(&db, &relayer_id, "queue_full").await?,
+            CreateResult::QueueFull
+        );
+
+        // The key used both nonces outside tx-sitter
+        db.update_relayer_nonce(123, Address::with_last_byte(1), 2)
+            .await?;
+        db.purge_unsent_txs(&relayer_id).await?;
+
+        assert_eq!(db.get_relayer_pending_txs(&relayer_id).await?, 0);
+        assert_eq!(
+            db.get_relayer_pending_txs_gas_limit_sum(&relayer_id)
+                .await?,
+            U256::ZERO
+        );
+        for tx_id in ["after_reset_1", "after_reset_2"] {
+            assert_eq!(
+                create_tx(&db, &relayer_id, tx_id).await?,
+                CreateResult::Created
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn read_tx() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
 
@@ -2167,6 +2501,51 @@ mod tests {
             .await?;
 
         assert_eq!(address.0, Address::from(ADDRESS));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn indexing_a_block_twice_keeps_its_fees_and_txs() -> eyre::Result<()>
+    {
+        let (db, _db_container) = setup_db().await?;
+        let tx_id = create_broadcast_tx(&db).await?;
+        let tx_hash = tx_hashes(&db, &tx_id).await?[0];
+        let chain_id = 123;
+        let timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
+        let fee_estimates = FeesEstimate {
+            base_fee_per_gas: U256::from(13_132),
+            percentile_fees: vec![U256::from(1)],
+        };
+
+        db.save_block(1, chain_id, timestamp, &[tx_hash]).await?;
+        db.save_block_fees(1, chain_id, &fee_estimates, U256::from(7))
+            .await?;
+
+        let txs = [tx_hash];
+        tokio::try_join!(
+            db.save_block(1, chain_id, timestamp, &txs),
+            db.save_block(1, chain_id, timestamp, &txs),
+        )?;
+
+        let block_fees = db
+            .get_latest_block_fees_by_chain_id(chain_id)
+            .await?
+            .context("Missing fees")?;
+        assert_eq!(block_fees.gas_price, U256::from(7));
+        assert_eq!(
+            db.get_latest_block_number_without_fee_estimates(chain_id)
+                .await?,
+            None
+        );
+
+        let block_txs: Vec<(H256Wrapper,)> = sqlx::query_as(
+            "SELECT tx_hash FROM block_txs WHERE block_number = 1 AND chain_id = $1",
+        )
+        .bind(chain_id as i64)
+        .fetch_all(&db.pool)
+        .await?;
+        assert_eq!(block_txs, [(H256Wrapper(tx_hash),)]);
 
         Ok(())
     }

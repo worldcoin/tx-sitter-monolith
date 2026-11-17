@@ -119,6 +119,7 @@ fn add_background_tasks(task_runner: &Arc<TaskRunner<App>>, app: &App) {
     task_runner.add_task("handle_soft_reorgs", tasks::handle_soft_reorgs);
     task_runner.add_task("handle_hard_reorgs", tasks::handle_hard_reorgs);
     task_runner.add_task("monitor_funds", tasks::monitor_funds);
+    task_runner.add_task("monitor_nonces", tasks::monitor_nonces);
 
     if let Some(telemetry_config) = app.config.service.telemetry.as_ref() {
         if telemetry_config.metrics.is_some() {
