@@ -10,6 +10,8 @@ use crate::task_runner::{with_jitter, TaskContext};
 const MAX_SEND_RETRIES: u32 = 3;
 const INITIAL_SEND_RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
+const JSON_RPC_INTERNAL_ERROR: i64 = -32603;
+
 // Lowercase fragments of the messages that geth, reth, anvil and nethermind
 // reject transactions with
 const ALREADY_KNOWN_MESSAGES: [&str; 3] =
@@ -45,8 +47,12 @@ pub enum SendFailure {
     Timeout,
     Connection,
     RateLimited,
-    /// An HTTP 5xx, or an answer that isn't JSON-RPC
+    /// An HTTP 5xx, a JSON-RPC internal error, or an answer that isn't
+    /// JSON-RPC
     ServerError,
+    /// The node took the call but answered with the hash of another
+    /// transaction
+    UnexpectedHash,
     /// Any other rejection, such as insufficient funds
     Rejected,
 }
@@ -72,6 +78,7 @@ impl SendFailure {
             Self::Connection => "connection",
             Self::RateLimited => "rate_limited",
             Self::ServerError => "server_error",
+            Self::UnexpectedHash => "unexpected_hash",
             Self::Rejected => "rejected",
         }
     }
@@ -81,7 +88,8 @@ impl SendFailure {
 /// behind `provider`.
 ///
 /// A [retryable](SendFailure::is_retryable) failure is retried up to three
-/// times with an exponential, jittered backoff, unless shutdown is requested.
+/// times with an exponential, jittered backoff, unless shutdown is requested
+/// before the next attempt.
 /// Sending the same bytes again is safe: a node that already has them
 /// answers [`SendOutcome::AlreadyKnown`].
 ///
@@ -101,27 +109,21 @@ pub async fn send_raw_tx(
     loop {
         attempt += 1;
 
-        let error = match provider.send_raw_transaction(raw_signed_tx).await {
-            Ok(pending_tx) => {
-                if *pending_tx.tx_hash() != tx_hash {
-                    tracing::error!(
-                        relayer_id = relayer.id,
-                        chain_id = relayer.chain_id,
-                        tx_id,
-                        %tx_hash,
-                        node_tx_hash = %pending_tx.tx_hash(),
-                        "Node accepted the transaction under another hash"
-                    );
-                }
-
+        let (failure, error) = match provider
+            .send_raw_transaction(raw_signed_tx)
+            .await
+        {
+            Ok(pending_tx) if *pending_tx.tx_hash() == tx_hash => {
                 return SendOutcome::Accepted;
             }
-            Err(error) => error,
-        };
-
-        let failure = match classify_send_error(&error) {
-            SendOutcome::Failed(failure) => failure,
-            outcome => return outcome,
+            Ok(pending_tx) => (
+                SendFailure::UnexpectedHash,
+                format!("Node answered with hash {}", pending_tx.tx_hash()),
+            ),
+            Err(error) => match classify_send_error(&error) {
+                SendOutcome::Failed(failure) => (failure, format!("{error:?}")),
+                outcome => return outcome,
+            },
         };
 
         metrics::counter!(
@@ -133,9 +135,7 @@ pub async fn send_raw_tx(
         )
         .increment(1);
 
-        let will_retry = failure.is_retryable()
-            && attempt <= MAX_SEND_RETRIES
-            && !ctx.is_shutting_down();
+        let will_retry = failure.is_retryable() && attempt <= MAX_SEND_RETRIES;
 
         tracing::warn!(
             relayer_id = relayer.id,
@@ -145,14 +145,17 @@ pub async fn send_raw_tx(
             attempt,
             reason = failure.reason(),
             will_retry,
-            error = ?error,
+            %error,
             "Failed to send transaction"
         );
 
         if will_retry {
             ctx.idle(with_jitter(backoff)).await;
             backoff *= 2;
-            continue;
+
+            if !ctx.is_shutting_down() {
+                continue;
+            }
         }
 
         // A used nonce or a low fee is for indexing and escalation to settle
@@ -186,6 +189,8 @@ fn classify_send_error(error: &TransportError) -> SendOutcome {
 
             if payload.is_retry_err() {
                 SendFailure::RateLimited
+            } else if payload.code == JSON_RPC_INTERNAL_ERROR {
+                SendFailure::ServerError
             } else {
                 SendFailure::Rejected
             }
@@ -268,6 +273,7 @@ mod tests {
     #[test_case(node_error(-32010, "FeeTooLow") => SendOutcome::Failed(SendFailure::Underpriced) ; "nethermind fee too low")]
     #[test_case(node_error(-32000, "insufficient funds for gas * price + value") => SendOutcome::Failed(SendFailure::Rejected) ; "insufficient funds")]
     #[test_case(node_error(-32005, "limit exceeded") => SendOutcome::Failed(SendFailure::RateLimited) ; "rate limited by error code")]
+    #[test_case(node_error(-32603, "internal error") => SendOutcome::Failed(SendFailure::ServerError) ; "json rpc internal error")]
     #[test_case(TransportErrorKind::http_error(503, String::new()) => SendOutcome::Failed(SendFailure::ServerError) ; "http 503")]
     #[test_case(TransportErrorKind::http_error(502, "<html>Bad Gateway</html>".into()) => SendOutcome::Failed(SendFailure::ServerError) ; "http 502")]
     #[test_case(TransportErrorKind::http_error(500, r#"{"error":{"code":-32000,"message":"already known"}}"#.into()) => SendOutcome::AlreadyKnown ; "http 500 with already known")]
@@ -372,6 +378,7 @@ mod tests {
     #[test_case(vec![Answer::ServerError, Answer::NodeError("already known")] => (SendOutcome::AlreadyKnown, 2) ; "until already known")]
     #[test_case(vec![Answer::NodeError("insufficient funds for gas * price + value")] => (SendOutcome::Failed(SendFailure::Rejected), 1) ; "not after a rejection")]
     #[test_case(vec![Answer::NodeError("nonce too low")] => (SendOutcome::Failed(SendFailure::NonceTooLow), 1) ; "not after nonce too low")]
+    #[test_case(vec![Answer::OtherTxHash] => (SendOutcome::Failed(SendFailure::UnexpectedHash), 1) ; "not after the hash of another transaction")]
     #[tokio::test]
     async fn retries_server_errors(
         answers: Vec<Answer>,
@@ -421,6 +428,34 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn sends_nothing_after_shutdown_during_backoff() -> eyre::Result<()> {
+        let raw_signed_tx = [0x02, 0x01];
+        let rpc = ScriptedRpc::spawn(
+            vec![Answer::ServerError],
+            keccak256(raw_signed_tx),
+        )
+        .await?;
+        let shutdown = CancellationToken::new();
+        let ctx = TaskContext::new(shutdown.clone());
+        let provider = provider(rpc.addr)?;
+
+        let send = tokio::spawn(async move {
+            send_raw_tx(&provider, &ctx, &relayer(1), "tx_id", &raw_signed_tx)
+                .await
+        });
+        while rpc.calls() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(INITIAL_SEND_RETRY_BACKOFF / 5).await;
+        shutdown.cancel();
+
+        assert_eq!(send.await?, SendOutcome::Failed(SendFailure::ServerError));
+        assert_eq!(rpc.calls(), 1);
+
+        Ok(())
+    }
+
     fn node_error(code: i64, message: &str) -> TransportError {
         let payload = json!({ "code": code, "message": message });
 
@@ -459,6 +494,7 @@ mod tests {
         NodeError(&'static str),
         /// The hash of the sent transaction
         TxHash,
+        OtherTxHash,
     }
 
     /// A JSON-RPC server that answers the n-th request with the n-th of its
@@ -527,6 +563,12 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": tx_hash,
+            }))
+            .into_response(),
+            Answer::OtherTxHash => poem::web::Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": B256::with_last_byte(1),
             }))
             .into_response(),
         }
