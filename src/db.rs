@@ -560,6 +560,11 @@ impl Database {
         Ok(row.try_get::<bool, _>(0)?)
     }
 
+    /// Saves block `block_number` of `chain_id` with those of `txs` that are
+    /// hashes of our transactions, replacing an earlier version of the block.
+    ///
+    /// Saving the same block again, for example from two indexers, keeps its
+    /// fee estimates.
     #[instrument(skip(self), level = "debug")]
     pub async fn save_block(
         &self,
@@ -570,31 +575,31 @@ impl Database {
     ) -> eyre::Result<()> {
         let mut db_tx = self.pool.begin().await?;
 
-        // Prune previously inserted block
+        // Locks the block, so concurrent saves replace its txs one at a time
+        sqlx::query(
+            r#"
+            INSERT INTO blocks (block_number, chain_id, timestamp)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (block_number, chain_id) DO UPDATE
+            SET timestamp = EXCLUDED.timestamp
+            "#,
+        )
+        .bind(block_number as i64)
+        .bind(chain_id as i64)
+        .bind(timestamp)
+        .execute(db_tx.as_mut())
+        .await?;
+
         sqlx::query(
             r#"
             DELETE
-            FROM    blocks
+            FROM    block_txs
             WHERE   block_number = $1
             AND     chain_id = $2
             "#,
         )
         .bind(block_number as i64)
         .bind(chain_id as i64)
-        .execute(db_tx.as_mut())
-        .await?;
-
-        // Insert new block
-        // There can be no conflict since we remove the previous one
-        sqlx::query(
-            r#"
-            INSERT INTO blocks (block_number, chain_id, timestamp)
-            VALUES ($1, $2, $3)
-            "#,
-        )
-        .bind(block_number as i64)
-        .bind(chain_id as i64)
-        .bind(timestamp)
         .execute(db_tx.as_mut())
         .await?;
 
@@ -638,6 +643,9 @@ impl Database {
             r#"
             INSERT INTO block_fees (block_number, chain_id, fee_estimate, gas_price)
             VALUES ($1, $2, $3, $4)
+            ON CONFLICT (block_number, chain_id) DO UPDATE
+            SET fee_estimate = EXCLUDED.fee_estimate,
+                gas_price = EXCLUDED.gas_price
             "#,
         )
         .bind(block_number as i64)
@@ -2167,6 +2175,48 @@ mod tests {
             .await?;
 
         assert_eq!(address.0, Address::from(ADDRESS));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn indexing_a_block_twice_keeps_its_fees_and_txs() -> eyre::Result<()>
+    {
+        let (db, _db_container) = setup_db().await?;
+        let tx_id = create_broadcast_tx(&db).await?;
+        let tx_hash = tx_hashes(&db, &tx_id).await?[0];
+        let chain_id = 123;
+        let timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
+        let fee_estimates = FeesEstimate {
+            base_fee_per_gas: U256::from(13_132),
+            percentile_fees: vec![U256::from(1)],
+        };
+
+        db.save_block(1, chain_id, timestamp, &[tx_hash]).await?;
+        db.save_block_fees(1, chain_id, &fee_estimates, U256::from(7))
+            .await?;
+
+        let txs = [tx_hash];
+        tokio::try_join!(
+            db.save_block(1, chain_id, timestamp, &txs),
+            db.save_block(1, chain_id, timestamp, &txs),
+        )?;
+        db.save_block_fees(1, chain_id, &fee_estimates, U256::from(8))
+            .await?;
+
+        let block_fees = db
+            .get_latest_block_fees_by_chain_id(chain_id)
+            .await?
+            .context("Missing fees")?;
+        assert_eq!(block_fees.gas_price, U256::from(8));
+
+        let block_txs: Vec<(H256Wrapper,)> = sqlx::query_as(
+            "SELECT tx_hash FROM block_txs WHERE block_number = 1 AND chain_id = $1",
+        )
+        .bind(chain_id as i64)
+        .fetch_all(&db.pool)
+        .await?;
+        assert_eq!(block_txs, [(H256Wrapper(tx_hash),)]);
 
         Ok(())
     }
