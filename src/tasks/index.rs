@@ -53,7 +53,7 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 
         match next_block {
             Ok(Some(block)) => {
-                index_block(app.clone(), chain_id, &rpc, block).await?;
+                backfill_to_block(app.clone(), chain_id, &rpc, block).await?;
             }
             Ok(None) => {
                 // Stream ended, break out of the loop
@@ -119,6 +119,12 @@ pub async fn index_block(
     Ok(())
 }
 
+/// Indexes `latest_block`, first indexing every block between the latest one
+/// saved in the database and it.
+///
+/// Every header from the block subscription goes through here, because the
+/// subscription skips headers when indexing falls behind it, and a reconnect
+/// misses the headers produced in the meantime.
 #[tracing::instrument(skip(app, rpc, latest_block), level = "info")]
 pub async fn backfill_to_block(
     app: Arc<App>,
@@ -126,7 +132,6 @@ pub async fn backfill_to_block(
     rpc: &RootProvider,
     latest_block: Header,
 ) -> eyre::Result<()> {
-    // Get the first block from the stream and backfill any missing blocks
     let latest_block_number = latest_block.number;
 
     let next_block_number: u64 = if let Some(latest_db_block_number) =
@@ -145,13 +150,13 @@ pub async fn backfill_to_block(
         latest_block_number.saturating_sub(MAX_RECENT_BLOCKS_TO_CHECK)
     };
 
-    tracing::info!(
-        latest_block_number,
-        next_block_number,
-        "Backfilling to block"
-    );
-
     if latest_block_number > next_block_number {
+        tracing::info!(
+            latest_block_number,
+            next_block_number,
+            "Backfilling to block"
+        );
+
         // Backfill blocks between the last synced block and the chain head, non inclusive
         for block_number in next_block_number..latest_block_number {
             let block = rpc

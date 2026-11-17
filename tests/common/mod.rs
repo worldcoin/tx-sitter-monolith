@@ -9,6 +9,9 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use tx_sitter_client::apis::configuration::Configuration;
+use tx_sitter_client::apis::relayer_v1_api::GetTransactionParams;
+use tx_sitter_client::models::TxStatus;
 
 mod anvil_builder;
 mod service_builder;
@@ -101,4 +104,33 @@ pub async fn await_balance(
     }
 
     eyre::bail!("Balance did not reach expected value");
+}
+
+/// Waits until tx-sitter reports the transaction as mined and returns the
+/// hash it stored when broadcasting.
+pub async fn await_mined_tx_hash(
+    client: &Configuration,
+    api_key: &str,
+    tx_id: &str,
+) -> eyre::Result<base_api_types::H256> {
+    for _ in 0..30 {
+        let tx = tx_sitter_client::apis::relayer_v1_api::get_transaction(
+            client,
+            GetTransactionParams {
+                api_token: api_key.to_owned(),
+                tx_id: tx_id.to_owned(),
+            },
+        )
+        .await?;
+
+        if let (Some(TxStatus::Mined | TxStatus::Finalized), Some(tx_hash)) =
+            (tx.status, tx.tx_hash)
+        {
+            return Ok(tx_hash);
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    eyre::bail!("Transaction {tx_id} was not mined in time");
 }
