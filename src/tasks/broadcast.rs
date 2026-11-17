@@ -1,13 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::consensus::TxEip1559;
 use alloy::primitives::{keccak256, TxKind};
 use eyre::{Context, ContextCompat};
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures::FutureExt;
 use itertools::Itertools;
+use tokio::task::{JoinError, JoinSet};
 
 use crate::app::App;
 use crate::broadcast_utils::{
@@ -18,35 +18,68 @@ use crate::db::data::RelayerInfo;
 use crate::db::UnsentTx;
 use crate::task_runner::TaskContext;
 
-const NO_TXS_SLEEP_DURATION: Duration = Duration::from_secs(2);
+const BROADCAST_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Broadcasts the unsent transactions of every relayer, in nonce order.
+///
+/// Each relayer's transactions are broadcast by a task of their own. A relayer
+/// whose previous broadcast is still running is skipped rather than waited
+/// for, so a slow relayer or chain doesn't delay the others. Once shutdown is
+/// requested, this waits for the running broadcasts, which stop after their
+/// current transaction.
 pub async fn broadcast_txs(
     app: Arc<App>,
     ctx: TaskContext,
 ) -> eyre::Result<()> {
+    let mut broadcasts = JoinSet::new();
+    let mut busy_relayers = HashSet::new();
+
     while !ctx.is_shutting_down() {
-        let txs = app.db.get_unsent_txs().await?;
-        let num_txs = txs.len();
-
-        let txs_by_relayer = sort_txs_by_relayer(txs);
-
-        let mut futures = FuturesUnordered::new();
-
-        for (relayer_id, txs) in txs_by_relayer {
-            futures.push(broadcast_relayer_txs(&app, &ctx, relayer_id, txs));
+        while let Some(Some(finished)) = broadcasts.join_next().now_or_never() {
+            finish_broadcast(finished, &mut busy_relayers)?;
         }
 
-        while let Some(result) = futures.next().await {
-            if let Err(err) = result {
-                tracing::error!(error = ?err, "Failed broadcasting transactions");
+        let txs = app.db.get_unsent_txs().await?;
+
+        for (relayer_id, txs) in sort_txs_by_relayer(txs) {
+            if !busy_relayers.insert(relayer_id.clone()) {
+                continue;
             }
+
+            let (app, ctx) = (app.clone(), ctx.clone());
+            broadcasts.spawn(async move {
+                let result =
+                    broadcast_relayer_txs(&app, &ctx, &relayer_id, txs).await;
+
+                (relayer_id, result)
+            });
         }
 
         ctx.report_progress();
+        ctx.idle(BROADCAST_INTERVAL).await;
+    }
 
-        if num_txs == 0 {
-            ctx.idle(NO_TXS_SLEEP_DURATION).await;
-        }
+    while let Some(finished) = broadcasts.join_next().await {
+        finish_broadcast(finished, &mut busy_relayers)?;
+    }
+
+    Ok(())
+}
+
+fn finish_broadcast(
+    finished: Result<(String, eyre::Result<()>), JoinError>,
+    busy_relayers: &mut HashSet<String>,
+) -> eyre::Result<()> {
+    let (relayer_id, result) =
+        finished.context("Relayer broadcast panicked")?;
+    busy_relayers.remove(&relayer_id);
+
+    if let Err(err) = result {
+        tracing::error!(
+            relayer_id,
+            error = ?err,
+            "Failed broadcasting transactions"
+        );
     }
 
     Ok(())
@@ -56,16 +89,12 @@ pub async fn broadcast_txs(
 async fn broadcast_relayer_txs(
     app: &App,
     ctx: &TaskContext,
-    relayer_id: String,
+    relayer_id: &str,
     txs: Vec<UnsentTx>,
 ) -> eyre::Result<()> {
-    if txs.is_empty() {
-        return Ok(());
-    }
-
     let relayer = app
         .db
-        .get_relayer(&relayer_id)
+        .get_relayer(relayer_id)
         .await?
         .context("Missing relayer")?;
 
