@@ -108,7 +108,6 @@ pub fn parse_deep_object(
     unimplemented!("Only objects are supported with style=deepObject")
 }
 
-pub mod admin_v1_api;
 pub mod relayer_v1_api;
 pub mod relayer_v2_api;
 pub mod service_api;
