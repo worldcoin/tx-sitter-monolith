@@ -359,6 +359,8 @@ mod tests {
                 TransactionPriority::Regular,
                 None,
                 &relayer_id,
+                None,
+                None,
             )
             .await?;
         let ctx = TaskContext::new(CancellationToken::new());

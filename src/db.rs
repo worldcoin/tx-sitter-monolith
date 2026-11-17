@@ -15,7 +15,9 @@ use crate::config::DatabaseConfig;
 use crate::db::data::{NetworkInfo, RelayerInfo};
 use crate::db::wrappers::h256::H256Wrapper;
 use crate::db::wrappers::hex_u256::HexU256Wrapper;
-use crate::types::{RelayerUpdateRequest, TransactionPriority, TxStatus};
+use crate::types::{
+    RelayerUpdateRequest, TransactionPriority, TxMetadata, TxStatus,
+};
 
 pub mod data;
 pub mod wrappers;
@@ -52,7 +54,11 @@ pub struct Database {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateResult {
     Created,
-    /// A transaction with the same id exists
+    /// An identical request already created the transaction, see
+    /// [`TxIdMatch::SameRequest`]
+    Repeat,
+    /// A different request already created a transaction with the same id,
+    /// see [`TxIdMatch::DifferentRequest`]
     Conflict,
     /// The relayer already has `max_queued_txs` unsent or pending
     /// transactions
@@ -62,6 +68,18 @@ pub enum CreateResult {
     NonceTaken {
         nonce: u64,
     },
+}
+
+/// How a send request relates to the transaction stored under its id
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxIdMatch {
+    /// No transaction has the id
+    Unused,
+    /// The transaction was created by an identical request
+    SameRequest,
+    /// The transaction was created by a different request, or by a request
+    /// that stored no request hash, such as any v1 send
+    DifferentRequest,
 }
 
 impl Database {
@@ -350,9 +368,13 @@ impl Database {
     }
 
     /// Creates a transaction of `relayer_id` with the relayer's next nonce,
-    /// unless the relayer's queue is full, `tx_id` exists or the nonce is
+    /// unless `tx_id` exists, the relayer's queue is full or the nonce is
     /// taken.
-    #[instrument(skip(self), level = "debug")]
+    ///
+    /// `request_hash` identifies the request, see [`TxIdMatch`]. An existing
+    /// `tx_id` is checked first, so a repeat is answered even when the queue
+    /// is full.
+    #[instrument(skip(self, metadata), level = "debug")]
     pub async fn create_transaction(
         &self,
         tx_id: &str,
@@ -363,13 +385,15 @@ impl Database {
         priority: TransactionPriority,
         blobs: Option<Vec<Vec<u8>>>,
         relayer_id: &str,
+        metadata: Option<&TxMetadata>,
+        request_hash: Option<[u8; 32]>,
     ) -> eyre::Result<CreateResult> {
         let mut tx = self.pool.begin().await?;
 
         let value_bytes: [u8; 32] = value.to_be_bytes();
         let gas_limit_bytes: [u8; 32] = gas_limit.to_be_bytes();
 
-        // Locks the relayer, so that concurrent creates count each other's
+        // Locks the relayer, so that concurrent creates see each other's
         // transactions
         let (max_queued_txs,): (i64,) = sqlx::query_as(
             r#"
@@ -382,6 +406,17 @@ impl Database {
         .bind(relayer_id)
         .fetch_one(tx.as_mut())
         .await?;
+
+        let existing =
+            match_tx_id(tx.as_mut(), tx_id, relayer_id, request_hash).await?;
+        if existing != TxIdMatch::Unused {
+            tx.rollback().await?;
+
+            return Ok(match existing {
+                TxIdMatch::SameRequest => CreateResult::Repeat,
+                _ => CreateResult::Conflict,
+            });
+        }
 
         let queued_txs = count_queued_txs(tx.as_mut(), relayer_id).await?;
 
@@ -405,8 +440,8 @@ impl Database {
 
         let res = sqlx::query(
             r#"
-            INSERT INTO transactions (id, tx_to, data, value, gas_limit, priority, relayer_id, nonce, blobs)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO transactions (id, tx_to, data, value, gas_limit, priority, relayer_id, nonce, blobs, metadata, request_hash)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         "#,
         )
         .bind(tx_id)
@@ -418,11 +453,14 @@ impl Database {
         .bind(relayer_id)
         .bind(nonce)
         .bind(blobs)
+        .bind(metadata)
+        .bind(request_hash)
         .execute(tx.as_mut())
         .await;
 
         if let Err(sqlx::Error::Database(ref err)) = res {
             match err.constraint() {
+                // Another relayer's create took the id after the check above
                 Some("transactions_pkey") => return Ok(CreateResult::Conflict),
                 Some("unique_relayer_nonce") => {
                     return Ok(CreateResult::NonceTaken {
@@ -438,6 +476,18 @@ impl Database {
         tx.commit().await?;
 
         Ok(CreateResult::Created)
+    }
+
+    /// Compares a send request of `relayer_id` to the transaction stored
+    /// under `tx_id`.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn compare_tx_request(
+        &self,
+        tx_id: &str,
+        relayer_id: &str,
+        request_hash: [u8; 32],
+    ) -> eyre::Result<TxIdMatch> {
+        match_tx_id(&self.pool, tx_id, relayer_id, Some(request_hash)).await
     }
 
     /// Returns the transactions that were never broadcast and fit in their
@@ -1033,9 +1083,11 @@ impl Database {
     ) -> eyre::Result<Option<ReadTxData>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
-                   t.blobs, h.tx_hash, s.status
+            SELECT t.id as tx_id, t.relayer_id, r.chain_id, t.tx_to as to, t.data, t.value,
+                   t.gas_limit, t.nonce, t.priority, t.blobs, t.metadata, t.created_at,
+                   h.tx_hash, s.status, s.mined_at::TIMESTAMPTZ as mined_at
             FROM transactions t
+            JOIN relayers r ON t.relayer_id = r.id
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.id = $1
@@ -1054,9 +1106,11 @@ impl Database {
     ) -> eyre::Result<Option<ReadTxData>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
-                   t.blobs, h.tx_hash, s.status
+            SELECT t.id as tx_id, t.relayer_id, r.chain_id, t.tx_to as to, t.data, t.value,
+                   t.gas_limit, t.nonce, t.priority, t.blobs, t.metadata, t.created_at,
+                   h.tx_hash, s.status, s.mined_at::TIMESTAMPTZ as mined_at
             FROM transactions t
+            JOIN relayers r ON t.relayer_id = r.id
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.id = $1
@@ -1082,9 +1136,11 @@ impl Database {
 
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
-                   t. blobs, h.tx_hash, s.status
+            SELECT t.id as tx_id, t.relayer_id, r.chain_id, t.tx_to as to, t.data, t.value,
+                   t.gas_limit, t.nonce, t.priority, t.blobs, t.metadata, t.created_at,
+                   h.tx_hash, s.status, s.mined_at::TIMESTAMPTZ as mined_at
             FROM transactions t
+            JOIN relayers r ON t.relayer_id = r.id
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE t.relayer_id = $1
@@ -1110,9 +1166,11 @@ impl Database {
 
         Ok(sqlx::query_as(
             r#"
-            SELECT t.id as tx_id, t.tx_to as to, t.data, t.value, t.gas_limit, t.nonce,
-                   t. blobs, h.tx_hash, s.status
+            SELECT t.id as tx_id, t.relayer_id, r.chain_id, t.tx_to as to, t.data, t.value,
+                   t.gas_limit, t.nonce, t.priority, t.blobs, t.metadata, t.created_at,
+                   h.tx_hash, s.status, s.mined_at::TIMESTAMPTZ as mined_at
             FROM transactions t
+            JOIN relayers r ON t.relayer_id = r.id
             LEFT JOIN sent_transactions s ON t.id = s.tx_id
             LEFT JOIN tx_hashes h ON s.valid_tx_hash = h.tx_hash
             WHERE ($1 = true AND s.status = $2) OR $1 = false
@@ -1605,6 +1663,32 @@ async fn check_statement_timeout(
     Ok(())
 }
 
+async fn match_tx_id(
+    executor: impl PgExecutor<'_>,
+    tx_id: &str,
+    relayer_id: &str,
+    request_hash: Option<[u8; 32]>,
+) -> eyre::Result<TxIdMatch> {
+    let is_same_request: Option<(bool,)> = sqlx::query_as(
+        r#"
+        SELECT COALESCE(relayer_id = $2 AND request_hash = $3, FALSE)
+        FROM   transactions
+        WHERE  id = $1
+        "#,
+    )
+    .bind(tx_id)
+    .bind(relayer_id)
+    .bind(request_hash)
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(match is_same_request {
+        None => TxIdMatch::Unused,
+        Some((true,)) => TxIdMatch::SameRequest,
+        Some((false,)) => TxIdMatch::DifferentRequest,
+    })
+}
+
 async fn count_queued_txs(
     executor: impl PgExecutor<'_>,
     relayer_id: &str,
@@ -2023,6 +2107,7 @@ mod tests {
 
         db.create_transaction(
             tx_id, to, data, value, gas_limit, priority, blobs, relayer_id,
+            None, None,
         )
         .await?;
 
@@ -2330,6 +2415,186 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_answers_a_repeat_before_admission() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        let other_relayer_id = create_relayer(&db).await?;
+        set_max_queued_txs(&db, &relayer_id, 1).await?;
+        let request_hash = [7; 32];
+
+        let created =
+            create_v2_tx(&db, &relayer_id, "tx", request_hash).await?;
+        assert_eq!(created, CreateResult::Created);
+
+        // The queue is full, but a repeat takes no slot
+        for (relayer_id, request_hash, expected) in [
+            (&relayer_id, Some(request_hash), CreateResult::Repeat),
+            (&relayer_id, Some([8; 32]), CreateResult::Conflict),
+            (&relayer_id, None, CreateResult::Conflict),
+            (
+                &other_relayer_id,
+                Some(request_hash),
+                CreateResult::Conflict,
+            ),
+        ] {
+            let result = db
+                .create_transaction(
+                    "tx",
+                    Address::with_last_byte(1),
+                    &[],
+                    U256::ZERO,
+                    U256::from(21_000),
+                    TransactionPriority::Regular,
+                    None,
+                    relayer_id,
+                    None,
+                    request_hash,
+                )
+                .await?;
+            assert_eq!(result, expected, "{relayer_id} {request_hash:?}");
+        }
+        assert_eq!(
+            create_v2_tx(&db, &relayer_id, "next", request_hash).await?,
+            CreateResult::QueueFull
+        );
+
+        for (tx_id, relayer_id, request_hash, expected) in [
+            ("tx", &relayer_id, request_hash, TxIdMatch::SameRequest),
+            ("tx", &relayer_id, [8; 32], TxIdMatch::DifferentRequest),
+            (
+                "tx",
+                &other_relayer_id,
+                request_hash,
+                TxIdMatch::DifferentRequest,
+            ),
+            ("next", &relayer_id, request_hash, TxIdMatch::Unused),
+        ] {
+            assert_eq!(
+                db.compare_tx_request(tx_id, relayer_id, request_hash)
+                    .await?,
+                expected,
+                "{tx_id} {relayer_id}"
+            );
+        }
+        let relayer = db
+            .get_relayer(&relayer_id)
+            .await?
+            .context("Missing relayer")?;
+        assert_eq!(relayer.nonce, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_creates_of_one_tx_id_store_one_tx() -> eyre::Result<()>
+    {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+
+        // Half the requests are identical, the other half differ from them
+        let request_hashes: Vec<[u8; 32]> =
+            (0..10).map(|i| [i % 2; 32]).collect();
+        let results = futures::future::try_join_all(request_hashes.iter().map(
+            |request_hash| create_v2_tx(&db, &relayer_id, "tx", *request_hash),
+        ))
+        .await?;
+
+        let created: Vec<_> = request_hashes
+            .iter()
+            .zip(&results)
+            .filter(|(_, result)| **result == CreateResult::Created)
+            .map(|(request_hash, _)| *request_hash)
+            .collect();
+        let [winner] = created[..] else {
+            panic!("Expected a single created tx, got {results:?}");
+        };
+        for (request_hash, result) in request_hashes.iter().zip(&results) {
+            let expected = match *request_hash == winner {
+                true => [CreateResult::Created, CreateResult::Repeat],
+                false => [CreateResult::Conflict, CreateResult::Conflict],
+            };
+            assert!(expected.contains(result), "{request_hash:?} {result:?}");
+        }
+        let relayer = db
+            .get_relayer(&relayer_id)
+            .await?
+            .context("Missing relayer")?;
+        assert_eq!(relayer.nonce, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn v2_columns_round_trip() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        let other_relayer_id = create_relayer(&db).await?;
+
+        let metadata_json = r#"{ "b": 18446744073709551617, "a": [1.10] }"#;
+        let metadata: TxMetadata = serde_json::from_str(metadata_json)?;
+        let created_after = Utc::now() - chrono::Duration::seconds(5);
+
+        db.create_transaction(
+            "v2_tx",
+            Address::from(ADDRESS),
+            &[0xde, 0xad],
+            U256::from(1_000u64),
+            U256::from(21_000u64),
+            TransactionPriority::Fast,
+            None,
+            &relayer_id,
+            Some(&metadata),
+            Some([7; 32]),
+        )
+        .await?;
+        create_tx(&db, &relayer_id, "v1_tx").await?;
+
+        assert!(db
+            .read_relayer_tx(&other_relayer_id, "v2_tx")
+            .await?
+            .is_none());
+
+        let tx = db
+            .read_relayer_tx(&relayer_id, "v2_tx")
+            .await?
+            .context("Missing tx")?;
+        assert_eq!(tx.relayer_id, relayer_id);
+        assert_eq!(tx.chain_id, 123);
+        assert_eq!(tx.priority, TransactionPriority::Fast);
+        assert_eq!(
+            tx.metadata.as_ref().map(TxMetadata::as_str),
+            Some(metadata_json)
+        );
+        assert!(tx.created_at > created_after, "{}", tx.created_at);
+        assert_eq!(tx.mined_at, None);
+
+        let v1_tx = db.read_tx("v1_tx").await?.context("Missing tx")?;
+        assert_eq!(v1_tx.nonce, 1);
+        assert_eq!(v1_tx.metadata, None);
+        assert!(v1_tx.created_at > created_after, "{}", v1_tx.created_at);
+
+        let tx_hash = B256::from(HASH);
+        let block_timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
+        db.insert_tx_broadcast(
+            "v2_tx",
+            tx_hash,
+            &[0x02],
+            U256::from(2u64),
+            U256::from(1u64),
+        )
+        .await?;
+        db.save_block(1, 123, block_timestamp, &[tx_hash]).await?;
+        db.mine_txs(123).await?;
+
+        let tx = db.read_tx("v2_tx").await?.context("Missing tx")?;
+        assert_eq!(tx.tx_hash.map(|hash| hash.0), Some(tx_hash));
+        assert_eq!(tx.status, Some(TxStatus::Mined));
+        assert_eq!(tx.mined_at, Some(block_timestamp));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn finalize_reports_only_the_txs_it_finalized() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let tx_id = create_broadcast_tx(&db).await?;
@@ -2471,6 +2736,8 @@ mod tests {
             priority,
             blobs,
             relayer_1_id,
+            None,
+            None,
         )
         .await?;
 
@@ -2679,6 +2946,8 @@ mod tests {
             TransactionPriority::Regular,
             None,
             &relayer_id,
+            None,
+            None,
         )
         .await?;
 
@@ -2832,6 +3101,8 @@ mod tests {
             TransactionPriority::Regular,
             None,
             relayer_id,
+            None,
+            None,
         )
         .await
     }
@@ -2848,6 +3119,48 @@ mod tests {
         relayers.sort_by_key(|relayer| relayer.relayer_id != first_relayer_id);
 
         Ok(relayers.into_iter().map(|relayer| relayer.txs).collect())
+    }
+
+    async fn create_v2_tx(
+        db: &Database,
+        relayer_id: &str,
+        tx_id: &str,
+        request_hash: [u8; 32],
+    ) -> eyre::Result<CreateResult> {
+        db.create_transaction(
+            tx_id,
+            Address::with_last_byte(1),
+            &[],
+            U256::ZERO,
+            U256::from(21_000),
+            TransactionPriority::Regular,
+            None,
+            relayer_id,
+            None,
+            Some(request_hash),
+        )
+        .await
+    }
+
+    async fn set_max_queued_txs(
+        db: &Database,
+        relayer_id: &str,
+        max_queued_txs: u64,
+    ) -> eyre::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE relayers
+            SET    max_inflight_txs = 0,
+                   max_queued_txs = $2
+            WHERE  id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .bind(max_queued_txs as i64)
+        .execute(&db.pool)
+        .await?;
+
+        Ok(())
     }
 
     /// Creates a transaction broadcast with hash `0x..01` and returns its id.
