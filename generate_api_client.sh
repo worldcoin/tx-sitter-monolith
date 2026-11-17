@@ -4,7 +4,7 @@ set -eux
 
 cargo run --bin api_spec_generator > ./schema.yaml
 
-docker run --rm -v "${PWD}:/local" --user "$(id -u):$(id -g)" -- openapitools/openapi-generator-cli generate \
+docker run --rm -v "${PWD}:/local" --user "$(id -u):$(id -g)" -- openapitools/openapi-generator-cli:v7.9.0 generate \
   -i /local/schema.yaml \
   -g rust \
   -o /local/crates/tx-sitter-client \
