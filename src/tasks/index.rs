@@ -17,6 +17,7 @@ use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
 use crate::db::data::RelayerInfo;
+use crate::task_runner::{TaskContext, Wait};
 
 const BLOCK_FEE_HISTORY_SIZE: u64 = 10;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];
@@ -26,14 +27,18 @@ const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
 
 const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
 
-pub async fn index_chain(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
-    loop {
-        index_inner(app.clone(), chain_id).await?;
-    }
-}
-
-#[tracing::instrument(skip(app), level = "info")]
-async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
+/// Indexes the blocks of `chain_id` as they arrive on its block stream.
+///
+/// Returns an error once the stream ends or goes quiet for
+/// `block_stream_timeout`, so that the task runner restarts indexing after a
+/// backoff. Every start reads the RPC URLs from the database, so a changed URL
+/// takes effect on the next reconnect.
+#[tracing::instrument(skip(app, ctx), level = "info")]
+pub async fn index_chain(
+    app: Arc<App>,
+    ctx: TaskContext,
+    chain_id: u64,
+) -> eyre::Result<()> {
     let ws_rpc = app.ws_provider(chain_id).await?;
     let rpc = app.http_provider(chain_id).await?;
 
@@ -46,30 +51,20 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     .context("Timed out subscribing to new blocks")?
     .context("Subscribing to new blocks")?
     .into_stream();
+    let block_stream_timeout = app.config.service.block_stream_timeout;
 
-    loop {
-        let next_block = timeout(
-            app.config.service.block_stream_timeout,
-            blocks_stream.next(),
-        )
-        .await;
-
-        match next_block {
-            Ok(Some(block)) => {
-                backfill_to_block(app.clone(), chain_id, &rpc, block).await?;
+    while !ctx.is_shutting_down() {
+        match ctx.wait(block_stream_timeout, blocks_stream.next()).await {
+            Wait::Ready(Some(block)) => {
+                backfill_to_block(app.clone(), &ctx, chain_id, &rpc, block)
+                    .await?;
+                ctx.report_progress();
             }
-            Ok(None) => {
-                // Stream ended, break out of the loop
-                tracing::info!("Block stream ended");
-                break;
+            Wait::Ready(None) => eyre::bail!("Block stream ended"),
+            Wait::TimedOut => {
+                eyre::bail!("No new block within {block_stream_timeout:?}")
             }
-            Err(_) => {
-                tracing::warn!(
-                    timeout = ?app.config.service.block_stream_timeout,
-                    "Timed out waiting for a block"
-                );
-                break;
-            }
+            Wait::ShuttingDown => break,
         }
     }
 
@@ -129,10 +124,12 @@ pub async fn index_block(
 ///
 /// Every header from the block subscription goes through here, because the
 /// subscription skips headers when indexing falls behind it, and a reconnect
-/// misses the headers produced in the meantime.
-#[tracing::instrument(skip(app, rpc, latest_block), level = "info")]
+/// misses the headers produced in the meantime. Once shutdown is requested it
+/// returns before the next block.
+#[tracing::instrument(skip(app, ctx, rpc, latest_block), level = "info")]
 pub async fn backfill_to_block(
     app: Arc<App>,
+    ctx: &TaskContext,
     chain_id: u64,
     rpc: &RootProvider,
     latest_block: Header,
@@ -164,6 +161,10 @@ pub async fn backfill_to_block(
 
         // Backfill blocks between the last synced block and the chain head, non inclusive
         for block_number in next_block_number..latest_block_number {
+            if ctx.is_shutting_down() {
+                return Ok(());
+            }
+
             let block = rpc
                 .get_block_by_number(block_number.into())
                 .await?
@@ -172,6 +173,7 @@ pub async fn backfill_to_block(
                 ))?;
 
             index_block(app.clone(), chain_id, rpc, block.header).await?;
+            ctx.report_progress();
         }
     }
 
@@ -181,10 +183,12 @@ pub async fn backfill_to_block(
     Ok(())
 }
 
-pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
-    let rpc = app.http_provider(chain_id).await?;
-
-    loop {
+pub async fn estimate_gas(
+    app: Arc<App>,
+    ctx: TaskContext,
+    chain_id: u64,
+) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
         let latest_block_number = app
             .db
             .get_latest_block_number_without_fee_estimates(chain_id)
@@ -193,7 +197,7 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
         let Some(latest_block_number) = latest_block_number else {
             tracing::info!(chain_id, "No blocks to estimate fees for");
 
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            ctx.idle(Duration::from_secs(2)).await;
 
             continue;
         };
@@ -204,6 +208,7 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             "Estimating fees"
         );
 
+        let rpc = app.http_provider(chain_id).await?;
         let fee_estimates = get_block_fee_estimates(&rpc, latest_block_number)
             .await
             .context("Failed to fetch fee estimates")?;
@@ -245,11 +250,11 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             );
         }
 
-        tokio::time::sleep(Duration::from_secs(
-            TIME_BETWEEN_FEE_ESTIMATION_SECONDS,
-        ))
-        .await;
+        ctx.idle(Duration::from_secs(TIME_BETWEEN_FEE_ESTIMATION_SECONDS))
+            .await;
     }
+
+    Ok(())
 }
 
 async fn update_relayer_nonces(
@@ -324,6 +329,7 @@ mod tests {
     use postgres_docker_utils::DockerContainerGuard;
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::Message;
+    use tokio_util::sync::CancellationToken;
 
     use tokio::time::error::Elapsed;
 
@@ -339,9 +345,10 @@ mod tests {
         let (app, _db_container) = setup_app_with_ws_rpc(ws_addr).await?;
 
         let started = Instant::now();
-        let result = timeout(RPC_TIMEOUT * 3, index_inner(app, CHAIN_ID))
-            .await
-            .context("Subscribing outlived rpc_timeout")?;
+        let result =
+            timeout(RPC_TIMEOUT * 3, index_chain(app, ctx(), CHAIN_ID))
+                .await
+                .context("Subscribing outlived rpc_timeout")?;
         let elapsed = started.elapsed();
 
         let Err(err) = result else {
@@ -358,21 +365,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn waiting_for_a_block_ends_after_block_stream_timeout(
+    async fn waiting_for_a_block_fails_after_block_stream_timeout(
     ) -> eyre::Result<()> {
         let ws_addr = spawn_ws_rpc(WsRpc::AnswersWithoutBlocks).await?;
         let (app, _db_container) = setup_app_with_ws_rpc(ws_addr).await?;
 
         let started = Instant::now();
-        timeout(BLOCK_STREAM_TIMEOUT * 3, index_inner(app, CHAIN_ID))
-            .await
-            .context("Waiting for a block outlived block_stream_timeout")??;
+        let result = timeout(
+            BLOCK_STREAM_TIMEOUT * 3,
+            index_chain(app, ctx(), CHAIN_ID),
+        )
+        .await
+        .context("Waiting for a block outlived block_stream_timeout")?;
         let elapsed = started.elapsed();
 
+        let Err(err) = result else {
+            eyre::bail!("Indexing ended without a block");
+        };
+        assert!(
+            err.to_string().starts_with("No new block within"),
+            "Unexpected error: {err:?}"
+        );
         assert!(elapsed >= BLOCK_STREAM_TIMEOUT, "Took {elapsed:?}");
         assert!(elapsed <= BLOCK_STREAM_TIMEOUT * 2, "Took {elapsed:?}");
 
         Ok(())
+    }
+
+    fn ctx() -> TaskContext {
+        TaskContext::new(CancellationToken::new())
     }
 
     /// How a WS server from [`spawn_ws_rpc`] treats requests once it has

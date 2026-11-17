@@ -2,11 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::App;
+use crate::task_runner::TaskContext;
 
 const TIME_BETWEEN_FINALIZATIONS_SECONDS: i64 = 60;
 
-pub async fn finalize_txs(app: Arc<App>) -> eyre::Result<()> {
-    loop {
+pub async fn finalize_txs(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
         let finalization_timestamp =
             chrono::Utc::now() - chrono::Duration::seconds(60 * 60);
 
@@ -17,9 +18,11 @@ pub async fn finalize_txs(app: Arc<App>) -> eyre::Result<()> {
 
         app.db.finalize_txs(finalization_timestamp).await?;
 
-        tokio::time::sleep(Duration::from_secs(
+        ctx.idle(Duration::from_secs(
             TIME_BETWEEN_FINALIZATIONS_SECONDS as u64,
         ))
         .await;
     }
+
+    Ok(())
 }

@@ -13,17 +13,23 @@ use crate::broadcast_utils::should_send_relayer_transactions;
 use crate::db::data::RelayerInfo;
 use crate::db::TxForEscalation;
 use crate::keys::UniversalSigner;
+use crate::task_runner::TaskContext;
 
-pub async fn escalate_txs_task(app: Arc<App>) -> eyre::Result<()> {
-    loop {
-        escalate_txs(&app).await?;
+pub async fn escalate_txs_task(
+    app: Arc<App>,
+    ctx: TaskContext,
+) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
+        escalate_txs(&app, &ctx).await?;
 
-        tokio::time::sleep(app.config.service.escalation_interval).await;
+        ctx.idle(app.config.service.escalation_interval).await;
     }
+
+    Ok(())
 }
 
-#[tracing::instrument(skip(app))]
-async fn escalate_txs(app: &App) -> eyre::Result<()> {
+#[tracing::instrument(skip(app, ctx))]
+async fn escalate_txs(app: &App, ctx: &TaskContext) -> eyre::Result<()> {
     tracing::info!("Escalating transactions");
 
     let txs_for_escalation = app
@@ -41,7 +47,7 @@ async fn escalate_txs(app: &App) -> eyre::Result<()> {
     let mut futures = FuturesUnordered::new();
 
     for (relayer_id, txs) in txs_for_escalation {
-        futures.push(escalate_relayer_txs(app, relayer_id, txs));
+        futures.push(escalate_relayer_txs(app, ctx, relayer_id, txs));
     }
 
     while let Some(result) = futures.next().await {
@@ -53,9 +59,10 @@ async fn escalate_txs(app: &App) -> eyre::Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(skip(app, txs))]
+#[tracing::instrument(skip(app, ctx, txs))]
 async fn escalate_relayer_txs(
     app: &App,
+    ctx: &TaskContext,
     relayer_id: String,
     txs: Vec<TxForEscalation>,
 ) -> eyre::Result<()> {
@@ -70,7 +77,12 @@ async fn escalate_relayer_txs(
     }
 
     for tx in txs {
+        if ctx.is_shutting_down() {
+            break;
+        }
+
         escalate_relayer_tx(app, &relayer, tx).await?;
+        ctx.report_progress();
     }
 
     Ok(())

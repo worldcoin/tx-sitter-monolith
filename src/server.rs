@@ -1,26 +1,28 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy::primitives::U256;
 use alloy::providers::Provider;
-use eyre::ContextCompat;
+use eyre::{Context, ContextCompat};
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::middleware::Cors;
 use poem::web::{Data, LocalAddr};
 use poem::{EndpointExt, IntoResponse, Result, Route};
 use poem_openapi::param::{Path, Query};
-use poem_openapi::payload::Json;
+use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, OpenApi, OpenApiService, Tags};
 use security::BasicAuth;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::api_key::ApiKey;
 use crate::app::App;
 use crate::db::CreateResult;
 use crate::service::Service;
-use crate::task_runner::TaskRunner;
+use crate::task_runner::{TaskHealth, TaskRunner};
 use crate::types::{
     CreateApiKeyResponse, CreateNetworkRequest, CreateRelayerRequest,
     CreateRelayerResponse, ErrorResponse, GetTxResponse, NetworkResponse,
@@ -30,6 +32,8 @@ use crate::types::{
 
 mod security;
 mod trace_middleware;
+
+const READINESS_DB_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Tags)]
 enum OpenAPITags {
@@ -203,6 +207,7 @@ impl AdminApi {
         &self,
         basic_auth: BasicAuth,
         Data(app): Data<&Arc<App>>,
+        Data(task_runner): Data<&Arc<TaskRunner<App>>>,
         Path(chain_id): Path<u64>,
         Json(network): Json<CreateNetworkRequest>,
     ) -> Result<()> {
@@ -227,8 +232,7 @@ impl AdminApi {
             )
             .await?;
 
-        let task_runner = TaskRunner::new(app.clone());
-        Service::spawn_chain_tasks(&task_runner, chain_id)?;
+        Service::spawn_chain_tasks(task_runner, chain_id);
 
         Ok(())
     }
@@ -551,22 +555,86 @@ fn default_false() -> bool {
 struct ServiceApi;
 
 #[derive(ApiResponse)]
-enum ServiceResponse {
+enum HealthResponse {
     #[oai(status = 200)]
     Healthy,
+    /// The reason the check failed
+    #[oai(status = 503)]
+    Unhealthy(PlainText<String>),
 }
 
 #[OpenApi]
 impl ServiceApi {
     /// Health
+    ///
+    /// Alias of `/health/live`
     #[oai(
         path = "/health",
         method = "get",
         operation_id = "health",
         tag = "OpenAPITags::Service"
     )]
-    async fn health(&self) -> ServiceResponse {
-        ServiceResponse::Healthy
+    async fn health(
+        &self,
+        Data(task_runner): Data<&Arc<TaskRunner<App>>>,
+    ) -> HealthResponse {
+        check_liveness(task_runner)
+    }
+
+    /// Liveness
+    ///
+    /// Fails once a background task stops or misses its progress deadline
+    #[oai(
+        path = "/health/live",
+        method = "get",
+        operation_id = "health_live",
+        tag = "OpenAPITags::Service"
+    )]
+    async fn health_live(
+        &self,
+        Data(task_runner): Data<&Arc<TaskRunner<App>>>,
+    ) -> HealthResponse {
+        check_liveness(task_runner)
+    }
+
+    /// Readiness
+    ///
+    /// Fails while the database is unreachable
+    #[oai(
+        path = "/health/ready",
+        method = "get",
+        operation_id = "health_ready",
+        tag = "OpenAPITags::Service"
+    )]
+    async fn health_ready(&self, Data(app): Data<&Arc<App>>) -> HealthResponse {
+        match app.db.ping(READINESS_DB_TIMEOUT).await {
+            Ok(()) => HealthResponse::Healthy,
+            Err(err) => {
+                tracing::warn!(error = ?err, "Readiness check failed");
+
+                HealthResponse::Unhealthy(PlainText(
+                    "Database is unreachable".to_string(),
+                ))
+            }
+        }
+    }
+}
+
+fn check_liveness(task_runner: &TaskRunner<App>) -> HealthResponse {
+    let unhealthy_tasks: Vec<String> = task_runner
+        .task_health()
+        .into_iter()
+        .filter(|(_, health)| *health != TaskHealth::Progressing)
+        .map(|(label, health)| format!("{label} ({health:?})"))
+        .collect();
+
+    if unhealthy_tasks.is_empty() {
+        HealthResponse::Healthy
+    } else {
+        HealthResponse::Unhealthy(PlainText(format!(
+            "Unhealthy tasks: {}",
+            unhealthy_tasks.join(", ")
+        )))
     }
 }
 
@@ -592,7 +660,17 @@ pub async fn generate_spec_yaml(server_address: Option<&String>) -> String {
     api_service.spec_yaml()
 }
 
-pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
+/// Serves the HTTP API until `shutdown` is cancelled.
+///
+/// After that the server stops accepting connections and gives in-flight
+/// requests `server.shutdown_timeout` to finish, logging a warning if they
+/// don't. If the server fails or panics, it cancels `shutdown` so the rest of
+/// the service stops too.
+pub async fn spawn_server(
+    app: Arc<App>,
+    task_runner: Arc<TaskRunner<App>>,
+    shutdown: CancellationToken,
+) -> eyre::Result<ServerHandle> {
     let api_service =
         create_api_service(app.config.server.server_address.as_ref());
 
@@ -605,7 +683,8 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
         .nest("/", api_service)
         .with(trace_middleware::TraceMiddleware)
         .with(Cors::new())
-        .data(app.clone());
+        .data(app.clone())
+        .data(task_runner);
 
     let listener = TcpListener::bind(app.config.server.host);
     let acceptor = listener.into_acceptor().await?;
@@ -613,10 +692,32 @@ pub async fn spawn_server(app: Arc<App>) -> eyre::Result<ServerHandle> {
     let local_addrs = acceptor.local_addr();
 
     let server = poem::Server::new_with_acceptor(acceptor);
+    let shutdown_timeout = app.config.server.shutdown_timeout;
 
     let server_handle = tokio::spawn(async move {
-        server.run(router).await?;
-        Ok(())
+        let _cancel_on_exit = shutdown.clone().drop_guard();
+
+        let serve = server.run_with_graceful_shutdown(
+            router,
+            shutdown.clone().cancelled_owned(),
+            None,
+        );
+        let drain_deadline = async {
+            shutdown.cancelled().await;
+            tokio::time::sleep(shutdown_timeout).await;
+        };
+
+        tokio::select! {
+            result = serve => result.context("Running the HTTP server"),
+            () = drain_deadline => {
+                tracing::warn!(
+                    ?shutdown_timeout,
+                    "In-flight requests did not finish within the shutdown timeout, dropping them"
+                );
+
+                Ok(())
+            }
+        }
     });
 
     Ok(ServerHandle {

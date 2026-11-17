@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use alloy::signers::local::PrivateKeySigner;
+use eyre::Context;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::app::App;
 use crate::config::Config;
@@ -12,76 +15,99 @@ use crate::tasks;
 
 pub struct Service {
     app: Arc<App>,
+    task_runner: Arc<TaskRunner<App>>,
+    shutdown: CancellationToken,
     local_addr: SocketAddr,
     server_handle: JoinHandle<eyre::Result<()>>,
 }
 
 impl Service {
-    pub async fn new(config: Config) -> eyre::Result<Self> {
+    /// Starts the HTTP server and the background tasks.
+    ///
+    /// The service runs until `shutdown` is cancelled, see [`Service::wait`].
+    pub async fn new(
+        config: Config,
+        shutdown: CancellationToken,
+    ) -> eyre::Result<Self> {
         let app = Arc::new(App::new(config).await?);
+
+        initialize_predefined_values(&app).await?;
 
         tracing::info!("Getting network chain ids");
         let chain_ids = app.db.get_network_chain_ids().await?;
 
+        let task_runner = Arc::new(TaskRunner::new(
+            app.clone(),
+            shutdown.clone(),
+            app.config.service.task_stall_timeout,
+        ));
+
+        let server = crate::server::spawn_server(
+            app.clone(),
+            task_runner.clone(),
+            shutdown.clone(),
+        )
+        .await?;
+
         tracing::info!("Spawning tasks");
-        let task_runner = TaskRunner::new(app.clone());
-        task_runner.add_task("Broadcast transactions", tasks::broadcast_txs);
-        task_runner.add_task("Escalate transactions", tasks::escalate_txs_task);
-        task_runner.add_task("Prune blocks", tasks::prune_blocks);
-        task_runner.add_task("Prune transactions", tasks::prune_txs);
-        task_runner.add_task("Finalize transactions", tasks::finalize_txs);
-        task_runner.add_task("Handle soft reorgs", tasks::handle_soft_reorgs);
-        task_runner.add_task("Handle hard reorgs", tasks::handle_hard_reorgs);
-        task_runner.add_task("Monitor relayer funds", tasks::monitor_funds);
-
-        if let Some(telemetry_config) = app.config.service.telemetry.as_ref() {
-            if telemetry_config.metrics.is_some() {
-                task_runner.add_task("Emit metrics", tasks::emit_metrics);
-            }
-        }
-
+        add_background_tasks(&task_runner, &app);
         for chain_id in chain_ids {
-            Self::spawn_chain_tasks(&task_runner, chain_id)?;
+            Self::spawn_chain_tasks(&task_runner, chain_id);
         }
-
-        let server = crate::server::spawn_server(app.clone()).await?;
-        let local_addr = server.local_addr();
-        let server_handle = server.server_handle;
-
-        initialize_predefined_values(&app).await?;
 
         Ok(Self {
             app,
-            local_addr,
-            server_handle,
+            task_runner,
+            shutdown,
+            local_addr: server.local_addr(),
+            server_handle: server.server_handle,
         })
     }
 
-    pub fn spawn_chain_tasks(
-        task_runner: &TaskRunner<App>,
-        chain_id: u64,
-    ) -> eyre::Result<()> {
-        task_runner.add_task(
-            format!("Index blocks (chain id: {chain_id})"),
-            move |app| crate::tasks::index::index_chain(app, chain_id),
-        );
-
-        task_runner.add_task(
-            format!("Estimate fees (chain id: {chain_id})"),
-            move |app| crate::tasks::index::estimate_gas(app, chain_id),
-        );
-
-        Ok(())
+    /// Spawns the tasks that index `chain_id` and estimate its fees, unless
+    /// they are already running.
+    pub fn spawn_chain_tasks(task_runner: &TaskRunner<App>, chain_id: u64) {
+        task_runner
+            .add_task(format!("index_blocks/{chain_id}"), move |app, ctx| {
+                tasks::index::index_chain(app, ctx, chain_id)
+            });
+        task_runner
+            .add_task(format!("estimate_fees/{chain_id}"), move |app, ctx| {
+                tasks::index::estimate_gas(app, ctx, chain_id)
+            });
     }
 
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
-    pub async fn wait(self) -> eyre::Result<()> {
-        self.server_handle.await??;
+    // Integration tests add their own tasks through this
+    #[doc(hidden)]
+    pub fn task_runner(&self) -> &Arc<TaskRunner<App>> {
+        &self.task_runner
+    }
 
-        Ok(())
+    /// Waits for shutdown to be requested, then for in-flight requests and
+    /// background tasks to finish.
+    ///
+    /// Both get `server.shutdown_timeout` to finish. Tasks still running after
+    /// that are aborted and logged.
+    pub async fn wait(self) -> eyre::Result<()> {
+        self.shutdown.cancelled().await;
+
+        let deadline = Instant::now() + self.app.config.server.shutdown_timeout;
+        let (server_result, unfinished_tasks) =
+            tokio::join!(self.server_handle, self.task_runner.join(deadline));
+
+        if !unfinished_tasks.is_empty() {
+            tracing::warn!(
+                ?unfinished_tasks,
+                shutdown_timeout = ?self.app.config.server.shutdown_timeout,
+                "Tasks did not finish within the shutdown timeout"
+            );
+        }
+
+        server_result.context("HTTP server panicked")?
     }
 
     pub async fn are_estimates_ready_for_chain(&self, chain_id: u64) -> bool {
@@ -93,6 +119,24 @@ impl Service {
         match res {
             Ok(res) => res.is_some(),
             Err(_) => false,
+        }
+    }
+}
+
+fn add_background_tasks(task_runner: &Arc<TaskRunner<App>>, app: &App) {
+    task_runner.add_watchdog();
+    task_runner.add_task("broadcast_txs", tasks::broadcast_txs);
+    task_runner.add_task("escalate_txs", tasks::escalate_txs_task);
+    task_runner.add_task("prune_blocks", tasks::prune_blocks);
+    task_runner.add_task("prune_txs", tasks::prune_txs);
+    task_runner.add_task("finalize_txs", tasks::finalize_txs);
+    task_runner.add_task("handle_soft_reorgs", tasks::handle_soft_reorgs);
+    task_runner.add_task("handle_hard_reorgs", tasks::handle_hard_reorgs);
+    task_runner.add_task("monitor_funds", tasks::monitor_funds);
+
+    if let Some(telemetry_config) = app.config.service.telemetry.as_ref() {
+        if telemetry_config.metrics.is_some() {
+            task_runner.add_task("emit_metrics", tasks::emit_metrics);
         }
     }
 }
@@ -124,9 +168,6 @@ async fn initialize_predefined_values(
                 &predefined.network.ws_rpc,
             )
             .await?;
-
-        let task_runner = TaskRunner::new(app.clone());
-        Service::spawn_chain_tasks(&task_runner, predefined.network.chain_id)?;
     }
 
     let secret_key = signing_key_from_hex(&predefined.relayer.key_id)?;

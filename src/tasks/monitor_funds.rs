@@ -4,25 +4,23 @@ use std::time::{Duration, Instant};
 
 use alloy::primitives::U256;
 use alloy::providers::Provider;
-use tokio::time::{self, MissedTickBehavior};
 
 use crate::app::App;
+use crate::task_runner::TaskContext;
 
 const INTERVAL: Duration = Duration::from_secs(15);
 const LOW_BALANCE_THRESHOLD: u64 = 1000000000000000000; // 1 ETH
 const REPORTING_INTERVAL: Duration = Duration::from_secs(60);
 
-pub async fn monitor_funds(app: Arc<App>) -> eyre::Result<()> {
-    let mut timer = time::interval(INTERVAL);
-    timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
+pub async fn monitor_funds(
+    app: Arc<App>,
+    ctx: TaskContext,
+) -> eyre::Result<()> {
     let low_balance_threshold = U256::from(LOW_BALANCE_THRESHOLD);
 
     let mut reporting_cache = HashMap::new();
 
-    loop {
-        timer.tick().await;
-
+    while !ctx.is_shutting_down() {
         let relayers = app.db.get_relayers().await?;
 
         for relayer in &relayers {
@@ -61,5 +59,9 @@ pub async fn monitor_funds(app: Arc<App>) -> eyre::Result<()> {
                 );
             }
         }
+
+        ctx.idle(INTERVAL).await;
     }
+
+    Ok(())
 }

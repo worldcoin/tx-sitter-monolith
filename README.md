@@ -59,6 +59,15 @@ The Tx Sitter can be configured in 2 ways:
     TX_SITTER__KEYS__KIND="local"
     ```
 
+### Probes and shutdown
+
+Probes:
+
+- `GET /health/ready`: 503 while the database doesn't answer within 2s.
+- `GET /health/live` (alias `GET /health`): 503 once a background task has stopped, or has made no progress for `service.task_stall_timeout` (default `5m`).
+
+On SIGTERM or SIGINT the service stops accepting connections and gives in-flight requests and background tasks `server.shutdown_timeout` (default `20s`) to finish.
+
 ## Running tests
 
 While you obviously can run tests with

@@ -2,11 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::App;
+use crate::task_runner::TaskContext;
 
 const EMIT_METRICS_INTERVAL: Duration = Duration::from_secs(1);
 
-pub async fn emit_metrics(app: Arc<App>) -> eyre::Result<()> {
-    loop {
+pub async fn emit_metrics(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
         let chain_ids = app.db.get_network_chain_ids().await?;
 
         for chain_id in chain_ids {
@@ -25,6 +26,8 @@ pub async fn emit_metrics(app: Arc<App>) -> eyre::Result<()> {
             metrics::gauge!("block_txs", &labels).set(stats.block_txs as f64);
         }
 
-        tokio::time::sleep(EMIT_METRICS_INTERVAL).await;
+        ctx.idle(EMIT_METRICS_INTERVAL).await;
     }
+
+    Ok(())
 }

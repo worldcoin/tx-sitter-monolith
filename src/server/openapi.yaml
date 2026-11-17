@@ -345,10 +345,49 @@ paths:
       tags:
       - Service
       summary: Health
+      description: Alias of `/health/live`
       responses:
         '200':
           description: ''
+        '503':
+          description: The reason the check failed
+          content:
+            text/plain; charset=utf-8:
+              schema:
+                type: string
       operationId: health
+  /health/live:
+    get:
+      tags:
+      - Service
+      summary: Liveness
+      description: Fails once a background task stops or misses its progress deadline
+      responses:
+        '200':
+          description: ''
+        '503':
+          description: The reason the check failed
+          content:
+            text/plain; charset=utf-8:
+              schema:
+                type: string
+      operationId: health_live
+  /health/ready:
+    get:
+      tags:
+      - Service
+      summary: Readiness
+      description: Fails while the database is unreachable
+      responses:
+        '200':
+          description: ''
+        '503':
+          description: The reason the check failed
+          content:
+            text/plain; charset=utf-8:
+              schema:
+                type: string
+      operationId: health_ready
 components:
   schemas:
     CreateApiKeyResponse:
