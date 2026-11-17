@@ -90,6 +90,7 @@ impl Database {
                 format!("{}ms", STATEMENT_TIMEOUT.as_millis()),
             )]))
             .await?;
+        check_statement_timeout(&pool, STATEMENT_TIMEOUT).await?;
 
         let probe_pool = PgPoolOptions::new()
             .max_connections(1)
@@ -1578,6 +1579,32 @@ impl Database {
     }
 }
 
+/// Fails unless the connections of `pool` time out statements after
+/// `statement_timeout`.
+///
+/// A connection pooler such as PgBouncer with `ignore_startup_parameters`
+/// drops the timeout a connection asks for without an error.
+async fn check_statement_timeout(
+    pool: &Pool<Postgres>,
+    statement_timeout: Duration,
+) -> eyre::Result<()> {
+    let (timeout_ms,): (String,) = sqlx::query_as(
+        "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let expected_ms = statement_timeout.as_millis().to_string();
+
+    eyre::ensure!(
+        timeout_ms == expected_ms,
+        "The database connections have a statement_timeout of {timeout_ms}ms \
+         instead of {expected_ms}ms, is a connection pooler dropping the \
+         options startup parameter?"
+    );
+
+    Ok(())
+}
+
 async fn count_queued_txs(
     executor: impl PgExecutor<'_>,
     relayer_id: &str,
@@ -1672,6 +1699,27 @@ mod tests {
                 .await?;
 
         assert_eq!(statement_timeout, "30s");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejects_connections_without_the_statement_timeout(
+    ) -> eyre::Result<()> {
+        let (db, db_container) = setup_db().await?;
+        let url = format!(
+            "postgres://postgres:postgres@{}/database",
+            db_container.address()
+        );
+        let pool_without_timeout = PgPoolOptions::new().connect(&url).await?;
+
+        check_statement_timeout(&db.pool, STATEMENT_TIMEOUT).await?;
+        assert!(check_statement_timeout(
+            &pool_without_timeout,
+            STATEMENT_TIMEOUT
+        )
+        .await
+        .is_err());
 
         Ok(())
     }
