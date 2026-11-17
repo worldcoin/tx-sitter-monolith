@@ -62,7 +62,8 @@ impl RelayerApiV2 {
         Data(app): Data<&Arc<App>>,
         ExactJson(req): ExactJson<SendTxRequestV2>,
     ) -> Result<ExactJson<SendTxResponse>, ApiError> {
-        let api_key = api_key.authorize(app).await?;
+        // A disabled relayer is refused below, after looking for a repeat
+        let api_key = api_key.authenticate(app).await?;
         let relayer_id = api_key.relayer_id();
 
         let gas_limit = parse_gas_limit(&req.gas_limit)?;
@@ -422,6 +423,7 @@ impl From<poem::Error> for ApiError {
             StatusCode::UNAUTHORIZED => {
                 Self::new(status, "unauthorized", "Unauthorized")
             }
+            StatusCode::FORBIDDEN => SendTxError::RelayerDisabled.into(),
             StatusCode::NOT_FOUND => {
                 Self::new(status, "not_found", err.to_string())
             }
@@ -575,6 +577,10 @@ const EVENTS_ERROR_RESPONSES: &[(StatusCode, &str)] = &[
     (
         StatusCode::UNAUTHORIZED,
         "`unauthorized`: the bearer API key is missing or unknown",
+    ),
+    (
+        StatusCode::FORBIDDEN,
+        "`relayer_disabled`: the relayer is disabled",
     ),
     (
         StatusCode::GONE,

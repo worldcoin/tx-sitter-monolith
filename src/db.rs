@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use alloy::primitives::{Address, B256, U256};
@@ -16,11 +17,13 @@ use tracing::instrument;
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::{DatabaseConfig, NetworkConfig, RelayerConfig};
 use crate::db::data::{
-    DisabledRelayer, NetworkInfo, RelayerGasPriceLimit, RelayerInfo,
+    ApiKeyStatus, ConfigChange, NetworkInfo, Reconciliation, RelayerBacklog,
+    RelayerGasPriceLimit, RelayerInfo,
 };
 use crate::db::wrappers::h256::H256Wrapper;
 use crate::db::wrappers::hex_u256::HexU256Wrapper;
 use crate::db::wrappers::xid8::Xid8;
+use crate::static_config::{self, ConfigVersion, Plan};
 use crate::tx_events::EventCursor;
 use crate::types::{
     RelayerUpdateRequest, TransactionPriority, TxMetadata, TxStatus,
@@ -307,25 +310,7 @@ impl Database {
 
     #[instrument(skip(self), level = "debug")]
     pub async fn get_relayers(&self) -> eyre::Result<Vec<RelayerInfo>> {
-        Ok(sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                name,
-                chain_id,
-                key_id,
-                address,
-                nonce,
-                current_nonce,
-                max_inflight_txs,
-                max_queued_txs,
-                gas_price_limits,
-                enabled
-            FROM relayers
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?)
+        select_relayers(&self.pool).await
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -544,8 +529,8 @@ impl Database {
         match_tx_id(&self.pool, tx_id, relayer_id, Some(request_hash)).await
     }
 
-    /// Returns the transactions that were never broadcast and fit in their
-    /// relayer's in-flight window.
+    /// Returns the transactions of enabled relayers that were never broadcast
+    /// and fit in their relayer's in-flight window.
     ///
     /// Transactions whose nonce the chain already used are left out, see
     /// [`Database::count_stale_txs`].
@@ -558,6 +543,7 @@ impl Database {
             LEFT JOIN  sent_transactions s ON (t.id = s.tx_id)
             INNER JOIN relayers r ON (t.relayer_id = r.id)
             WHERE      s.tx_id IS NULL
+            AND        r.enabled
             AND        t.nonce >= r.current_nonce
             AND        (t.nonce - r.current_nonce < r.max_inflight_txs)
             ORDER BY   r.id, t.nonce ASC
@@ -1653,32 +1639,48 @@ impl Database {
         Ok(())
     }
 
+    /// Returns the version of the static config the database applied last,
+    /// or `None` if that config had no revision.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_static_config_version(
+        &self,
+    ) -> eyre::Result<Option<ConfigVersion>> {
+        select_static_config_version(&self.pool).await
+    }
+
     /// Makes the networks, relayers and API keys in the database match
-    /// `networks` and `relayers`, and returns the relayers it disabled.
+    /// `networks` and `relayers`, and records `version` as the applied
+    /// config, unless [`static_config::plan`] finds that the database already
+    /// holds `version`.
     ///
     /// - Networks are upserted, and `rpcs` gets the first HTTP RPC and the WS
     ///   RPC of each. Networks missing from `networks` are left as they are.
     /// - Relayers are upserted and keep their nonces.
-    /// - Enabled relayers missing from `relayers` are disabled rather than
-    ///   deleted, because their transactions reference them.
+    /// - Relayers missing from `relayers` are disabled rather than deleted,
+    ///   because their transactions reference them, and lose their API keys.
     /// - Every relayer in `relayers` accepts exactly the API keys of its
-    ///   `api_key_hashes`. The API keys of relayers missing from `relayers`
-    ///   are kept, so re-adding a relayer restores them.
+    ///   `api_key_hashes`.
     ///
     /// Everything happens in one transaction under an advisory lock, so
     /// services that start at once apply their configs one after another,
     /// and applying the same config again changes nothing.
     ///
-    /// Fails without changing anything when a relayer's chain id or address
-    /// differs from the one in the database, because its nonces belong to
-    /// that chain and address, or when `relayers` is empty while the database
-    /// has enabled relayers, the state of a config nobody migrated yet.
+    /// Fails without changing anything when:
+    /// - [`static_config::plan`] refuses `version`;
+    /// - a relayer that has transactions or allocated nonces would change its
+    ///   chain id or address, because its nonces belong to them;
+    /// - an enabled relayer would share its chain id and address with another
+    ///   relayer that is enabled or has unmined transactions, because both
+    ///   would allocate nonces of one account;
+    /// - `relayers` is empty while the database has enabled relayers, the
+    ///   state of a config nobody migrated yet.
     #[instrument(skip_all)]
     pub async fn apply_static_config(
         &self,
         networks: &[NetworkConfig],
         relayers: &[RelayerConfig],
-    ) -> eyre::Result<Vec<DisabledRelayer>> {
+        version: Option<ConfigVersion>,
+    ) -> eyre::Result<Reconciliation> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query("SET LOCAL lock_timeout = '10s'")
@@ -1692,6 +1694,11 @@ impl Database {
             .execute(tx.as_mut())
             .await
             .context("Waiting for the static config lock")?;
+
+        let stored_version = select_static_config_version(tx.as_mut()).await?;
+        if static_config::plan(stored_version, version)? == Plan::Skip {
+            return Ok(Reconciliation::AlreadyApplied);
+        }
 
         if relayers.is_empty() {
             let (enabled_relayers,): (i64,) =
@@ -1710,10 +1717,16 @@ impl Database {
 
         let relayer_ids: Vec<String> =
             relayers.iter().map(|relayer| relayer.id.clone()).collect();
+        let before = ConfigState::read(tx.as_mut()).await?;
 
-        let stored_relayers: Vec<(String, i64, Vec<u8>)> = sqlx::query_as(
+        let stored_identities: Vec<StoredIdentity> = sqlx::query_as(
             r#"
-            SELECT id, chain_id, address
+            SELECT id,
+                   chain_id,
+                   address,
+                   nonce > 0 OR EXISTS (
+                       SELECT 1 FROM transactions t WHERE t.relayer_id = relayers.id
+                   ) AS has_history
             FROM   relayers
             WHERE  id = ANY($1)
             "#,
@@ -1722,11 +1735,11 @@ impl Database {
         .fetch_all(tx.as_mut())
         .await?;
         let changed_identities =
-            changed_relayer_identities(&stored_relayers, relayers);
+            changed_relayer_identities(&stored_identities, relayers);
         if !changed_identities.is_empty() {
             eyre::bail!(
-                "A relayer's chain id and address can't change, add a new \
-                 relayer instead: {}",
+                "A relayer's chain id and address can't change once it has \
+                 transactions, add a new relayer instead: {}",
                 changed_identities.join("; ")
             );
         }
@@ -1756,24 +1769,48 @@ impl Database {
                 .with_context(|| format!("Upserting relayer {}", relayer.id))?;
         }
 
-        let disabled_relayers: Vec<DisabledRelayer> = sqlx::query_as(
+        sqlx::query(
             r#"
             UPDATE relayers
             SET    enabled = FALSE
             WHERE  enabled
             AND    NOT (id = ANY($1))
-            RETURNING id, name
             "#,
         )
         .bind(&relayer_ids)
-        .fetch_all(tx.as_mut())
+        .execute(tx.as_mut())
         .await?;
 
         replace_api_keys_in(tx.as_mut(), relayers).await?;
 
+        let shared_accounts =
+            shared_accounts_in(tx.as_mut(), &relayer_ids).await?;
+        if !shared_accounts.is_empty() {
+            eyre::bail!(
+                "Relayers would allocate the same nonces, because they have \
+                 the same chain id and address and the second one is enabled \
+                 or has unmined transactions: {}",
+                shared_accounts
+                    .iter()
+                    .map(|(relayer_id, other_id)| format!(
+                        "{relayer_id} and {other_id}"
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+
+        store_static_config_version_in(tx.as_mut(), version).await?;
+
+        let after = ConfigState::read(tx.as_mut()).await?;
+
         tx.commit().await?;
 
-        Ok(disabled_relayers)
+        Ok(Reconciliation::Applied(config_changes(
+            &before,
+            &after,
+            &relayer_ids,
+        )))
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1814,16 +1851,7 @@ impl Database {
 
     #[instrument(skip(self), level = "debug")]
     pub async fn get_networks(&self) -> eyre::Result<Vec<NetworkInfo>> {
-        Ok(sqlx::query_as(
-            r#"
-            SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
-            FROM   networks
-            INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
-            INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?)
+        select_networks(&self.pool).await
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1866,28 +1894,60 @@ impl Database {
         Ok(())
     }
 
+    /// Returns whether relayer `relayer_id` accepts the API key whose secret
+    /// hashes to `api_key_hash`.
     #[instrument(skip(self), level = "debug")]
-    pub async fn is_api_key_valid(
+    pub async fn get_api_key_status(
         &self,
         relayer_id: &str,
         api_key_hash: [u8; 32],
-    ) -> eyre::Result<bool> {
-        let (is_valid,): (bool,) = sqlx::query_as(
+    ) -> eyre::Result<ApiKeyStatus> {
+        let enabled: Option<(bool,)> = sqlx::query_as(
             r#"
-            SELECT EXISTS (
-                SELECT 1
-                FROM api_keys
-                WHERE relayer_id = $1
-                AND   key_hash = $2
-            )
+            SELECT r.enabled
+            FROM   api_keys k
+            JOIN   relayers r ON (k.relayer_id = r.id)
+            WHERE  k.relayer_id = $1
+            AND    k.key_hash = $2
+            LIMIT  1
             "#,
         )
         .bind(relayer_id)
         .bind(api_key_hash)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(is_valid)
+        Ok(match enabled {
+            None => ApiKeyStatus::Unknown,
+            Some((false,)) => ApiKeyStatus::RelayerDisabled,
+            Some((true,)) => ApiKeyStatus::Valid,
+        })
+    }
+
+    /// Returns the disabled relayers that still have transactions they
+    /// haven't sent or seen mined.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_disabled_relayer_backlogs(
+        &self,
+    ) -> eyre::Result<Vec<RelayerBacklog>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT   r.id AS relayer_id,
+                     r.name AS relayer_name,
+                     COUNT(*) FILTER (WHERE s.tx_id IS NULL) AS unsent_txs,
+                     COUNT(*) FILTER (WHERE s.status = $1) AS inflight_txs
+            FROM     relayers r
+            JOIN     transactions t ON (t.relayer_id = r.id)
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE    NOT r.enabled
+            AND      (s.tx_id IS NULL OR s.status = $1)
+            GROUP BY r.id, r.name
+            ORDER BY r.id
+            "#,
+        )
+        .bind(TxStatus::Pending)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -2131,6 +2191,101 @@ async fn count_queued_txs(
 /// The advisory lock that serialises [`Database::apply_static_config`]
 const STATIC_CONFIG_LOCK_ID: i64 = 0x7478_7369_7474_6572;
 
+async fn select_relayers<'e>(
+    executor: impl PgExecutor<'e>,
+) -> eyre::Result<Vec<RelayerInfo>> {
+    Ok(sqlx::query_as(
+        r#"
+        SELECT
+            id,
+            name,
+            chain_id,
+            key_id,
+            address,
+            nonce,
+            current_nonce,
+            max_inflight_txs,
+            max_queued_txs,
+            gas_price_limits,
+            enabled
+        FROM relayers
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(executor)
+    .await?)
+}
+
+async fn select_networks<'e>(
+    executor: impl PgExecutor<'e>,
+) -> eyre::Result<Vec<NetworkInfo>> {
+    Ok(sqlx::query_as(
+        r#"
+        SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
+        FROM   networks
+        INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
+        INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
+        ORDER BY networks.chain_id
+        "#,
+    )
+    .fetch_all(executor)
+    .await?)
+}
+
+async fn select_static_config_version<'e>(
+    executor: impl PgExecutor<'e>,
+) -> eyre::Result<Option<ConfigVersion>> {
+    let row: Option<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT revision, hash FROM static_config_version")
+            .fetch_optional(executor)
+            .await?;
+
+    row.map(|(revision, hash)| {
+        Ok(ConfigVersion {
+            revision: u64::try_from(revision)
+                .context("Stored config revision is negative")?,
+            hash: B256::try_from(hash.as_slice())
+                .context("Stored config hash is not 32 bytes")?,
+        })
+    })
+    .transpose()
+}
+
+/// Records `version` as the version of the applied config, or forgets the
+/// stored version when `version` is `None`, so that the next config with a
+/// revision is applied whatever its revision.
+async fn store_static_config_version_in(
+    conn: &mut PgConnection,
+    version: Option<ConfigVersion>,
+) -> eyre::Result<()> {
+    let Some(version) = version else {
+        sqlx::query("DELETE FROM static_config_version")
+            .execute(conn)
+            .await?;
+
+        return Ok(());
+    };
+
+    let revision = i64::try_from(version.revision)
+        .context("Config revision doesn't fit in a BIGINT")?;
+    sqlx::query(
+        r#"
+        INSERT INTO static_config_version (revision, hash)
+        VALUES ($1, $2)
+        ON CONFLICT (singleton) DO UPDATE
+        SET revision = EXCLUDED.revision,
+            hash = EXCLUDED.hash,
+            applied_at = now()
+        "#,
+    )
+    .bind(revision)
+    .bind(version.hash.as_slice())
+    .execute(conn)
+    .await?;
+
+    Ok(())
+}
+
 async fn upsert_network_in(
     conn: &mut PgConnection,
     chain_id: u64,
@@ -2170,27 +2325,42 @@ async fn upsert_network_in(
     Ok(())
 }
 
+/// The chain id and address of a stored relayer, and whether it has used
+/// them
+#[derive(sqlx::FromRow)]
+struct StoredIdentity {
+    id: String,
+    chain_id: i64,
+    address: Vec<u8>,
+    /// Whether the relayer has transactions or allocated nonces
+    has_history: bool,
+}
+
 /// Describes every relayer of `relayers` whose chain id or address differs
-/// from the one in `stored_relayers`, rows of `(id, chain_id, address)`.
+/// from its stored one although it has a history.
 fn changed_relayer_identities(
-    stored_relayers: &[(String, i64, Vec<u8>)],
+    stored_identities: &[StoredIdentity],
     relayers: &[RelayerConfig],
 ) -> Vec<String> {
-    stored_relayers
+    stored_identities
         .iter()
-        .filter_map(|(id, chain_id, address)| {
-            let relayer = relayers.iter().find(|relayer| relayer.id == *id)?;
-            let stored_address = Address::try_from(address.as_slice()).ok();
+        .filter(|stored| stored.has_history)
+        .filter_map(|stored| {
+            let relayer =
+                relayers.iter().find(|relayer| relayer.id == stored.id)?;
+            let stored_address =
+                Address::try_from(stored.address.as_slice()).ok();
 
-            let is_unchanged = relayer.chain_id as i64 == *chain_id
+            let is_unchanged = relayer.chain_id as i64 == stored.chain_id
                 && stored_address == Some(relayer.address);
 
             (!is_unchanged).then(|| {
                 format!(
-                    "relayer {id} has chain id {chain_id} and address 0x{} \
-                     in the database, but chain id {} and address {} in the \
-                     config",
-                    hex::encode(address),
+                    "relayer {} has chain id {} and address 0x{} in the \
+                     database, but chain id {} and address {} in the config",
+                    stored.id,
+                    stored.chain_id,
+                    hex::encode(&stored.address),
                     relayer.chain_id,
                     relayer.address
                 )
@@ -2223,7 +2393,9 @@ async fn upsert_relayer_in(
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (id) DO UPDATE
         SET name = EXCLUDED.name,
+            chain_id = EXCLUDED.chain_id,
             key_id = EXCLUDED.key_id,
+            address = EXCLUDED.address,
             max_inflight_txs = EXCLUDED.max_inflight_txs,
             max_queued_txs = EXCLUDED.max_queued_txs,
             gas_price_limits = EXCLUDED.gas_price_limits,
@@ -2245,14 +2417,12 @@ async fn upsert_relayer_in(
     Ok(())
 }
 
-/// Makes the API keys of every relayer in `relayers` exactly the hashes in
-/// its `api_key_hashes`.
+/// Makes the stored API keys exactly the `api_key_hashes` of `relayers`, so
+/// relayers missing from `relayers` lose theirs.
 async fn replace_api_keys_in(
     conn: &mut PgConnection,
     relayers: &[RelayerConfig],
 ) -> eyre::Result<()> {
-    let relayer_ids: Vec<&str> =
-        relayers.iter().map(|relayer| relayer.id.as_str()).collect();
     let (key_relayer_ids, key_hashes): (Vec<&str>, Vec<&[u8]>) = relayers
         .iter()
         .flat_map(|relayer| {
@@ -2263,8 +2433,7 @@ async fn replace_api_keys_in(
         })
         .unzip();
 
-    sqlx::query("DELETE FROM api_keys WHERE relayer_id = ANY($1)")
-        .bind(&relayer_ids)
+    sqlx::query("DELETE FROM api_keys")
         .execute(&mut *conn)
         .await?;
     sqlx::query(
@@ -2279,6 +2448,191 @@ async fn replace_api_keys_in(
     .await?;
 
     Ok(())
+}
+
+/// Returns `(relayer, other)` id pairs where `relayer` is one of
+/// `relayer_ids` and enabled, and `other` has the same chain id and address
+/// and is enabled or has unmined transactions.
+async fn shared_accounts_in(
+    conn: &mut PgConnection,
+    relayer_ids: &[String],
+) -> eyre::Result<Vec<(String, String)>> {
+    Ok(sqlx::query_as(
+        r#"
+        SELECT   r.id, other.id
+        FROM     relayers r
+        JOIN     relayers other
+                 ON  other.chain_id = r.chain_id
+                 AND other.address = r.address
+                 AND other.id <> r.id
+        WHERE    r.id = ANY($1)
+        AND      r.enabled
+        AND      (other.enabled OR EXISTS (
+                     SELECT    1
+                     FROM      transactions t
+                     LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+                     WHERE     t.relayer_id = other.id
+                     AND       (s.tx_id IS NULL OR s.status = $2)
+                 ))
+        ORDER BY r.id, other.id
+        "#,
+    )
+    .bind(relayer_ids)
+    .bind(TxStatus::Pending)
+    .fetch_all(conn)
+    .await?)
+}
+
+/// The rows the static config writes
+struct ConfigState {
+    networks: Vec<NetworkInfo>,
+    relayers: Vec<RelayerInfo>,
+    /// `(relayer_id, key_hash)` rows
+    api_keys: Vec<(String, Vec<u8>)>,
+}
+
+impl ConfigState {
+    async fn read(conn: &mut PgConnection) -> eyre::Result<Self> {
+        Ok(Self {
+            networks: select_networks(&mut *conn).await?,
+            relayers: select_relayers(&mut *conn).await?,
+            api_keys: sqlx::query_as(
+                "SELECT relayer_id, key_hash FROM api_keys",
+            )
+            .fetch_all(&mut *conn)
+            .await?,
+        })
+    }
+}
+
+/// Lists what differs between `before` and `after`, where `configured_ids`
+/// are the ids of the relayers in the config.
+fn config_changes(
+    before: &ConfigState,
+    after: &ConfigState,
+    configured_ids: &[String],
+) -> Vec<ConfigChange> {
+    fn changed_fields<const N: usize>(
+        fields: [(&'static str, bool); N],
+    ) -> Vec<&'static str> {
+        fields
+            .into_iter()
+            .filter_map(|(field, is_changed)| is_changed.then_some(field))
+            .collect()
+    }
+
+    let mut changes = vec![];
+
+    for network in &after.networks {
+        let chain_id = network.chain_id;
+        let Some(old) = before.networks.iter().find(|n| n.chain_id == chain_id)
+        else {
+            changes.push(ConfigChange::NetworkAdded { chain_id });
+            continue;
+        };
+
+        let fields = changed_fields([
+            ("name", old.name != network.name),
+            ("http_rpc", old.http_rpc != network.http_rpc),
+            ("ws_rpc", old.ws_rpc != network.ws_rpc),
+        ]);
+        if !fields.is_empty() {
+            changes.push(ConfigChange::NetworkChanged { chain_id, fields });
+        }
+    }
+
+    for relayer in &after.relayers {
+        let relayer_id = relayer.id.clone();
+        let relayer_name = relayer.name.clone();
+        let Some(old) = before.relayers.iter().find(|r| r.id == relayer.id)
+        else {
+            changes.push(ConfigChange::RelayerAdded {
+                relayer_id,
+                relayer_name,
+            });
+            continue;
+        };
+
+        let fields = changed_fields([
+            ("name", old.name != relayer.name),
+            ("chain_id", old.chain_id != relayer.chain_id),
+            ("key_id", old.key_id != relayer.key_id),
+            ("address", old.address != relayer.address),
+            (
+                "max_inflight_txs",
+                old.max_inflight_txs != relayer.max_inflight_txs,
+            ),
+            (
+                "max_queued_txs",
+                old.max_queued_txs != relayer.max_queued_txs,
+            ),
+            (
+                "gas_price_limits",
+                old.gas_price_limits != relayer.gas_price_limits,
+            ),
+        ]);
+        if !fields.is_empty() {
+            changes.push(ConfigChange::RelayerChanged {
+                relayer_id: relayer_id.clone(),
+                relayer_name: relayer_name.clone(),
+                fields,
+            });
+        }
+
+        match (old.enabled, relayer.enabled) {
+            (false, true) => changes.push(ConfigChange::RelayerEnabled {
+                relayer_id,
+                relayer_name,
+            }),
+            (true, false) if configured_ids.contains(&relayer.id) => changes
+                .push(ConfigChange::RelayerDisabled {
+                    relayer_id,
+                    relayer_name,
+                }),
+            (true, false) => changes.push(ConfigChange::RelayerRemoved {
+                relayer_id,
+                relayer_name,
+            }),
+            (true, true) | (false, false) => {}
+        }
+    }
+
+    let keys_by_relayer = |state: &ConfigState| {
+        let mut keys: BTreeMap<String, BTreeSet<Vec<u8>>> = BTreeMap::new();
+        for (relayer_id, key_hash) in &state.api_keys {
+            keys.entry(relayer_id.clone())
+                .or_default()
+                .insert(key_hash.clone());
+        }
+
+        keys
+    };
+    let keys_before = keys_by_relayer(before);
+    let keys_after = keys_by_relayer(after);
+    let relayer_ids: BTreeSet<&String> =
+        keys_before.keys().chain(keys_after.keys()).collect();
+    let no_keys = BTreeSet::new();
+    for relayer_id in relayer_ids {
+        let before = keys_before.get(relayer_id).unwrap_or(&no_keys);
+        let after = keys_after.get(relayer_id).unwrap_or(&no_keys);
+
+        let added = after.difference(before).count();
+        if added > 0 {
+            changes.push(ConfigChange::ApiKeysAdded {
+                relayer_id: relayer_id.clone(),
+                count: added,
+            });
+        }
+        let revoked = before.difference(after).count();
+        if revoked > 0 {
+            changes.push(ConfigChange::ApiKeysRevoked {
+                relayer_id: relayer_id.clone(),
+                count: revoked,
+            });
+        }
+    }
+
+    changes
 }
 
 #[cfg(test)]
@@ -4339,6 +4693,34 @@ mod tests {
         Ok(count)
     }
 
+    fn version(revision: u64, hash_byte: u8) -> Option<ConfigVersion> {
+        Some(ConfigVersion {
+            revision,
+            hash: B256::with_last_byte(hash_byte),
+        })
+    }
+
+    async fn create_unsent_tx(
+        db: &Database,
+        relayer_id: &str,
+    ) -> eyre::Result<()> {
+        db.create_transaction(
+            &uuid(),
+            Address::ZERO,
+            &[],
+            U256::ZERO,
+            U256::from(21_000),
+            TransactionPriority::Regular,
+            None,
+            relayer_id,
+            None,
+            None,
+        )
+        .await?;
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn static_config_updates_relayers_and_keeps_their_nonces(
     ) -> eyre::Result<()> {
@@ -4346,7 +4728,7 @@ mod tests {
         let networks = [network_config(1)];
         let relayer = relayer_config(1, 1);
 
-        db.apply_static_config(&networks, std::slice::from_ref(&relayer))
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer), None)
             .await?;
         sqlx::query(
             "UPDATE relayers SET nonce = 7, current_nonce = 5 WHERE id = $1",
@@ -4367,9 +4749,8 @@ mod tests {
             enabled: false,
             ..relayer.clone()
         };
-        let disabled = db.apply_static_config(&networks, &[updated]).await?;
+        db.apply_static_config(&networks, &[updated], None).await?;
 
-        assert_eq!(disabled, vec![]);
         let stored =
             db.get_relayer(&relayer.id).await?.context("No relayer")?;
         assert_eq!(stored.name, "renamed");
@@ -4402,6 +4783,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn static_config_reports_what_it_changed() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let a = RelayerConfig {
+            id: "aaaaaaaa-0000-4000-8000-000000000000".to_string(),
+            ..relayer_config(1, 1)
+        };
+        let b = RelayerConfig {
+            id: "bbbbbbbb-0000-4000-8000-000000000000".to_string(),
+            ..relayer_config(1, 2)
+        };
+        let relayer =
+            |config: &RelayerConfig| (config.id.clone(), config.name.clone());
+        let (a_id, a_name) = relayer(&a);
+        let (b_id, b_name) = relayer(&b);
+
+        let added = db
+            .apply_static_config(
+                &[network_config(1)],
+                &[b.clone(), a.clone()],
+                None,
+            )
+            .await?;
+        assert_eq!(
+            added,
+            Reconciliation::Applied(vec![
+                ConfigChange::NetworkAdded { chain_id: 1 },
+                ConfigChange::RelayerAdded {
+                    relayer_id: a_id.clone(),
+                    relayer_name: a_name.clone(),
+                },
+                ConfigChange::RelayerAdded {
+                    relayer_id: b_id.clone(),
+                    relayer_name: b_name.clone(),
+                },
+                ConfigChange::ApiKeysAdded {
+                    relayer_id: a_id.clone(),
+                    count: 1,
+                },
+                ConfigChange::ApiKeysAdded {
+                    relayer_id: b_id.clone(),
+                    count: 1,
+                },
+            ])
+        );
+
+        let renamed_network = NetworkConfig {
+            name: "renamed".to_string(),
+            ..network_config(1)
+        };
+        let changed_a = RelayerConfig {
+            max_inflight_txs: 10,
+            enabled: false,
+            api_key_hashes: vec![B256::with_last_byte(9)],
+            ..a
+        };
+        let changed = db
+            .apply_static_config(
+                std::slice::from_ref(&renamed_network),
+                std::slice::from_ref(&changed_a),
+                None,
+            )
+            .await?;
+        assert_eq!(
+            changed,
+            Reconciliation::Applied(vec![
+                ConfigChange::NetworkChanged {
+                    chain_id: 1,
+                    fields: vec!["name"],
+                },
+                ConfigChange::RelayerChanged {
+                    relayer_id: a_id.clone(),
+                    relayer_name: a_name.clone(),
+                    fields: vec!["max_inflight_txs"],
+                },
+                ConfigChange::RelayerDisabled {
+                    relayer_id: a_id.clone(),
+                    relayer_name: a_name,
+                },
+                ConfigChange::RelayerRemoved {
+                    relayer_id: b_id.clone(),
+                    relayer_name: b_name,
+                },
+                ConfigChange::ApiKeysAdded {
+                    relayer_id: a_id.clone(),
+                    count: 1,
+                },
+                ConfigChange::ApiKeysRevoked {
+                    relayer_id: a_id,
+                    count: 1,
+                },
+                ConfigChange::ApiKeysRevoked {
+                    relayer_id: b_id,
+                    count: 1,
+                },
+            ])
+        );
+
+        let unchanged = db
+            .apply_static_config(&[renamed_network], &[changed_a], None)
+            .await?;
+        assert_eq!(unchanged, Reconciliation::Applied(vec![]));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn concurrent_static_config_applications_are_idempotent(
     ) -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
@@ -4416,22 +4903,31 @@ mod tests {
             },
             relayer_config(2, 3),
         ];
+        let version = ConfigVersion::new(1, &networks, &relayers);
 
-        let results = futures::future::join_all(
-            (0..4).map(|_| db.apply_static_config(&networks, &relayers)),
-        )
+        let results = futures::future::join_all((0..4).map(|_| {
+            db.apply_static_config(&networks, &relayers, Some(version))
+        }))
         .await;
 
+        let mut applications = 0;
         for result in results {
-            assert_eq!(result?, vec![]);
+            if let Reconciliation::Applied(_) = result? {
+                applications += 1;
+            }
         }
+        assert_eq!(applications, 1);
+        assert_eq!(db.get_static_config_version().await?, Some(version));
         assert_eq!(count_rows(&db, "networks").await?, 2);
         assert_eq!(count_rows(&db, "rpcs").await?, 4);
         assert_eq!(count_rows(&db, "relayers").await?, 2);
         assert_eq!(count_rows(&db, "api_keys").await?, 3);
         for relayer in &relayers {
             for hash in &relayer.api_key_hashes {
-                assert!(db.is_api_key_valid(&relayer.id, hash.0).await?);
+                assert_eq!(
+                    db.get_api_key_status(&relayer.id, hash.0).await?,
+                    ApiKeyStatus::Valid
+                );
             }
         }
 
@@ -4455,8 +4951,12 @@ mod tests {
 
         for _ in 0..10 {
             let (forward, backward) = tokio::join!(
-                db.apply_static_config(&networks, &relayers),
-                db.apply_static_config(&reversed_networks, &reversed_relayers),
+                db.apply_static_config(&networks, &relayers, None),
+                db.apply_static_config(
+                    &reversed_networks,
+                    &reversed_relayers,
+                    None
+                ),
             );
 
             forward?;
@@ -4467,47 +4967,162 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn static_config_disables_relayers_missing_from_it(
+    async fn static_config_refuses_an_older_revision() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let relayer = relayer_config(1, 1);
+        let stale = RelayerConfig {
+            name: "stale".to_string(),
+            ..relayer.clone()
+        };
+
+        db.apply_static_config(
+            &networks,
+            std::slice::from_ref(&relayer),
+            version(2, 1),
+        )
+        .await?;
+        let err = db
+            .apply_static_config(&networks, &[stale], version(1, 2))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains(
+                "The config has revision 1, but the database applied revision 2 last"
+            ),
+            "{err}"
+        );
+        let stored =
+            db.get_relayer(&relayer.id).await?.context("No relayer")?;
+        assert_eq!(stored.name, relayer.name, "The stale config was applied");
+        assert_eq!(db.get_static_config_version().await?, version(2, 1));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_refuses_a_changed_config_of_the_same_revision(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let relayer = relayer_config(1, 1);
+
+        db.apply_static_config(
+            &networks,
+            std::slice::from_ref(&relayer),
+            version(1, 1),
+        )
+        .await?;
+        let err = db
+            .apply_static_config(
+                &networks,
+                std::slice::from_ref(&relayer),
+                version(1, 2),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains(
+                "The config has revision 1, which the database applied with other networks or relayers"
+            ),
+            "{err}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_skips_the_version_it_applied() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let relayer = relayer_config(1, 1);
+
+        db.apply_static_config(
+            &networks,
+            std::slice::from_ref(&relayer),
+            version(1, 1),
+        )
+        .await?;
+        sqlx::query("UPDATE relayers SET name = 'changed by hand'")
+            .execute(&db.pool)
+            .await?;
+        let reconciliation = db
+            .apply_static_config(
+                &networks,
+                std::slice::from_ref(&relayer),
+                version(1, 1),
+            )
+            .await?;
+
+        assert_eq!(reconciliation, Reconciliation::AlreadyApplied);
+        let stored =
+            db.get_relayer(&relayer.id).await?.context("No relayer")?;
+        assert_eq!(stored.name, "changed by hand");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_without_revision_forgets_the_stored_one(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let relayers = [relayer_config(1, 1)];
+
+        db.apply_static_config(&networks, &relayers, version(5, 1))
+            .await?;
+        db.apply_static_config(&networks, &relayers, None).await?;
+        assert_eq!(db.get_static_config_version().await?, None);
+
+        let reconciliation = db
+            .apply_static_config(&networks, &relayers, version(1, 1))
+            .await?;
+        assert_eq!(reconciliation, Reconciliation::Applied(vec![]));
+        assert_eq!(db.get_static_config_version().await?, version(1, 1));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_disables_relayers_missing_from_it_and_revokes_their_keys(
     ) -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let networks = [network_config(1)];
         let kept = relayer_config(1, 1);
         let removed = relayer_config(1, 2);
+        let removed_key = removed.api_key_hashes[0].0;
 
-        db.apply_static_config(&networks, &[kept.clone(), removed.clone()])
-            .await?;
-        let disabled = db
-            .apply_static_config(&networks, std::slice::from_ref(&kept))
+        db.apply_static_config(
+            &networks,
+            &[kept.clone(), removed.clone()],
+            None,
+        )
+        .await?;
+        db.apply_static_config(&networks, std::slice::from_ref(&kept), None)
             .await?;
 
-        assert_eq!(
-            disabled,
-            vec![DisabledRelayer {
-                id: removed.id.clone(),
-                name: removed.name.clone(),
-            }]
-        );
         let stored =
             db.get_relayer(&removed.id).await?.context("No relayer")?;
         assert!(!stored.enabled);
         let stored = db.get_relayer(&kept.id).await?.context("No relayer")?;
         assert!(stored.enabled);
-        assert!(
-            db.is_api_key_valid(&removed.id, removed.api_key_hashes[0].0)
-                .await?,
-            "A removed relayer lost its API keys"
+        assert_eq!(
+            db.get_api_key_status(&removed.id, removed_key).await?,
+            ApiKeyStatus::Unknown,
+            "A removed relayer kept its API keys"
         );
 
-        let disabled = db
-            .apply_static_config(&networks, std::slice::from_ref(&kept))
-            .await?;
-        assert_eq!(disabled, vec![], "A relayer was disabled twice");
-
-        db.apply_static_config(&networks, &[kept, removed.clone()])
+        db.apply_static_config(&networks, &[kept, removed.clone()], None)
             .await?;
         let stored =
             db.get_relayer(&removed.id).await?.context("No relayer")?;
         assert!(stored.enabled);
+        assert_eq!(
+            db.get_api_key_status(&removed.id, removed_key).await?,
+            ApiKeyStatus::Valid
+        );
 
         Ok(())
     }
@@ -4524,7 +5139,7 @@ mod tests {
             ..relayer_config(1, 1)
         };
 
-        db.apply_static_config(&networks, std::slice::from_ref(&relayer))
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer), None)
             .await?;
         let rotated = RelayerConfig {
             api_key_hashes: vec![
@@ -4533,26 +5148,97 @@ mod tests {
             ],
             ..relayer.clone()
         };
-        db.apply_static_config(&networks, &[rotated]).await?;
+        db.apply_static_config(&networks, &[rotated], None).await?;
 
-        let is_valid = |byte| {
-            db.is_api_key_valid(&relayer.id, B256::with_last_byte(byte).0)
+        let status = |byte| {
+            db.get_api_key_status(&relayer.id, B256::with_last_byte(byte).0)
         };
-        assert!(!is_valid(1).await?, "A removed API key still works");
-        assert!(is_valid(2).await?);
-        assert!(is_valid(3).await?);
+        assert_eq!(
+            status(1).await?,
+            ApiKeyStatus::Unknown,
+            "A removed API key still works"
+        );
+        assert_eq!(status(2).await?, ApiKeyStatus::Valid);
+        assert_eq!(status(3).await?, ApiKeyStatus::Valid);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn static_config_cant_change_a_relayers_chain_or_address(
+    async fn disabled_relayers_reject_their_api_keys_and_send_nothing(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let relayer = relayer_config(1, 1);
+
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer), None)
+            .await?;
+        create_unsent_tx(&db, &relayer.id).await?;
+        assert_eq!(db.get_unsent_txs().await?.len(), 1);
+        assert_eq!(db.get_disabled_relayer_backlogs().await?, vec![]);
+
+        let disabled = RelayerConfig {
+            enabled: false,
+            ..relayer.clone()
+        };
+        db.apply_static_config(&networks, &[disabled], None).await?;
+
+        assert_eq!(
+            db.get_api_key_status(&relayer.id, relayer.api_key_hashes[0].0)
+                .await?,
+            ApiKeyStatus::RelayerDisabled
+        );
+        assert_eq!(db.get_unsent_txs().await?.len(), 0);
+        assert_eq!(
+            db.get_disabled_relayer_backlogs().await?,
+            vec![RelayerBacklog {
+                relayer_id: relayer.id,
+                relayer_name: relayer.name,
+                unsent_txs: 1,
+                inflight_txs: 0,
+            }]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_changes_the_address_of_a_relayer_without_history(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1), network_config(2)];
+        let relayer = RelayerConfig {
+            enabled: false,
+            ..relayer_config(1, 1)
+        };
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer), None)
+            .await?;
+
+        let fixed = RelayerConfig {
+            chain_id: 2,
+            address: Address::with_last_byte(9),
+            enabled: true,
+            ..relayer.clone()
+        };
+        db.apply_static_config(&networks, &[fixed], None).await?;
+
+        let stored =
+            db.get_relayer(&relayer.id).await?.context("No relayer")?;
+        assert_eq!(stored.chain_id, 2);
+        assert_eq!(stored.address.0, Address::with_last_byte(9));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_cant_change_the_chain_or_address_of_a_relayer_with_history(
     ) -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let networks = [network_config(1), network_config(2)];
         let relayer = relayer_config(1, 1);
-        db.apply_static_config(&networks, std::slice::from_ref(&relayer))
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer), None)
             .await?;
+        create_unsent_tx(&db, &relayer.id).await?;
 
         let changes = [
             RelayerConfig {
@@ -4568,7 +5254,7 @@ mod tests {
         ];
         for changed in changes {
             let err = db
-                .apply_static_config(&networks, &[changed])
+                .apply_static_config(&networks, &[changed], None)
                 .await
                 .unwrap_err();
 
@@ -4590,17 +5276,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn static_config_keeps_one_nonce_owner_per_account(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let old = relayer_config(1, 1);
+        let new = RelayerConfig {
+            address: old.address,
+            ..relayer_config(1, 2)
+        };
+        db.apply_static_config(&networks, std::slice::from_ref(&old), None)
+            .await?;
+        create_unsent_tx(&db, &old.id).await?;
+
+        let err = db
+            .apply_static_config(&networks, std::slice::from_ref(&new), None)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains(&format!(
+                "would allocate the same nonces, because they have the same \
+                 chain id and address and the second one is enabled or has \
+                 unmined transactions: {} and {}",
+                new.id, old.id
+            )),
+            "{err}"
+        );
+        assert!(db.get_relayer(&new.id).await?.is_none());
+
+        db.purge_unsent_txs(&old.id).await?;
+        db.apply_static_config(&networks, std::slice::from_ref(&new), None)
+            .await?;
+        let stored = db.get_relayer(&old.id).await?.context("No relayer")?;
+        assert!(!stored.enabled);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn static_config_without_relayers_cant_disable_all_relayers(
     ) -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let networks = [network_config(1)];
         let relayer = relayer_config(1, 1);
 
-        db.apply_static_config(&[], &[]).await?;
-        db.apply_static_config(&networks, std::slice::from_ref(&relayer))
+        db.apply_static_config(&[], &[], None).await?;
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer), None)
             .await?;
 
-        let err = db.apply_static_config(&[], &[]).await.unwrap_err();
+        let err = db.apply_static_config(&[], &[], None).await.unwrap_err();
         assert!(
             err.to_string().contains(
                 "The config defines no relayers, but the database has 1 enabled relayers"
@@ -4615,9 +5340,9 @@ mod tests {
             enabled: false,
             ..relayer
         };
-        db.apply_static_config(&networks, &[disabled_relayer])
+        db.apply_static_config(&networks, &[disabled_relayer], None)
             .await?;
-        db.apply_static_config(&[], &[]).await?;
+        db.apply_static_config(&[], &[], None).await?;
 
         Ok(())
     }
