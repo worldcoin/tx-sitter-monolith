@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use alloy::primitives::U256;
 use alloy::providers::Provider;
+use alloy::transports::{RpcError, TransportError, TransportErrorKind};
 use base_api_types::DecimalU256;
 use eyre::{Context, ContextCompat};
 use poem::http::StatusCode;
@@ -584,9 +585,15 @@ impl From<SendTxError> for poem::Error {
                 )
                 .into_response(),
             ),
-            SendTxError::BalanceUnavailable(err) | SendTxError::Internal(err) => {
-                err.into()
+            SendTxError::BalanceUnavailable(err) => {
+                tracing::warn!(error = %err, "Couldn't check a relayer's balance");
+
+                poem::Error::from_string(
+                    "Error checking balance",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
             }
+            SendTxError::Internal(err) => err.into(),
         }
     }
 }
@@ -642,7 +649,7 @@ async fn ensure_relayer_accepts_tx(
             .map_err(|err| {
                 SendTxError::BalanceUnavailable(eyre::eyre!(
                     "Error checking balance: {}",
-                    err
+                    describe_rpc_error(&err)
                 ))
             })?;
 
@@ -660,6 +667,36 @@ async fn ensure_relayer_accepts_tx(
     }
 
     Ok(relayer)
+}
+
+/// Describes an RPC error without its URL, which usually embeds a provider
+/// API key.
+fn describe_rpc_error(err: &TransportError) -> String {
+    match err {
+        RpcError::Transport(TransportErrorKind::HttpError(http_error)) => {
+            format!("HTTP status {}", http_error.status)
+        }
+        RpcError::Transport(TransportErrorKind::Custom(inner)) => {
+            match inner.downcast_ref::<reqwest::Error>() {
+                Some(err) if err.is_timeout() => {
+                    "request timed out".to_string()
+                }
+                Some(err) if err.is_connect() => {
+                    "connection failed".to_string()
+                }
+                Some(err) => match err.status() {
+                    Some(status) => format!("HTTP status {status}"),
+                    None => "request failed".to_string(),
+                },
+                None => "transport error".to_string(),
+            }
+        }
+        RpcError::Transport(_) => "transport error".to_string(),
+        RpcError::ErrorResp(payload) => {
+            format!("JSON-RPC error {}: {}", payload.code, payload.message)
+        }
+        _ => "invalid RPC response".to_string(),
+    }
 }
 
 struct ServiceApi;
