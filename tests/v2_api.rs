@@ -212,6 +212,36 @@ async fn v2_send_fails_with_503_while_the_rpc_is_down() -> eyre::Result<()> {
     Ok(())
 }
 
+/// The RPC URL usually embeds a provider API key, so a failed balance check
+/// must not return it.
+#[tokio::test]
+async fn v1_balance_check_error_hides_the_rpc_url() -> eyre::Result<()> {
+    setup_tracing();
+
+    let service =
+        TestService::spawn(api_service().rpc_timeout(Duration::from_secs(1)))
+            .await?;
+    let api_key =
+        create_relayer_on_unresponsive_chain(&service, "unresponsive").await?;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/1/api/{api_key}/tx", service.base_url()))
+        .json(&serde_json::json!({
+            "to": "0x0000000000000000000000000000000000000001",
+            "value": "0",
+            "gasLimit": "21000",
+        }))
+        .send()
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = response.text().await?;
+    assert!(!body.contains("http://"), "RPC URL in {body:?}");
+    assert!(!body.contains("127.0.0.1"), "RPC address in {body:?}");
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn v2_get_returns_only_the_relayers_transactions() -> eyre::Result<()> {
     setup_tracing();
