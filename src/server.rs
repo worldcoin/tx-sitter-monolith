@@ -378,6 +378,25 @@ impl RelayerApi {
                 ));
             }
             CreateResult::QueueFull => return Err(queue_full_error()),
+            CreateResult::NonceTaken { nonce } => {
+                tracing::error!(
+                    relayer_id = relayer.id,
+                    relayer_address = %relayer.address,
+                    chain_id = relayer.chain_id,
+                    tx_id,
+                    nonce,
+                    "Relayer's next nonce is taken by another of its transactions, reset the relayer"
+                );
+
+                return Err(poem::error::Error::from_response(
+                    ErrorResponse::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "relayer_nonce_taken",
+                        "The relayer's next nonce is taken by another of its transactions. Resetting the relayer repairs it.",
+                    )
+                    .into_response(),
+                ));
+            }
         }
 
         tracing::info!(

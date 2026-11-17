@@ -51,6 +51,11 @@ pub enum CreateResult {
     /// The relayer already has `max_queued_txs` unsent or pending
     /// transactions
     QueueFull,
+    /// Another transaction of the relayer holds the relayer's next nonce,
+    /// which a relayer reset repairs
+    NonceTaken {
+        nonce: u64,
+    },
 }
 
 impl Database {
@@ -322,7 +327,8 @@ impl Database {
     }
 
     /// Creates a transaction of `relayer_id` with the relayer's next nonce,
-    /// unless the relayer's queue is full or `tx_id` exists.
+    /// unless the relayer's queue is full, `tx_id` exists or the nonce is
+    /// taken.
     #[instrument(skip(self), level = "debug")]
     pub async fn create_transaction(
         &self,
@@ -393,8 +399,14 @@ impl Database {
         .await;
 
         if let Err(sqlx::Error::Database(ref err)) = res {
-            if err.constraint() == Some("transactions_pkey") {
-                return Ok(CreateResult::Conflict);
+            match err.constraint() {
+                Some("transactions_pkey") => return Ok(CreateResult::Conflict),
+                Some("unique_relayer_nonce") => {
+                    return Ok(CreateResult::NonceTaken {
+                        nonce: nonce as u64,
+                    })
+                }
+                _ => {}
             }
         }
 
@@ -2141,6 +2153,24 @@ mod tests {
         .execute(&db.pool)
         .await?;
         assert_eq!(txs_at(1).await?, [0, 0]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_with_a_taken_nonce_reports_it() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        create_tx(&db, &relayer_id, "first").await?;
+        sqlx::query("UPDATE relayers SET nonce = 0 WHERE id = $1")
+            .bind(&relayer_id)
+            .execute(&db.pool)
+            .await?;
+
+        let result = create_tx(&db, &relayer_id, "second").await?;
+
+        assert_eq!(result, CreateResult::NonceTaken { nonce: 0 });
+        assert!(db.read_tx("second").await?.is_none());
 
         Ok(())
     }
