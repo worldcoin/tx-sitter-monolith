@@ -5,18 +5,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use alloy::primitives::{address, Address, U256};
+use alloy::node_bindings::AnvilInstance;
+use alloy::primitives::{address, Address, B256, U256};
 use alloy::providers::{Provider, RootProvider};
+use alloy::signers::k256::ecdsa::SigningKey;
+use alloy::signers::local::PrivateKeySigner;
 use postgres_docker_utils::DockerContainerGuard;
 use tokio::net::TcpListener;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
-use tx_sitter::config::DatabaseConfig;
+use tx_sitter::api_key::ApiKey;
+use tx_sitter::config::{
+    DatabaseConfig, NetworkConfig, RelayerConfig, RelayerKey,
+};
 use tx_sitter::db::Database;
 use tx_sitter::service::Service;
-use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
+use tx_sitter::types::secret_string::SecretString;
+use tx_sitter::types::secret_url::SecretUrl;
 use tx_sitter_client::apis::configuration::Configuration;
 use tx_sitter_client::apis::relayer_v1_api::{
     CreateTransactionParams, GetTransactionParams,
@@ -41,7 +48,7 @@ pub mod prelude {
     pub use futures::StreamExt;
     pub use reqwest::StatusCode;
     pub use tokio_util::sync::CancellationToken;
-    pub use tx_sitter::config::ServiceRole;
+    pub use tx_sitter::config::{NetworkConfig, RelayerConfig, ServiceRole};
     pub use tx_sitter_client::apis::configuration::Configuration;
     pub use tx_sitter_client::models::*;
     pub use url::Url;
@@ -68,6 +75,85 @@ pub const DEFAULT_ANVIL_CHAIN_ID: u64 = 31337;
 pub const DEFAULT_ANVIL_BLOCK_TIME: u64 = 2;
 
 pub const DEFAULT_RELAYER_ID: &str = "1b908a34-5dc1-4d2d-a146-5eb46e975830";
+
+/// The API key of the default relayer
+pub const DEFAULT_API_KEY: &str =
+    "G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=";
+
+/// The anvil chain, indexed through `anvil`'s RPCs.
+pub fn anvil_network(anvil: &AnvilInstance) -> NetworkConfig {
+    NetworkConfig {
+        chain_id: DEFAULT_ANVIL_CHAIN_ID,
+        name: "Anvil".to_string(),
+        http_rpcs: vec![rpc_url(&anvil.endpoint())],
+        ws_rpc: rpc_url(&anvil.ws_endpoint()),
+    }
+}
+
+pub fn rpc_url(url: &str) -> SecretUrl {
+    SecretUrl::new(url.parse().expect("Invalid RPC URL"))
+}
+
+/// The relayer of the default anvil account, which accepts
+/// [`DEFAULT_API_KEY`].
+pub fn default_relayer() -> RelayerConfig {
+    RelayerConfig {
+        id: DEFAULT_RELAYER_ID.to_string(),
+        name: "Anvil".to_string(),
+        api_key_hashes: vec![api_key_hash(DEFAULT_API_KEY)],
+        ..relayer_with_key(DEFAULT_ANVIL_CHAIN_ID, DEFAULT_ANVIL_PRIVATE_KEY)
+    }
+}
+
+/// A relayer with a random id, local key and API key.
+pub struct TestRelayer {
+    pub config: RelayerConfig,
+    pub api_key: String,
+}
+
+impl TestRelayer {
+    pub fn random(chain_id: u64) -> Self {
+        let private_key = SigningKey::random(&mut rand::rngs::OsRng).to_bytes();
+        let config = relayer_with_key(chain_id, &private_key);
+        let api_key = ApiKey::random(&config.id)
+            .reveal()
+            .expect("Relayer id is a UUID");
+
+        Self {
+            config: RelayerConfig {
+                api_key_hashes: vec![api_key_hash(&api_key)],
+                ..config
+            },
+            api_key,
+        }
+    }
+}
+
+/// A relayer with a random id that signs with `private_key` and accepts no
+/// API keys.
+fn relayer_with_key(chain_id: u64, private_key: &[u8]) -> RelayerConfig {
+    let signer =
+        PrivateKeySigner::from_slice(private_key).expect("Invalid private key");
+
+    RelayerConfig {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "Test relayer".to_string(),
+        chain_id,
+        key: RelayerKey::Local(SecretString::new(hex::encode(private_key))),
+        address: signer.address(),
+        max_inflight_txs: 5,
+        max_queued_txs: 20,
+        gas_price_limits: vec![],
+        enabled: true,
+        api_key_hashes: vec![],
+    }
+}
+
+pub fn api_key_hash(api_key: &str) -> B256 {
+    let api_key: ApiKey = api_key.parse().expect("Invalid API key");
+
+    B256::from(api_key.api_key_secret_hash())
+}
 
 /// Installs the log subscriber, unless an earlier test in the same binary
 /// already did.
@@ -155,20 +241,6 @@ pub async fn await_balance(
     }
 
     eyre::bail!("Balance did not reach expected value");
-}
-
-/// Creates an API key for the predefined relayer.
-pub async fn create_api_key(client: &Configuration) -> eyre::Result<String> {
-    let response =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            client,
-            RelayerCreateApiKeyParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
-        .await?;
-
-    Ok(response.api_key)
 }
 
 /// Sends `value` wei to [`ARBITRARY_ADDRESS`] through tx-sitter and returns

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use alloy::primitives::{Address, B256, U256};
 use chrono::{DateTime, Utc};
-use eyre::ContextCompat;
+use eyre::{Context, ContextCompat};
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use sqlx::types::{BigDecimal, Json};
@@ -14,8 +14,10 @@ use sqlx::{
 use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
-use crate::config::DatabaseConfig;
-use crate::db::data::{NetworkInfo, RelayerInfo};
+use crate::config::{DatabaseConfig, NetworkConfig, RelayerConfig};
+use crate::db::data::{
+    DisabledRelayer, NetworkInfo, RelayerGasPriceLimit, RelayerInfo,
+};
 use crate::db::wrappers::h256::H256Wrapper;
 use crate::db::wrappers::hex_u256::HexU256Wrapper;
 use crate::db::wrappers::xid8::Xid8;
@@ -1643,52 +1645,135 @@ impl Database {
     ) -> eyre::Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            r#"
-            INSERT INTO networks (chain_id, name)
-            VALUES ($1, $2)
-            ON CONFLICT (chain_id) DO UPDATE
-            SET name = EXCLUDED.name
-            "#,
-        )
-        .bind(chain_id as i64)
-        .bind(name)
-        .execute(tx.as_mut())
-        .await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO rpcs (chain_id, url, kind)
-            VALUES
-                ($1, $2, $3)
-            ON CONFLICT (chain_id, kind) DO UPDATE
-            SET url = EXCLUDED.url
-            "#,
-        )
-        .bind(chain_id as i64)
-        .bind(http_rpc)
-        .bind(RpcKind::Http)
-        .execute(tx.as_mut())
-        .await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO rpcs (chain_id, url, kind)
-            VALUES
-                ($1, $2, $3)
-            ON CONFLICT (chain_id, kind) DO UPDATE
-            SET url = EXCLUDED.url
-            "#,
-        )
-        .bind(chain_id as i64)
-        .bind(ws_rpc)
-        .bind(RpcKind::Ws)
-        .execute(tx.as_mut())
-        .await?;
+        upsert_network_in(tx.as_mut(), chain_id, name, http_rpc, ws_rpc)
+            .await?;
 
         tx.commit().await?;
 
         Ok(())
+    }
+
+    /// Makes the networks, relayers and API keys in the database match
+    /// `networks` and `relayers`, and returns the relayers it disabled.
+    ///
+    /// - Networks are upserted, and `rpcs` gets the first HTTP RPC and the WS
+    ///   RPC of each. Networks missing from `networks` are left as they are.
+    /// - Relayers are upserted and keep their nonces.
+    /// - Enabled relayers missing from `relayers` are disabled rather than
+    ///   deleted, because their transactions reference them.
+    /// - Every relayer in `relayers` accepts exactly the API keys of its
+    ///   `api_key_hashes`. The API keys of relayers missing from `relayers`
+    ///   are kept, so re-adding a relayer restores them.
+    ///
+    /// Everything happens in one transaction under an advisory lock, so
+    /// services that start at once apply their configs one after another,
+    /// and applying the same config again changes nothing.
+    ///
+    /// Fails without changing anything when a relayer's chain id or address
+    /// differs from the one in the database, because its nonces belong to
+    /// that chain and address, or when `relayers` is empty while the database
+    /// has enabled relayers, the state of a config nobody migrated yet.
+    #[instrument(skip_all)]
+    pub async fn apply_static_config(
+        &self,
+        networks: &[NetworkConfig],
+        relayers: &[RelayerConfig],
+    ) -> eyre::Result<Vec<DisabledRelayer>> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("SET LOCAL lock_timeout = '10s'")
+            .execute(tx.as_mut())
+            .await?;
+        sqlx::query("SET LOCAL statement_timeout = '30s'")
+            .execute(tx.as_mut())
+            .await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(STATIC_CONFIG_LOCK_ID)
+            .execute(tx.as_mut())
+            .await
+            .context("Waiting for the static config lock")?;
+
+        if relayers.is_empty() {
+            let (enabled_relayers,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM relayers WHERE enabled")
+                    .fetch_one(tx.as_mut())
+                    .await?;
+
+            if enabled_relayers > 0 {
+                eyre::bail!(
+                    "The config defines no relayers, but the database has \
+                     {enabled_relayers} enabled relayers. Add them to the \
+                     config, or disable them first."
+                );
+            }
+        }
+
+        let relayer_ids: Vec<String> =
+            relayers.iter().map(|relayer| relayer.id.clone()).collect();
+
+        let stored_relayers: Vec<(String, i64, Vec<u8>)> = sqlx::query_as(
+            r#"
+            SELECT id, chain_id, address
+            FROM   relayers
+            WHERE  id = ANY($1)
+            "#,
+        )
+        .bind(&relayer_ids)
+        .fetch_all(tx.as_mut())
+        .await?;
+        let changed_identities =
+            changed_relayer_identities(&stored_relayers, relayers);
+        if !changed_identities.is_empty() {
+            eyre::bail!(
+                "A relayer's chain id and address can't change, add a new \
+                 relayer instead: {}",
+                changed_identities.join("; ")
+            );
+        }
+
+        for network in networks {
+            let http_rpc = network
+                .http_rpcs
+                .first()
+                .context("Network without HTTP RPCs")?;
+
+            upsert_network_in(
+                tx.as_mut(),
+                network.chain_id,
+                &network.name,
+                http_rpc.expose().as_str(),
+                network.ws_rpc.expose().as_str(),
+            )
+            .await
+            .with_context(|| {
+                format!("Upserting network {}", network.chain_id)
+            })?;
+        }
+
+        for relayer in relayers {
+            upsert_relayer_in(tx.as_mut(), relayer)
+                .await
+                .with_context(|| format!("Upserting relayer {}", relayer.id))?;
+        }
+
+        let disabled_relayers: Vec<DisabledRelayer> = sqlx::query_as(
+            r#"
+            UPDATE relayers
+            SET    enabled = FALSE
+            WHERE  enabled
+            AND    NOT (id = ANY($1))
+            RETURNING id, name
+            "#,
+        )
+        .bind(&relayer_ids)
+        .fetch_all(tx.as_mut())
+        .await?;
+
+        replace_api_keys_in(tx.as_mut(), relayers).await?;
+
+        tx.commit().await?;
+
+        Ok(disabled_relayers)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -2043,6 +2128,159 @@ async fn count_queued_txs(
     Ok(tx_count as usize)
 }
 
+/// The advisory lock that serialises [`Database::apply_static_config`]
+const STATIC_CONFIG_LOCK_ID: i64 = 0x7478_7369_7474_6572;
+
+async fn upsert_network_in(
+    conn: &mut PgConnection,
+    chain_id: u64,
+    name: &str,
+    http_rpc: &str,
+    ws_rpc: &str,
+) -> eyre::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO networks (chain_id, name)
+        VALUES ($1, $2)
+        ON CONFLICT (chain_id) DO UPDATE
+        SET name = EXCLUDED.name
+        "#,
+    )
+    .bind(chain_id as i64)
+    .bind(name)
+    .execute(&mut *conn)
+    .await?;
+
+    for (url, kind) in [(http_rpc, RpcKind::Http), (ws_rpc, RpcKind::Ws)] {
+        sqlx::query(
+            r#"
+            INSERT INTO rpcs (chain_id, url, kind)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (chain_id, kind) DO UPDATE
+            SET url = EXCLUDED.url
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(url)
+        .bind(kind)
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    Ok(())
+}
+
+/// Describes every relayer of `relayers` whose chain id or address differs
+/// from the one in `stored_relayers`, rows of `(id, chain_id, address)`.
+fn changed_relayer_identities(
+    stored_relayers: &[(String, i64, Vec<u8>)],
+    relayers: &[RelayerConfig],
+) -> Vec<String> {
+    stored_relayers
+        .iter()
+        .filter_map(|(id, chain_id, address)| {
+            let relayer = relayers.iter().find(|relayer| relayer.id == *id)?;
+            let stored_address = Address::try_from(address.as_slice()).ok();
+
+            let is_unchanged = relayer.chain_id as i64 == *chain_id
+                && stored_address == Some(relayer.address);
+
+            (!is_unchanged).then(|| {
+                format!(
+                    "relayer {id} has chain id {chain_id} and address 0x{} \
+                     in the database, but chain id {} and address {} in the \
+                     config",
+                    hex::encode(address),
+                    relayer.chain_id,
+                    relayer.address
+                )
+            })
+        })
+        .collect()
+}
+
+/// Inserts `relayer`, or updates the settings of the stored relayer with its
+/// id, leaving its nonces as they are.
+async fn upsert_relayer_in(
+    conn: &mut PgConnection,
+    relayer: &RelayerConfig,
+) -> eyre::Result<()> {
+    let gas_price_limits: Vec<RelayerGasPriceLimit> = relayer
+        .gas_price_limits
+        .iter()
+        .map(|limit| RelayerGasPriceLimit {
+            value: limit.value.clone().into(),
+            chain_id: limit.chain_id as i64,
+        })
+        .collect();
+
+    sqlx::query(
+        r#"
+        INSERT INTO relayers (
+            id, name, chain_id, key_id, address,
+            max_inflight_txs, max_queued_txs, gas_price_limits, enabled
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE
+        SET name = EXCLUDED.name,
+            key_id = EXCLUDED.key_id,
+            max_inflight_txs = EXCLUDED.max_inflight_txs,
+            max_queued_txs = EXCLUDED.max_queued_txs,
+            gas_price_limits = EXCLUDED.gas_price_limits,
+            enabled = EXCLUDED.enabled
+        "#,
+    )
+    .bind(&relayer.id)
+    .bind(&relayer.name)
+    .bind(relayer.chain_id as i64)
+    .bind(relayer.key.key_id())
+    .bind(relayer.address.as_slice())
+    .bind(relayer.max_inflight_txs as i64)
+    .bind(relayer.max_queued_txs as i64)
+    .bind(Json(gas_price_limits))
+    .bind(relayer.enabled)
+    .execute(conn)
+    .await?;
+
+    Ok(())
+}
+
+/// Makes the API keys of every relayer in `relayers` exactly the hashes in
+/// its `api_key_hashes`.
+async fn replace_api_keys_in(
+    conn: &mut PgConnection,
+    relayers: &[RelayerConfig],
+) -> eyre::Result<()> {
+    let relayer_ids: Vec<&str> =
+        relayers.iter().map(|relayer| relayer.id.as_str()).collect();
+    let (key_relayer_ids, key_hashes): (Vec<&str>, Vec<&[u8]>) = relayers
+        .iter()
+        .flat_map(|relayer| {
+            relayer
+                .api_key_hashes
+                .iter()
+                .map(|hash| (relayer.id.as_str(), hash.as_slice()))
+        })
+        .unzip();
+
+    sqlx::query("DELETE FROM api_keys WHERE relayer_id = ANY($1)")
+        .bind(&relayer_ids)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO api_keys (relayer_id, key_hash)
+        SELECT DISTINCT * FROM UNNEST($1::TEXT[], $2::BYTEA[])
+        "#,
+    )
+    .bind(&key_relayer_ids)
+    .bind(&key_hashes)
+    .execute(&mut *conn)
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
@@ -2051,9 +2289,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::db::data::RelayerGasPriceLimit;
+    use crate::config::{GasPriceLimitConfig, RelayerKey};
     use crate::db::wrappers::address::AddressWrapper;
     use crate::db::wrappers::decimal_u256::DecimalU256Wrapper;
+    use crate::types::secret_url::SecretUrl;
     use crate::types::{RelayerGasPriceLimitResponse, RelayerUpdateRequest};
 
     const ADDRESS: [u8; 20] = hex!("1ed53d680b8890dae2a63f673a85ffde1fd5c7a2");
@@ -4060,6 +4299,327 @@ mod tests {
         .await?;
 
         Ok(hashes.into_iter().map(|(hash,)| hash.0).collect())
+    }
+
+    fn network_config(chain_id: u64) -> NetworkConfig {
+        let url = |url: &str| SecretUrl::new(url.parse().unwrap());
+
+        NetworkConfig {
+            chain_id,
+            name: format!("chain {chain_id}"),
+            http_rpcs: vec![
+                url("https://primary.example.com/key"),
+                url("https://fallback.example.com/key"),
+            ],
+            ws_rpc: url("wss://ws.example.com/key"),
+        }
+    }
+
+    fn relayer_config(chain_id: u64, address_byte: u8) -> RelayerConfig {
+        RelayerConfig {
+            id: uuid(),
+            name: format!("relayer {address_byte}"),
+            chain_id,
+            key: RelayerKey::Kms(format!("key-{address_byte}")),
+            address: Address::with_last_byte(address_byte),
+            max_inflight_txs: 5,
+            max_queued_txs: 20,
+            gas_price_limits: vec![],
+            enabled: true,
+            api_key_hashes: vec![B256::with_last_byte(address_byte)],
+        }
+    }
+
+    async fn count_rows(db: &Database, table: &str) -> eyre::Result<i64> {
+        let (count,): (i64,) =
+            sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&db.pool)
+                .await?;
+
+        Ok(count)
+    }
+
+    #[tokio::test]
+    async fn static_config_updates_relayers_and_keeps_their_nonces(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let relayer = relayer_config(1, 1);
+
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer))
+            .await?;
+        sqlx::query(
+            "UPDATE relayers SET nonce = 7, current_nonce = 5 WHERE id = $1",
+        )
+        .bind(&relayer.id)
+        .execute(&db.pool)
+        .await?;
+
+        let updated = RelayerConfig {
+            name: "renamed".to_string(),
+            key: RelayerKey::Kms("arn:aws:kms:key/1".to_string()),
+            max_inflight_txs: 10,
+            max_queued_txs: 30,
+            gas_price_limits: vec![GasPriceLimitConfig {
+                chain_id: 1,
+                value: U256::from(1_000).into(),
+            }],
+            enabled: false,
+            ..relayer.clone()
+        };
+        let disabled = db.apply_static_config(&networks, &[updated]).await?;
+
+        assert_eq!(disabled, vec![]);
+        let stored =
+            db.get_relayer(&relayer.id).await?.context("No relayer")?;
+        assert_eq!(stored.name, "renamed");
+        assert_eq!(stored.chain_id, 1);
+        assert_eq!(stored.key_id, "arn:aws:kms:key/1");
+        assert_eq!(stored.address.0, relayer.address);
+        assert_eq!(stored.nonce, 7);
+        assert_eq!(stored.current_nonce, 5);
+        assert_eq!(stored.max_inflight_txs, 10);
+        assert_eq!(stored.max_queued_txs, 30);
+        assert_eq!(
+            stored.gas_price_limits,
+            vec![RelayerGasPriceLimit {
+                value: U256::from(1_000).into(),
+                chain_id: 1,
+            }]
+        );
+        assert!(!stored.enabled);
+
+        assert_eq!(
+            db.get_network_rpc(1, RpcKind::Http).await?,
+            "https://primary.example.com/key"
+        );
+        assert_eq!(
+            db.get_network_rpc(1, RpcKind::Ws).await?,
+            "wss://ws.example.com/key"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_static_config_applications_are_idempotent(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1), network_config(2)];
+        let relayers = [
+            RelayerConfig {
+                api_key_hashes: vec![
+                    B256::with_last_byte(1),
+                    B256::with_last_byte(2),
+                ],
+                ..relayer_config(1, 1)
+            },
+            relayer_config(2, 3),
+        ];
+
+        let results = futures::future::join_all(
+            (0..4).map(|_| db.apply_static_config(&networks, &relayers)),
+        )
+        .await;
+
+        for result in results {
+            assert_eq!(result?, vec![]);
+        }
+        assert_eq!(count_rows(&db, "networks").await?, 2);
+        assert_eq!(count_rows(&db, "rpcs").await?, 4);
+        assert_eq!(count_rows(&db, "relayers").await?, 2);
+        assert_eq!(count_rows(&db, "api_keys").await?, 3);
+        for relayer in &relayers {
+            for hash in &relayer.api_key_hashes {
+                assert!(db.is_api_key_valid(&relayer.id, hash.0).await?);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Without the lock, transactions that upsert the same rows in different
+    /// orders deadlock, and Postgres aborts one of them.
+    #[tokio::test]
+    async fn concurrent_static_configs_dont_deadlock() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks: Vec<NetworkConfig> =
+            (1..=10).map(network_config).collect();
+        let relayers: Vec<RelayerConfig> = (1..=10)
+            .map(|chain_id| relayer_config(chain_id, chain_id as u8))
+            .collect();
+        let reversed_networks: Vec<NetworkConfig> =
+            networks.iter().rev().cloned().collect();
+        let reversed_relayers: Vec<RelayerConfig> =
+            relayers.iter().rev().cloned().collect();
+
+        for _ in 0..10 {
+            let (forward, backward) = tokio::join!(
+                db.apply_static_config(&networks, &relayers),
+                db.apply_static_config(&reversed_networks, &reversed_relayers),
+            );
+
+            forward?;
+            backward?;
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_disables_relayers_missing_from_it(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let kept = relayer_config(1, 1);
+        let removed = relayer_config(1, 2);
+
+        db.apply_static_config(&networks, &[kept.clone(), removed.clone()])
+            .await?;
+        let disabled = db
+            .apply_static_config(&networks, std::slice::from_ref(&kept))
+            .await?;
+
+        assert_eq!(
+            disabled,
+            vec![DisabledRelayer {
+                id: removed.id.clone(),
+                name: removed.name.clone(),
+            }]
+        );
+        let stored =
+            db.get_relayer(&removed.id).await?.context("No relayer")?;
+        assert!(!stored.enabled);
+        let stored = db.get_relayer(&kept.id).await?.context("No relayer")?;
+        assert!(stored.enabled);
+        assert!(
+            db.is_api_key_valid(&removed.id, removed.api_key_hashes[0].0)
+                .await?,
+            "A removed relayer lost its API keys"
+        );
+
+        let disabled = db
+            .apply_static_config(&networks, std::slice::from_ref(&kept))
+            .await?;
+        assert_eq!(disabled, vec![], "A relayer was disabled twice");
+
+        db.apply_static_config(&networks, &[kept, removed.clone()])
+            .await?;
+        let stored =
+            db.get_relayer(&removed.id).await?.context("No relayer")?;
+        assert!(stored.enabled);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_replaces_api_keys() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let relayer = RelayerConfig {
+            api_key_hashes: vec![
+                B256::with_last_byte(1),
+                B256::with_last_byte(2),
+            ],
+            ..relayer_config(1, 1)
+        };
+
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer))
+            .await?;
+        let rotated = RelayerConfig {
+            api_key_hashes: vec![
+                B256::with_last_byte(2),
+                B256::with_last_byte(3),
+            ],
+            ..relayer.clone()
+        };
+        db.apply_static_config(&networks, &[rotated]).await?;
+
+        let is_valid = |byte| {
+            db.is_api_key_valid(&relayer.id, B256::with_last_byte(byte).0)
+        };
+        assert!(!is_valid(1).await?, "A removed API key still works");
+        assert!(is_valid(2).await?);
+        assert!(is_valid(3).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_cant_change_a_relayers_chain_or_address(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1), network_config(2)];
+        let relayer = relayer_config(1, 1);
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer))
+            .await?;
+
+        let changes = [
+            RelayerConfig {
+                chain_id: 2,
+                name: "renamed".to_string(),
+                ..relayer.clone()
+            },
+            RelayerConfig {
+                address: Address::with_last_byte(9),
+                name: "renamed".to_string(),
+                ..relayer.clone()
+            },
+        ];
+        for changed in changes {
+            let err = db
+                .apply_static_config(&networks, &[changed])
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains(&format!(
+                    "relayer {} has chain id 1 and address {} in the database",
+                    relayer.id,
+                    relayer.address.to_string().to_lowercase()
+                )),
+                "{err}"
+            );
+        }
+
+        let stored =
+            db.get_relayer(&relayer.id).await?.context("No relayer")?;
+        assert_eq!(stored.name, relayer.name, "A rejected config was applied");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_config_without_relayers_cant_disable_all_relayers(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let networks = [network_config(1)];
+        let relayer = relayer_config(1, 1);
+
+        db.apply_static_config(&[], &[]).await?;
+        db.apply_static_config(&networks, std::slice::from_ref(&relayer))
+            .await?;
+
+        let err = db.apply_static_config(&[], &[]).await.unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "The config defines no relayers, but the database has 1 enabled relayers"
+            ),
+            "{err}"
+        );
+        let stored =
+            db.get_relayer(&relayer.id).await?.context("No relayer")?;
+        assert!(stored.enabled);
+
+        let disabled_relayer = RelayerConfig {
+            enabled: false,
+            ..relayer
+        };
+        db.apply_static_config(&networks, &[disabled_relayer])
+            .await?;
+        db.apply_static_config(&[], &[]).await?;
+
+        Ok(())
     }
 
     /// Big-endian 32-byte encoding of a U256 that fits in a `u64`.

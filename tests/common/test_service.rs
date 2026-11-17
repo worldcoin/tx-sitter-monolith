@@ -21,8 +21,8 @@ use tx_sitter_client::models::{
 };
 
 use super::{
-    connect_db, create_api_key, setup_db, AnvilBuilder, ServiceBuilder,
-    DEFAULT_ANVIL_CHAIN_ID, DEFAULT_RELAYER_ID,
+    connect_db, setup_db, AnvilBuilder, ServiceBuilder, DEFAULT_ANVIL_CHAIN_ID,
+    DEFAULT_API_KEY, DEFAULT_RELAYER_ID,
 };
 
 /// A service on its own database and anvil chain, with an API key for the
@@ -44,13 +44,12 @@ impl TestService {
         let anvil = AnvilBuilder::default().spawn().await?;
 
         let (service, client) = builder.build(&anvil, &db_url).await?;
-        let api_key = create_api_key(&client).await?;
         let db = connect_db(&db_url).await?;
 
         Ok(Self {
             service,
             client,
-            api_key,
+            api_key: DEFAULT_API_KEY.to_string(),
             anvil,
             db_url,
             db,

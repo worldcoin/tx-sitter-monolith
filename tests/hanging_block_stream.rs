@@ -26,7 +26,7 @@ async fn hanging_block_stream_fails_neither_probe() -> eyre::Result<()> {
     .await?;
 
     let (service, _) = ServiceBuilder::default()
-        .without_predefined_values()
+        .without_defaults()
         .rpc_timeout(RPC_TIMEOUT)
         .task_stall_timeout(TASK_STALL_TIMEOUT)
         .build(&anvil, &db_url)

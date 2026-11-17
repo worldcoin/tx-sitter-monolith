@@ -14,7 +14,7 @@ async fn worker_indexes_network_added_after_it_started() -> eyre::Result<()> {
 
     let (worker, _) = ServiceBuilder::default()
         .role(ServiceRole::Worker)
-        .without_predefined_values()
+        .without_defaults()
         .build(&anvil, &db_url)
         .await?;
 

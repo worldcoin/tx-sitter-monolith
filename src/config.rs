@@ -9,7 +9,6 @@ use config::FileFormat;
 use eyre::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::api_key::ApiKey;
 use crate::keys::local_keys::signing_key_from_hex;
 use crate::types::secret_string::SecretString;
 use crate::types::secret_url::SecretUrl;
@@ -90,13 +89,15 @@ impl Config {
     /// Checks the invariants that deserialization can't express, and reports
     /// every violation in one error.
     ///
-    /// The networks must have distinct chain ids, at least one HTTP RPC, and
-    /// HTTP and WS URLs of the right schemes. The relayers must have distinct
-    /// ids in the form the API uses, belong to a configured network, queue
-    /// more transactions than they keep in flight, and have keys of the kind
+    /// Events must not outlive the transactions they describe. The networks
+    /// must have distinct chain ids, at least one HTTP RPC, and HTTP and WS
+    /// URLs of the right schemes. The relayers must have distinct ids in the
+    /// form the API uses, belong to a configured network, queue more
+    /// transactions than they keep in flight, and have keys of the kind
     /// `keys` selects.
     pub fn validate(&self) -> eyre::Result<()> {
-        let errors: Vec<String> = network_errors(&self.networks)
+        let errors: Vec<String> = service_errors(&self.service)
+            .chain(network_errors(&self.networks))
             .chain(relayer_errors(&self.relayers, &self.networks, &self.keys))
             .collect();
 
@@ -106,6 +107,24 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn service_errors(service: &TxSitterConfig) -> impl Iterator<Item = String> {
+    let TxSitterConfig {
+        tx_retention,
+        event_retention,
+        ..
+    } = service;
+
+    (event_retention > tx_retention)
+        .then(|| {
+            format!(
+                "service.event_retention ({}) must not exceed service.tx_retention ({})",
+                humantime::format_duration(*event_retention),
+                humantime::format_duration(*tx_retention),
+            )
+        })
+        .into_iter()
 }
 
 fn network_errors(
@@ -204,25 +223,6 @@ fn relayer_errors<'a>(
     })
 }
 
-impl Config {
-    /// Checks the settings that depend on each other.
-    pub fn validate(&self) -> eyre::Result<()> {
-        let TxSitterConfig {
-            tx_retention,
-            event_retention,
-            ..
-        } = &self.service;
-        eyre::ensure!(
-            event_retention <= tx_retention,
-            "service.event_retention ({}) must not exceed service.tx_retention ({})",
-            humantime::format_duration(*event_retention),
-            humantime::format_duration(*tx_retention),
-        );
-
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TxSitterConfig {
@@ -287,9 +287,6 @@ pub struct TxSitterConfig {
     pub event_retention: Duration,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub predefined: Option<Predefined>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryConfig>,
 }
 
@@ -321,32 +318,6 @@ impl ServiceRole {
     pub fn runs_tasks(self) -> bool {
         matches!(self, Self::All | Self::Worker)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct Predefined {
-    pub network: PredefinedNetwork,
-    pub relayer: PredefinedRelayer,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct PredefinedNetwork {
-    pub chain_id: u64,
-    pub name: String,
-    pub http_rpc: String,
-    pub ws_rpc: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct PredefinedRelayer {
-    pub id: String,
-    pub name: String,
-    pub key_id: String,
-    pub chain_id: u64,
-    pub api_key: ApiKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -709,7 +680,6 @@ mod tests {
                 task_stall_timeout: default::task_stall_timeout(),
                 tx_retention: default::tx_retention(),
                 event_retention: default::event_retention(),
-                predefined: None,
                 telemetry: None,
             },
             server: ServerConfig {
@@ -748,7 +718,6 @@ mod tests {
                 task_stall_timeout: default::task_stall_timeout(),
                 tx_retention: default::tx_retention(),
                 event_retention: default::event_retention(),
-                predefined: None,
                 telemetry: None,
             },
             server: ServerConfig {
@@ -789,7 +758,7 @@ mod tests {
         let err = config.validate().unwrap_err();
         assert_eq!(
             err.to_string(),
-            "service.event_retention (30days 1s) must not exceed service.tx_retention (30days)"
+            "Invalid config:\n- service.event_retention (30days 1s) must not exceed service.tx_retention (30days)"
         );
     }
 

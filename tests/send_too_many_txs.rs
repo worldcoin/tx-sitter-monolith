@@ -25,7 +25,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
         .role(ServiceRole::Api)
         .build(&anvil, &db_url)
         .await?;
-    let api_key = create_api_key(&client_1).await?;
+    let api_key = DEFAULT_API_KEY.to_string();
 
     tx_sitter_client::apis::admin_v1_api::update_relayer(
         &client_1,

@@ -3,19 +3,15 @@ use std::time::Duration;
 
 use alloy::node_bindings::AnvilInstance;
 use tokio_util::sync::CancellationToken;
-use tx_sitter::api_key::ApiKey;
 use tx_sitter::config::{
-    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, Predefined,
-    PredefinedNetwork, PredefinedRelayer, ServerConfig, ServiceRole,
-    TxSitterConfig,
+    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, NetworkConfig,
+    RelayerConfig, ServerConfig, ServiceRole, TxSitterConfig,
 };
 use tx_sitter::service::Service;
 use tx_sitter_client::apis::configuration::Configuration;
 
-use super::await_estimates;
-use super::prelude::{
-    DEFAULT_ANVIL_CHAIN_ID, DEFAULT_ANVIL_PRIVATE_KEY, DEFAULT_RELAYER_ID,
-};
+use super::prelude::DEFAULT_ANVIL_CHAIN_ID;
+use super::{anvil_network, await_estimates, default_relayer};
 
 pub struct ServiceBuilder {
     role: ServiceRole,
@@ -29,7 +25,9 @@ pub struct ServiceBuilder {
     shutdown_timeout: Duration,
     max_event_waiters: usize,
     shutdown: CancellationToken,
-    inserts_predefined_values: bool,
+    uses_defaults: bool,
+    networks: Vec<NetworkConfig>,
+    relayers: Vec<RelayerConfig>,
 }
 
 impl Default for ServiceBuilder {
@@ -46,7 +44,9 @@ impl Default for ServiceBuilder {
             shutdown_timeout: Duration::from_secs(20),
             max_event_waiters: 64,
             shutdown: CancellationToken::new(),
-            inserts_predefined_values: true,
+            uses_defaults: true,
+            networks: vec![],
+            relayers: vec![],
         }
     }
 }
@@ -107,38 +107,43 @@ impl ServiceBuilder {
         self
     }
 
-    /// Starts the service without inserting the anvil network, relayer and
-    /// API key into the database.
-    pub fn without_predefined_values(mut self) -> Self {
-        self.inserts_predefined_values = false;
+    /// Configures the service without the anvil network and the default
+    /// relayer.
+    pub fn without_defaults(mut self) -> Self {
+        self.uses_defaults = false;
         self
     }
 
-    /// Starts the service and, if it indexes the predefined anvil network,
-    /// waits until fee estimates for it are ready.
+    /// Adds `network` to the configured networks.
+    pub fn network(mut self, network: NetworkConfig) -> Self {
+        self.networks.push(network);
+        self
+    }
+
+    /// Adds `relayer` to the configured relayers.
+    pub fn relayer(mut self, relayer: RelayerConfig) -> Self {
+        self.relayers.push(relayer);
+        self
+    }
+
+    /// Starts the service with the anvil network and the default relayer,
+    /// unless [`Self::without_defaults`] was called, next to the added
+    /// networks and relayers.
+    ///
+    /// If the service indexes the anvil network, this waits until fee
+    /// estimates for it are ready.
     pub async fn build(
         self,
         anvil: &AnvilInstance,
         db_url: &str,
     ) -> eyre::Result<(Service, Configuration)> {
-        let anvil_private_key = hex::encode(DEFAULT_ANVIL_PRIVATE_KEY);
-
-        let predefined = self.inserts_predefined_values.then(|| Predefined {
-            network: PredefinedNetwork {
-                chain_id: DEFAULT_ANVIL_CHAIN_ID,
-                name: "Anvil".to_string(),
-                http_rpc: anvil.endpoint(),
-                ws_rpc: anvil.ws_endpoint(),
-            },
-            relayer: PredefinedRelayer {
-                name: "Anvil".to_string(),
-                id: DEFAULT_RELAYER_ID.to_string(),
-                key_id: anvil_private_key,
-                chain_id: DEFAULT_ANVIL_CHAIN_ID,
-                // TODO: Use this key in tests
-                api_key: ApiKey::random(DEFAULT_RELAYER_ID),
-            },
-        });
+        let (mut networks, mut relayers) = if self.uses_defaults {
+            (vec![anvil_network(anvil)], vec![default_relayer()])
+        } else {
+            (vec![], vec![])
+        };
+        networks.extend(self.networks);
+        relayers.extend(self.relayers);
 
         let config = Config {
             service: TxSitterConfig {
@@ -156,7 +161,6 @@ impl ServiceBuilder {
                     .tx_retention
                     .min(Duration::from_secs(7 * 24 * 60 * 60)),
                 telemetry: None,
-                predefined,
             },
             server: ServerConfig {
                 host: SocketAddr::V4(SocketAddrV4::new(
@@ -171,13 +175,13 @@ impl ServiceBuilder {
             },
             database: DatabaseConfig::connection_string(db_url),
             keys: KeysConfig::Local(LocalKeysConfig::default()),
-            networks: vec![],
-            relayers: vec![],
+            networks,
+            relayers,
         };
 
         let service = Service::new(config, self.shutdown).await?;
 
-        if self.role.runs_tasks() && self.inserts_predefined_values {
+        if self.role.runs_tasks() && self.uses_defaults {
             await_estimates(
                 &service,
                 DEFAULT_ANVIL_CHAIN_ID,

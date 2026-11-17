@@ -78,7 +78,6 @@ pub async fn setup_app(
             task_stall_timeout: Duration::from_secs(60),
             tx_retention: Duration::from_secs(30 * 24 * 60 * 60),
             event_retention: Duration::from_secs(7 * 24 * 60 * 60),
-            predefined: None,
             telemetry: None,
         },
         server: ServerConfig {

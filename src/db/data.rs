@@ -184,6 +184,16 @@ pub struct RelayerGasPriceLimit {
     pub chain_id: i64,
 }
 
+/// A relayer that [`Database::apply_static_config`] disabled because the
+/// config no longer has it
+///
+/// [`Database::apply_static_config`]: crate::db::Database::apply_static_config
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct DisabledRelayer {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct RelayerInfo {
     pub id: String,
