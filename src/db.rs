@@ -426,7 +426,7 @@ impl Database {
     /// before it is sent.
     ///
     /// Fails if `tx_id` was already broadcast, so that two broadcasts of the
-    /// same transaction can't both be sent.
+    /// same transaction can't both be sent, or if a reset deleted it.
     #[instrument(skip(self, raw_signed_tx), level = "debug")]
     pub async fn insert_tx_broadcast(
         &self,
@@ -442,6 +442,20 @@ impl Database {
             initial_max_priority_fee_per_gas.to_be_bytes();
 
         let mut tx = self.pool.begin().await?;
+
+        // A reset of the relayer waits for this, or this waits for the reset
+        // and then fails if the reset deleted the transaction
+        sqlx::query(
+            r#"
+            SELECT 1
+            FROM   relayers
+            WHERE  id = (SELECT relayer_id FROM transactions WHERE id = $1)
+            FOR KEY SHARE
+            "#,
+        )
+        .bind(tx_id)
+        .execute(tx.as_mut())
+        .await?;
 
         sqlx::query(
             r#"
@@ -1436,31 +1450,66 @@ impl Database {
         })
     }
 
+    /// Deletes the transactions of `relayer_id` that were never broadcast,
+    /// and moves its nonce back to the first one that no remaining
+    /// transaction holds.
+    ///
+    /// The nonce never goes below the on-chain nonce or the nonce of a
+    /// broadcast transaction, so no nonce is used twice.
     #[instrument(skip(self), level = "debug")]
     pub async fn purge_unsent_txs(&self, relayer_id: &str) -> eyre::Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        // Waits for, and then blocks, creates and broadcasts of this relayer
         sqlx::query(
             r#"
-            UPDATE relayers
-            SET nonce = current_nonce
-            WHERE id = $1
+            SELECT 1
+            FROM   relayers
+            WHERE  id = $1
+            FOR UPDATE
             "#,
         )
         .bind(relayer_id)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
 
         sqlx::query(
             r#"
-            DELETE FROM transactions
-            WHERE relayer_id = $1
-            AND id NOT IN (
-                SELECT tx_id FROM sent_transactions
+            DELETE FROM transactions t
+            WHERE  t.relayer_id = $1
+            AND    NOT EXISTS (
+                SELECT 1 FROM sent_transactions s WHERE s.tx_id = t.id
             )
             "#,
         )
         .bind(relayer_id)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
+
+        sqlx::query(
+            r#"
+            UPDATE relayers r
+            SET    nonce = GREATEST(
+                       r.current_nonce,
+                       COALESCE(
+                           (
+                               SELECT MAX(t.nonce) + 1
+                               FROM   transactions t
+                               JOIN   sent_transactions s ON s.tx_id = t.id
+                               WHERE  t.relayer_id = r.id
+                           ),
+                           0
+                       )
+                   ),
+                   updated_at = now()
+            WHERE  r.id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
@@ -1592,6 +1641,100 @@ mod tests {
             .await?;
 
         db.purge_unsent_txs(relayer_id).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_racing_with_sends_reuses_no_nonce() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        // The queue limit must stay above the inflight limit after each update
+        for (max_inflight_txs, max_queued_txs) in
+            [(None, Some(2_000)), (Some(1_000), None)]
+        {
+            db.update_relayer(
+                &relayer_id,
+                &RelayerUpdateRequest {
+                    relayer_name: None,
+                    max_inflight_txs,
+                    max_queued_txs,
+                    gas_price_limits: None,
+                    enabled: None,
+                },
+            )
+            .await?;
+        }
+
+        let creates = async {
+            for i in 0..100 {
+                create_tx(&db, &relayer_id, &format!("tx_{i}")).await?;
+            }
+
+            Ok::<_, eyre::Report>(())
+        };
+        // Broadcasting a transaction that a reset deleted fails
+        let broadcasts = async {
+            let mut broadcast_tx_ids = vec![];
+            for _ in 0..50 {
+                for tx in db.get_unsent_txs().await? {
+                    let fee = U256::from(1);
+                    let tx_hash = alloy::primitives::keccak256(&tx.id);
+                    let broadcast = db
+                        .insert_tx_broadcast(
+                            &tx.id,
+                            tx_hash,
+                            tx.id.as_bytes(),
+                            fee,
+                            fee,
+                        )
+                        .await;
+
+                    if broadcast.is_ok() {
+                        broadcast_tx_ids.push(tx.id);
+                    }
+                }
+            }
+
+            Ok::<_, eyre::Report>(broadcast_tx_ids)
+        };
+        let resets = async {
+            for _ in 0..20 {
+                db.purge_unsent_txs(&relayer_id).await?;
+                tokio::task::yield_now().await;
+            }
+
+            Ok::<_, eyre::Report>(())
+        };
+        let ((), broadcast_tx_ids, ()) =
+            tokio::try_join!(creates, broadcasts, resets)?;
+
+        let (sent_txs,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM sent_transactions WHERE tx_id = ANY($1)",
+        )
+        .bind(&broadcast_tx_ids)
+        .fetch_one(&db.pool)
+        .await?;
+        assert_eq!(sent_txs as usize, broadcast_tx_ids.len());
+
+        let (highest_nonce,): (Option<i64>,) = sqlx::query_as(
+            "SELECT MAX(nonce) FROM transactions WHERE relayer_id = $1",
+        )
+        .bind(&relayer_id)
+        .fetch_one(&db.pool)
+        .await?;
+        let relayer = db
+            .get_relayer(&relayer_id)
+            .await?
+            .context("Missing relayer")?;
+        assert!(highest_nonce.is_none_or(|n| (n as u64) < relayer.nonce));
+
+        db.purge_unsent_txs(&relayer_id).await?;
+        let relayer = db
+            .get_relayer(&relayer_id)
+            .await?
+            .context("Missing relayer")?;
+        assert_eq!(relayer.nonce, broadcast_tx_ids.len() as u64);
 
         Ok(())
     }
