@@ -687,110 +687,62 @@ impl Database {
         Ok(())
     }
 
-    /// Returns a list of soft reorged txs
+    /// Points every mined transaction whose valid hash isn't the one in a
+    /// block at the hash that is, and returns the ids of those it changed.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_soft_reorgs(&self) -> eyre::Result<Vec<String>> {
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch txs which have valid tx hash different than what is actually mined
-        let items: Vec<(String, H256Wrapper)> = sqlx::query_as(
+        let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            SELECT t.id, h.tx_hash
-            FROM  transactions t
-            JOIN  sent_transactions s ON t.id = s.tx_id
-            JOIN  tx_hashes h ON t.id = h.tx_id
-            JOIN  block_txs bt ON h.tx_hash = bt.tx_hash
-            WHERE h.tx_hash <> s.valid_tx_hash
-            AND   s.status = $1
+            UPDATE    sent_transactions s
+            SET       valid_tx_hash = h.tx_hash
+            FROM      tx_hashes h
+            JOIN      block_txs bt ON h.tx_hash = bt.tx_hash
+            WHERE     h.tx_id = s.tx_id
+            AND       h.tx_hash <> s.valid_tx_hash
+            AND       s.status = $1
+            RETURNING s.tx_id
             "#,
         )
         .bind(TxStatus::Mined)
-        .fetch_all(tx.as_mut())
+        .fetch_all(&self.pool)
         .await?;
 
-        let (tx_ids, tx_hashes): (Vec<_>, Vec<_>) = items.into_iter().unzip();
-
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    valid_tx_hash = mined.tx_hash
-            FROM   transactions t,
-                   UNNEST($1::TEXT[], $2::BYTEA[]) AS mined(tx_id, tx_hash)
-            WHERE  t.id = mined.tx_id
-            AND    t.id = s.tx_id
-            AND    s.status = $3
-            "#,
-        )
-        .bind(&tx_ids)
-        .bind(&tx_hashes)
-        .bind(TxStatus::Mined)
-        .execute(tx.as_mut())
-        .await?;
-
-        tx.commit().await?;
-
-        Ok(tx_ids)
+        Ok(tx_ids.into_iter().map(|(tx_id,)| tx_id).collect())
     }
 
-    /// Returns a list of hard reorged txs
+    /// Moves every mined transaction none of whose hashes is in a block back
+    /// to pending, with its latest hash as the valid one, and returns the ids
+    /// of those it moved.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_hard_reorgs(&self) -> eyre::Result<Vec<String>> {
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch txs which are marked as mined
-        // but none of the associated tx hashes are present in block txs
-        let items: Vec<(String,)> = sqlx::query_as(
+        let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            WITH reorg_candidates AS (
-                SELECT     t.id, h.tx_hash, bt.chain_id
-                FROM       transactions t
-                JOIN       sent_transactions s ON t.id = s.tx_id
-                JOIN       tx_hashes h ON t.id = h.tx_id
-                LEFT JOIN  block_txs bt ON h.tx_hash = bt.tx_hash
-                WHERE      s.status = $1
+            UPDATE    sent_transactions s
+            SET       status = $1,
+                      valid_tx_hash = (
+                          SELECT tx_hash
+                          FROM   tx_hashes h
+                          WHERE  h.tx_id = s.tx_id
+                          ORDER BY created_at DESC
+                          LIMIT  1
+                      ),
+                      mined_at = NULL
+            WHERE     s.status = $2
+            AND       NOT EXISTS (
+                SELECT 1
+                FROM   tx_hashes h
+                JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
+                WHERE  h.tx_id = s.tx_id
             )
-            SELECT    r.id
-            FROM      reorg_candidates r
-            GROUP BY  r.id
-            HAVING    COUNT(r.chain_id) = 0
-            "#,
-        )
-        .bind(TxStatus::Mined)
-        .fetch_all(tx.as_mut())
-        .await?;
-
-        let tx_ids: Vec<_> = items.into_iter().map(|(x,)| x).collect();
-
-        // Set status to pending
-        // and set valid tx hash to the latest tx hash.
-        // The status may have changed since the select, so check it again
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    status = $1,
-                   valid_tx_hash = (
-                       SELECT tx_hash
-                       FROM   tx_hashes h
-                       WHERE  h.tx_id = s.tx_id
-                       ORDER BY created_at DESC
-                       LIMIT  1
-                   ),
-                   mined_at = NULL
-            FROM   transactions t, UNNEST($2::TEXT[]) AS reorged(tx_id)
-            WHERE  t.id = reorged.tx_id
-            AND    t.id = s.tx_id
-            AND    s.status = $3
+            RETURNING s.tx_id
             "#,
         )
         .bind(TxStatus::Pending)
-        .bind(&tx_ids)
         .bind(TxStatus::Mined)
-        .execute(tx.as_mut())
+        .fetch_all(&self.pool)
         .await?;
 
-        tx.commit().await?;
-
-        Ok(tx_ids)
+        Ok(tx_ids.into_iter().map(|(tx_id,)| tx_id).collect())
     }
 
     /// Marks txs as mined if the associated tx hash is present in a block
@@ -837,54 +789,33 @@ impl Database {
             .collect())
     }
 
-    #[instrument(skip(self), level = "debug")]
+    /// Marks every mined transaction whose valid hash is in a block older
+    /// than `finalization_timestamp` as finalized, and returns the ids of
+    /// those it marked.
+    #[instrument(skip(self), level = "debug", ret)]
     pub async fn finalize_txs(
         &self,
-        finalization_timestmap: DateTime<Utc>,
-    ) -> eyre::Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch txs which are marked as mined, but the associated valid tx hash
-        // is present in a block which is older than the given timestamp
-        let items: Vec<(String,)> = sqlx::query_as(
+        finalization_timestamp: DateTime<Utc>,
+    ) -> eyre::Result<Vec<String>> {
+        let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            SELECT s.tx_id
-            FROM   sent_transactions s
-            JOIN   tx_hashes h ON s.valid_tx_hash = h.tx_hash
-            JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
-            JOIN   blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
-            WHERE  s.status = $1
-            AND    b.timestamp < $2
-            "#,
-        )
-        .bind(TxStatus::Mined)
-        .bind(finalization_timestmap)
-        .fetch_all(tx.as_mut())
-        .await?;
-
-        let tx_ids: Vec<_> = items.into_iter().map(|(x,)| x).collect();
-
-        // Set status to finalized.
-        // The status may have changed since the select, so check it again
-        sqlx::query(
-            r#"
-            UPDATE sent_transactions s
-            SET    status = $1
-            FROM   transactions t, UNNEST($2::TEXT[]) AS finalized(tx_id)
-            WHERE  t.id = finalized.tx_id
-            AND    t.id = s.tx_id
-            AND    s.status = $3
+            UPDATE    sent_transactions s
+            SET       status = $1
+            FROM      block_txs bt
+            JOIN      blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
+            WHERE     bt.tx_hash = s.valid_tx_hash
+            AND       s.status = $2
+            AND       b.timestamp < $3
+            RETURNING s.tx_id
             "#,
         )
         .bind(TxStatus::Finalized)
-        .bind(&tx_ids)
         .bind(TxStatus::Mined)
-        .execute(tx.as_mut())
+        .bind(finalization_timestamp)
+        .fetch_all(&self.pool)
         .await?;
 
-        tx.commit().await?;
-
-        Ok(())
+        Ok(tx_ids.into_iter().map(|(tx_id,)| tx_id).collect())
     }
 
     /// Returns the pending transactions whose latest signed version was
@@ -2210,6 +2141,40 @@ mod tests {
         .execute(&db.pool)
         .await?;
         assert_eq!(txs_at(1).await?, [0, 0]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn finalize_reports_only_the_txs_it_finalized() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let tx_id = create_broadcast_tx(&db).await?;
+        let chain_id = 123;
+        let mined_at = ymd_hms(2023, 11, 23, 12, 32, 2);
+        db.save_block(1, chain_id, mined_at, &[B256::with_last_byte(1)])
+            .await?;
+        db.mine_txs(chain_id).await?;
+
+        // A hard reorg moves the transaction back to pending while
+        // finalizing waits for its row
+        let mut reorg = db.pool.begin().await?;
+        sqlx::query(
+            "UPDATE sent_transactions SET status = $1 WHERE tx_id = $2",
+        )
+        .bind(TxStatus::Pending)
+        .bind(&tx_id)
+        .execute(reorg.as_mut())
+        .await?;
+        let (finalized, committed) =
+            tokio::join!(db.finalize_txs(Utc::now()), async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                reorg.commit().await
+            });
+        committed?;
+
+        assert_eq!(finalized?, Vec::<String>::new());
+        let tx = db.read_tx(&tx_id).await?.context("Missing tx")?;
+        assert_eq!(tx.status, Some(TxStatus::Pending));
 
         Ok(())
     }
