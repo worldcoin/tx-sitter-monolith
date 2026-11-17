@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy::consensus::TxEip1559;
 use alloy::primitives::{keccak256, TxKind, U256};
@@ -34,10 +35,7 @@ async fn escalate_txs(app: &App, ctx: &TaskContext) -> eyre::Result<()> {
 
     let txs_for_escalation = app
         .db
-        .get_txs_for_escalation(
-            app.config.service.escalation_interval,
-            app.config.service.max_escalations,
-        )
+        .get_txs_for_escalation(app.config.service.escalation_interval)
         .await?;
 
     tracing::info!("Got {} transactions to escalate", txs_for_escalation.len());
@@ -88,14 +86,14 @@ async fn escalate_relayer_txs(
     Ok(())
 }
 
-/// Sends `tx` again with higher fees, unless it turns out not to need it.
+/// Sends the latest signed version of `tx` again, then replaces it with a
+/// higher-fee version if [`should_bump_fees`] says so and `tx` has fewer than
+/// `max_escalations` escalations.
 ///
-/// First the stored bytes of its latest version are sent again. A node that
-/// didn't have them, because their send failed or the process stopped before
-/// it, takes them now, and the fees are left alone until the next escalation.
-/// A node that is unavailable or reports the nonce as used also skips the
-/// escalation. Otherwise the replacement is signed and stored, and only sent
-/// if no concurrent escalation stored one first.
+/// Sending the stored bytes again recovers a transaction whose last send
+/// failed, or whose process stopped before sending it, however often it was
+/// escalated. The replacement is signed and stored, and only sent if no
+/// concurrent escalation stored one first.
 #[tracing::instrument(
     skip(app, ctx, relayer, tx),
     fields(
@@ -122,24 +120,32 @@ async fn escalate_relayer_tx(
 
     let provider = app.http_provider(tx.chain_id).await?;
 
-    if let Some(raw_signed_tx) = &tx.raw_signed_tx {
-        match send_raw_tx(&provider, ctx, relayer, &tx.id, raw_signed_tx).await
-        {
-            SendOutcome::Accepted => {
-                tracing::warn!(
-                    relayer_id = relayer.id,
-                    relayer_address = %relayer.address,
-                    tx_id = tx.id,
-                    "Re-sent a transaction the node didn't have"
-                );
-                return Ok(());
-            }
-            SendOutcome::Failed(SendFailure::NonceTooLow) => return Ok(()),
-            SendOutcome::Failed(failure) if failure.is_retryable() => {
-                return Ok(())
-            }
-            SendOutcome::AlreadyKnown | SendOutcome::Failed(_) => {}
-        }
+    let resent = match &tx.raw_signed_tx {
+        Some(raw_signed_tx) => Some(
+            send_raw_tx(&provider, ctx, relayer, &tx.id, raw_signed_tx).await,
+        ),
+        None => None,
+    };
+
+    if resent == Some(SendOutcome::Accepted) {
+        metrics::counter!(
+            "tx_resend_accepted",
+            &[("chain_id", tx.chain_id.to_string())]
+        )
+        .increment(1);
+    }
+
+    let max_escalations = app.config.service.max_escalations;
+    let latest_hash_age = Duration::from_millis(tx.latest_hash_age_ms);
+
+    if tx.escalation_count >= max_escalations
+        || !should_bump_fees(
+            resent,
+            latest_hash_age,
+            app.config.service.escalation_interval,
+        )
+    {
+        return Ok(());
     }
 
     tracing::info!(
@@ -225,31 +231,65 @@ async fn escalate_relayer_tx(
         return Ok(());
     }
 
-    send_raw_tx(&provider, ctx, relayer, &tx.id, &raw_signed_tx).await;
+    let outcome =
+        send_raw_tx(&provider, ctx, relayer, &tx.id, &raw_signed_tx).await;
 
-    tracing::info!(
-        relayer_id = relayer.id,
-        relayer_address = %relayer.address,
-        tx_id = tx.id,
-        ?tx_hash,
-        ?initial_max_priority_fee_per_gas,
-        ?initial_max_fee_per_gas,
-        ?max_priority_fee_per_gas,
-        ?max_fee_per_gas,
-        "Escalated transaction"
-    );
-
-    if escalation >= app.config.service.max_escalations {
-        tracing::warn!(
+    if let SendOutcome::Accepted | SendOutcome::AlreadyKnown = outcome {
+        tracing::info!(
             relayer_id = relayer.id,
             relayer_address = %relayer.address,
             tx_id = tx.id,
-            escalation_count = escalation,
-            "Too many escalations"
+            ?tx_hash,
+            ?initial_max_priority_fee_per_gas,
+            ?initial_max_fee_per_gas,
+            ?max_priority_fee_per_gas,
+            ?max_fee_per_gas,
+            "Escalated transaction"
         );
     }
 
+    if escalation == max_escalations {
+        tracing::error!(
+            relayer_id = relayer.id,
+            relayer_address = %relayer.address,
+            chain_id = tx.chain_id,
+            tx_id = tx.id,
+            escalation_count = escalation,
+            "Transaction reached max escalations, its fees are no longer bumped"
+        );
+        metrics::counter!(
+            "tx_escalation_limit_reached",
+            &[("chain_id", tx.chain_id.to_string())]
+        )
+        .increment(1);
+    }
+
     Ok(())
+}
+
+/// Decides whether a pending transaction needs a higher-fee replacement,
+/// given what came of sending its latest version again: `None` if that
+/// version has no stored bytes.
+///
+/// A node that only now took the latest version, because it lost it or
+/// never got it, gets until the version is two escalation intervals old
+/// before the fees go up. That defers each bump at most once, also for nodes
+/// that answer every send as if it were new. Any failure but low fees leaves
+/// the fees alone, because the replacement would fail the same way.
+fn should_bump_fees(
+    resent: Option<SendOutcome>,
+    latest_hash_age: Duration,
+    escalation_interval: Duration,
+) -> bool {
+    match resent {
+        None
+        | Some(SendOutcome::AlreadyKnown)
+        | Some(SendOutcome::Failed(SendFailure::Underpriced)) => true,
+        Some(SendOutcome::Accepted) => {
+            latest_hash_age >= 2 * escalation_interval
+        }
+        Some(SendOutcome::Failed(_)) => false,
+    }
 }
 
 fn split_txs_per_relayer(
@@ -275,13 +315,12 @@ fn split_txs_per_relayer(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use alloy::node_bindings::{Anvil, AnvilInstance};
     use alloy::primitives::{Address, Bytes, B256};
     use alloy::providers::{Provider, RootProvider};
     use alloy::signers::local::PrivateKeySigner;
     use postgres_docker_utils::DockerContainerGuard;
+    use test_case::test_case;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -334,6 +373,50 @@ mod tests {
         assert!(setup.is_pending_on_node(hashes[1]).await?);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn bumps_fees_of_a_tx_the_node_keeps_dropping() -> eyre::Result<()> {
+        let setup = Setup::new().await?;
+        let original = setup.broadcast(SendsTx::Yes).await?;
+        let interval = setup.app.config.service.escalation_interval;
+
+        for (latest_hash_age, expected_escalation_count) in
+            [(interval * 3 / 2, 0), (interval * 5 / 2, 1)]
+        {
+            setup.drop_from_node(original).await?;
+            setup.age_latest_hash(latest_hash_age).await?;
+
+            let tx = setup.tx_for_escalation().await?;
+            escalate_relayer_tx(&setup.app, &ctx(), &setup.relayer, tx).await?;
+
+            let (escalation_count, hashes) = setup.stored_escalations().await?;
+            assert_eq!(escalation_count, expected_escalation_count);
+            assert!(setup.is_pending_on_node(*hashes.last().unwrap()).await?);
+        }
+
+        Ok(())
+    }
+
+    #[test_case(None, 1 => true ; "without stored bytes")]
+    #[test_case(Some(SendOutcome::AlreadyKnown), 1 => true ; "known to the node")]
+    #[test_case(Some(SendOutcome::Accepted), 1 => false ; "taken by the node only now")]
+    #[test_case(Some(SendOutcome::Accepted), 2 => true ; "taken by the node only now two intervals after storing")]
+    #[test_case(Some(SendOutcome::Failed(SendFailure::Underpriced)), 1 => true ; "underpriced")]
+    #[test_case(Some(SendOutcome::Failed(SendFailure::Rejected)), 9 => false ; "rejected")]
+    #[test_case(Some(SendOutcome::Failed(SendFailure::Timeout)), 9 => false ; "node unavailable")]
+    #[test_case(Some(SendOutcome::Failed(SendFailure::NonceTooLow)), 9 => false ; "nonce used")]
+    fn bumps_fees(
+        resent: Option<SendOutcome>,
+        latest_hash_age_in_intervals: u32,
+    ) -> bool {
+        let interval = Duration::from_secs(60);
+
+        should_bump_fees(
+            resent,
+            interval * latest_hash_age_in_intervals,
+            interval,
+        )
     }
 
     fn ctx() -> TaskContext {
@@ -460,11 +543,8 @@ mod tests {
         }
 
         async fn tx_for_escalation(&self) -> eyre::Result<TxForEscalation> {
-            let mut txs = self
-                .app
-                .db
-                .get_txs_for_escalation(Duration::ZERO, 100)
-                .await?;
+            let mut txs =
+                self.app.db.get_txs_for_escalation(Duration::ZERO).await?;
             assert_eq!(txs.len(), 1);
 
             Ok(txs.remove(0))
@@ -492,6 +572,36 @@ mod tests {
                     .map(|(hash,)| B256::from_slice(&hash))
                     .collect(),
             ))
+        }
+
+        /// Makes the node forget `tx_hash`, as a node that evicts it from its
+        /// pool does.
+        async fn drop_from_node(&self, tx_hash: B256) -> eyre::Result<()> {
+            self.provider
+                .raw_request::<_, serde_json::Value>(
+                    "anvil_dropTransaction".into(),
+                    (tx_hash,),
+                )
+                .await?;
+
+            Ok(())
+        }
+
+        /// Moves the time the latest version was stored back to
+        /// `latest_hash_age` ago.
+        async fn age_latest_hash(
+            &self,
+            latest_hash_age: Duration,
+        ) -> eyre::Result<()> {
+            sqlx::query(
+                "UPDATE tx_hashes SET created_at = now() - $2 WHERE tx_id = $1 AND NOT escalated",
+            )
+            .bind(TX_ID)
+            .bind(latest_hash_age)
+            .execute(&self.app.db.pool)
+            .await?;
+
+            Ok(())
         }
 
         async fn is_pending_on_node(

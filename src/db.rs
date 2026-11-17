@@ -838,18 +838,21 @@ impl Database {
         Ok(())
     }
 
+    /// Returns the pending transactions whose latest signed version was
+    /// stored more than `escalation_interval` ago, however often they were
+    /// escalated.
     #[instrument(skip(self), level = "debug")]
     pub async fn get_txs_for_escalation(
         &self,
         escalation_interval: Duration,
-        max_escalations: usize,
     ) -> eyre::Result<Vec<TxForEscalation>> {
         Ok(sqlx::query_as(
             r#"
             SELECT r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce,
                    t.blobs, r.key_id, r.chain_id,
                    s.initial_max_fee_per_gas, s.initial_max_priority_fee_per_gas, s.escalation_count,
-                   h.raw_signed_tx
+                   h.raw_signed_tx,
+                   GREATEST(EXTRACT(EPOCH FROM now() - h.created_at) * 1000, 0)::BIGINT AS latest_hash_age_ms
             FROM   transactions t
             JOIN   sent_transactions s ON t.id = s.tx_id
             JOIN   tx_hashes h ON t.id = h.tx_id
@@ -857,19 +860,19 @@ impl Database {
             WHERE  now() - h.created_at > $1
             AND    s.status = $2
             AND    NOT h.escalated
-            AND    s.escalation_count < $3
             "#,
         )
         .bind(escalation_interval)
         .bind(TxStatus::Pending)
-        .bind(max_escalations as i64)
         .fetch_all(&self.pool)
         .await?)
     }
 
     /// Records `tx_hash` as the replacement of `tx_id` that follows its
     /// `escalation_count` earlier escalations. It must be stored before it is
-    /// sent.
+    /// sent. The versions it replaces keep their hashes, so that indexing
+    /// still finds them mined, but drop their signed bytes, which are never
+    /// sent again.
     ///
     /// Returns `false`, and changes nothing, unless `tx_id` is still pending
     /// with exactly `escalation_count` escalations. Then another escalation or
@@ -912,8 +915,10 @@ impl Database {
         sqlx::query(
             r#"
             UPDATE tx_hashes
-            SET    escalated = true
+            SET    escalated = true,
+                   raw_signed_tx = NULL
             WHERE  tx_id = $1
+            AND    NOT escalated
             "#,
         )
         .bind(tx_id)
@@ -1884,6 +1889,14 @@ mod tests {
         assert_eq!(max_fee_per_gas.0, U256::from(hash_byte) * U256::from(10));
         assert_eq!(max_priority_fee_per_gas.0, U256::from(hash_byte));
         assert!(!escalated);
+
+        let (original_raw_signed_tx,): (Option<Vec<u8>>,) = sqlx::query_as(
+            "SELECT raw_signed_tx FROM tx_hashes WHERE tx_hash = $1",
+        )
+        .bind(hashes[0].as_slice())
+        .fetch_one(&db.pool)
+        .await?;
+        assert_eq!(original_raw_signed_tx, None);
 
         Ok(())
     }

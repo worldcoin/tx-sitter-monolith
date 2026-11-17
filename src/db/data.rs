@@ -47,6 +47,9 @@ pub struct TxForEscalation {
     /// The bytes of the latest signed version, `None` if it was stored
     /// before signed bytes were kept
     pub raw_signed_tx: Option<Vec<u8>>,
+    /// Milliseconds since the latest signed version was stored
+    #[sqlx(try_from = "i64")]
+    pub latest_hash_age_ms: u64,
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]

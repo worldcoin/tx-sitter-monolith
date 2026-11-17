@@ -1,5 +1,6 @@
 mod common;
 
+use tx_sitter::types::TransactionPriority;
 use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
 use tx_sitter_client::apis::configuration::Configuration;
 use tx_sitter_client::apis::relayer_v1_api::{
@@ -61,6 +62,72 @@ async fn escalation() -> eyre::Result<()> {
         initial_tx_hash, final_tx_hash,
         "Escalation should have occurred"
     );
+
+    Ok(())
+}
+
+/// A transaction the relayer can't pay for is sent again on every
+/// escalation, however long that takes, without bumping its fees.
+#[tokio::test]
+async fn unfunded_tx_mines_once_funded_after_max_escalations(
+) -> eyre::Result<()> {
+    setup_tracing();
+    let max_escalations = 2;
+
+    let (db_url, _db_container) = setup_db().await?;
+    let anvil = AnvilBuilder::default().spawn().await?;
+    let (_service, client) = ServiceBuilder::default()
+        .escalation_interval(ESCALATION_INTERVAL)
+        .max_escalations(max_escalations)
+        .build(&anvil, &db_url)
+        .await?;
+    let api_key = create_api_key(&client).await?;
+    let provider = setup_provider(anvil.endpoint()).await?;
+    let db = connect_db(&db_url).await?;
+
+    let balance = provider.get_balance(DEFAULT_ANVIL_ACCOUNT).await?;
+    set_relayer_balance(&provider, U256::ZERO).await?;
+
+    // The API refuses transactions the relayer can't pay for
+    let tx_id = "unfunded";
+    db.create_transaction(
+        tx_id,
+        ARBITRARY_ADDRESS,
+        &[],
+        U256::from(1),
+        U256::from(21_000),
+        TransactionPriority::Regular,
+        None,
+        DEFAULT_RELAYER_ID,
+    )
+    .await?;
+
+    tokio::time::sleep(ESCALATION_INTERVAL * (max_escalations as u32 + 2))
+        .await;
+    let (escalation_count,): (i64,) = sqlx::query_as(
+        "SELECT escalation_count FROM sent_transactions WHERE tx_id = $1",
+    )
+    .bind(tx_id)
+    .fetch_one(&db.pool)
+    .await?;
+    assert_eq!(escalation_count, 0);
+
+    set_relayer_balance(&provider, balance).await?;
+    await_mined_tx_hash(&client, &api_key, tx_id).await?;
+
+    Ok(())
+}
+
+async fn set_relayer_balance(
+    provider: &RootProvider,
+    balance: U256,
+) -> eyre::Result<()> {
+    provider
+        .raw_request::<_, ()>(
+            "anvil_setBalance".into(),
+            (DEFAULT_ANVIL_ACCOUNT, balance),
+        )
+        .await?;
 
     Ok(())
 }

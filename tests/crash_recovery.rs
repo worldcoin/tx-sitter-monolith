@@ -13,6 +13,7 @@ use tx_sitter::keys::UniversalSigner;
 use crate::common::prelude::*;
 
 const ESCALATION_INTERVAL: Duration = Duration::from_secs(10);
+const MAX_ESCALATIONS: usize = 100;
 const GWEI: u128 = 1_000_000_000;
 
 #[tokio::test]
@@ -32,7 +33,7 @@ async fn worker_sends_broadcast_stored_before_a_crash() -> eyre::Result<()> {
         )
         .await?;
 
-    let (_worker, _) = setup.start_worker().await?;
+    let (_worker, _) = setup.start_worker(MAX_ESCALATIONS).await?;
 
     let mined =
         await_mined_tx_hash(&setup.client, &setup.api_key, &setup.tx_id)
@@ -44,8 +45,11 @@ async fn worker_sends_broadcast_stored_before_a_crash() -> eyre::Result<()> {
     Ok(())
 }
 
+/// The stored escalation is the last one allowed, so only re-sending it
+/// gets the transaction mined.
 #[tokio::test]
-async fn worker_sends_escalation_stored_before_a_crash() -> eyre::Result<()> {
+async fn worker_sends_last_escalation_stored_before_a_crash() -> eyre::Result<()>
+{
     setup_tracing();
     let setup = Setup::new().await?;
 
@@ -75,7 +79,7 @@ async fn worker_sends_escalation_stored_before_a_crash() -> eyre::Result<()> {
         .await?;
     assert!(is_stored);
 
-    let (_worker, _) = setup.start_worker().await?;
+    let (_worker, _) = setup.start_worker(1).await?;
 
     let mined =
         await_mined_tx_hash(&setup.client, &setup.api_key, &setup.tx_id)
@@ -132,10 +136,12 @@ impl Setup {
 
     async fn start_worker(
         &self,
+        max_escalations: usize,
     ) -> eyre::Result<(tx_sitter::service::Service, Configuration)> {
         ServiceBuilder::default()
             .role(ServiceRole::Worker)
             .escalation_interval(ESCALATION_INTERVAL)
+            .max_escalations(max_escalations)
             .build(&self.anvil, &self.db_url)
             .await
     }
