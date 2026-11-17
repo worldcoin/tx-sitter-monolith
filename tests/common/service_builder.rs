@@ -200,7 +200,6 @@ impl ServiceBuilder {
         let client_config =
             tx_sitter_client::apis::configuration::ConfigurationBuilder::new()
                 .base_path(format!("http://{}", service.local_addr()))
-                .basic_auth("".to_string(), Some("".to_string()))
                 .build();
 
         Ok((service, client_config))

@@ -19,7 +19,6 @@ services:
       - TX_SITTER__DATABASE__CONNECTION_STRING=postgres://postgres:postgres@db:5432/tx-sitter?sslmode=disable
       - TX_SITTER__KEYS__KIND=local
       - TX_SITTER__SERVER__HOST=0.0.0.0:3000
-      - TX_SITTER__SERVER__DISABLE_AUTH=true
       - RUST_LOG=info
 
   db:

@@ -406,6 +406,10 @@ pub struct GasPriceLimitConfig {
     pub value: DecimalU256,
 }
 
+// Unknown fields are ignored rather than denied, so that deployments can
+// keep setting `server.username` and `server.password`: an image from before
+// the static config serves `/1/admin/*` to anyone while they are unset, so
+// they must stay set while rolling back to such an image is possible.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ServerConfig {
