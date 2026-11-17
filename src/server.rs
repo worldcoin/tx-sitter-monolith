@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use alloy::primitives::U256;
 use alloy::providers::Provider;
 use eyre::ContextCompat;
 use poem::http::StatusCode;
@@ -273,6 +274,14 @@ impl RelayerApi {
 
         tracing::info!(?req, "Send tx");
 
+        let gas_limit: u64 = req.gas_limit.0.try_into().map_err(|_| {
+            poem::error::Error::from_string(
+                format!("Gas limit must be at most {}", u64::MAX),
+                StatusCode::BAD_REQUEST,
+            )
+        })?;
+        let gas_limit = U256::from(gas_limit);
+
         let tx_id = if let Some(id) = req.tx_id {
             id
         } else {
@@ -314,10 +323,10 @@ impl RelayerApi {
             .get_latest_block_fees_by_chain_id(relayer.chain_id)
             .await?;
         if let Some(block_fees) = block_fees {
-            let gas_limit =
-                relayer_queued_tx_gas_limit_sum.saturating_add(req.gas_limit.0);
+            let total_gas_limit =
+                relayer_queued_tx_gas_limit_sum.saturating_add(gas_limit);
             let estimated_transactions_cost =
-                block_fees.gas_price.saturating_mul(gas_limit);
+                block_fees.gas_price.saturating_mul(total_gas_limit);
 
             // TODO: Cache?
             let http_provider = app.http_provider(relayer.chain_id).await?;
@@ -350,7 +359,7 @@ impl RelayerApi {
                 req.to.0,
                 req.data.as_ref().map(|d| &d.0[..]).unwrap_or(&[]),
                 req.value.0,
-                req.gas_limit.0,
+                gas_limit,
                 req.priority,
                 req.blobs,
                 api_token.relayer_id(),
