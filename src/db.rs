@@ -1516,8 +1516,8 @@ impl Database {
     /// holds `version`.
     ///
     /// - Networks are upserted, and `rpcs` gets the first HTTP RPC and the WS
-    ///   RPC of each, which previous versions read. Networks missing from
-    ///   `networks` are left as they are.
+    ///   RPC of each, which previous versions read and `config dump` prints.
+    ///   Networks missing from `networks` are left as they are.
     /// - Relayers are upserted and keep their nonces.
     /// - Relayers missing from `relayers` are disabled rather than deleted,
     ///   because their transactions reference them, and lose their API keys.
@@ -1572,8 +1572,8 @@ impl Database {
             if enabled_relayers > 0 {
                 eyre::bail!(
                     "The config defines no relayers, but the database has \
-                     {enabled_relayers} enabled relayers. Add them to the \
-                     config, or disable them first."
+                     {enabled_relayers} enabled relayers. Run `tx-sitter \
+                     config dump` to write them into the config."
                 );
             }
         }
@@ -1735,6 +1735,31 @@ impl Database {
         .bind(TxStatus::Pending)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    /// Returns the hashes of the API keys of every relayer, by relayer id.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_api_key_hashes(
+        &self,
+    ) -> eyre::Result<Vec<(String, B256)>> {
+        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+            r#"
+            SELECT   relayer_id, key_hash
+            FROM     api_keys
+            ORDER BY relayer_id, key_hash
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|(relayer_id, key_hash)| {
+                let key_hash = B256::try_from(key_hash.as_slice())
+                    .context("API key hash is not 32 bytes")?;
+
+                Ok((relayer_id, key_hash))
+            })
+            .collect()
     }
 
     #[instrument(skip(self), level = "debug")]

@@ -339,6 +339,7 @@ pub struct RelayerConfig {
     pub key: RelayerKey,
 
     /// The address `key` must derive, checked at startup
+    #[serde(serialize_with = "serialize_checksummed")]
     pub address: Address,
 
     #[serde(default = "default::max_inflight_txs")]
@@ -361,6 +362,13 @@ pub struct RelayerConfig {
     /// keys it accepts
     #[serde(default)]
     pub api_key_hashes: Vec<B256>,
+}
+
+fn serialize_checksummed<S: serde::Serializer>(
+    address: &Address,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&address.to_checksum(None))
 }
 
 /// The key a relayer signs with
