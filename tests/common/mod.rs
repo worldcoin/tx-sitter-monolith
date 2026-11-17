@@ -35,6 +35,7 @@ pub mod prelude {
     pub use futures::StreamExt;
     pub use reqwest::StatusCode;
     pub use tokio_util::sync::CancellationToken;
+    pub use tx_sitter::config::ServiceRole;
     pub use tx_sitter_client::apis::configuration::Configuration;
     pub use tx_sitter_client::models::*;
     pub use url::Url;

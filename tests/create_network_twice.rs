@@ -4,6 +4,7 @@ use tx_sitter_client::apis::admin_v1_api::CreateNetworkParams;
 
 use crate::common::prelude::*;
 
+/// Networks are reconciled every 30 seconds
 const NETWORK_PICKUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[tokio::test]

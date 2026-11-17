@@ -59,7 +59,15 @@ The Tx Sitter can be configured in 2 ways:
     TX_SITTER__KEYS__KIND="local"
     ```
 
-### Probes and shutdown
+### Roles, probes and shutdown
+
+`service.role` (`TX_SITTER__SERVICE__ROLE`) selects what a process runs:
+
+- `all` (default): the HTTP API and the background tasks.
+- `api`: the HTTP API only.
+- `worker`: the background tasks, with only the health endpoints over HTTP.
+
+Run exactly one `worker` or `all` process per database, next to any number of `api` processes.
 
 Probes:
 

@@ -6,7 +6,8 @@ use tokio_util::sync::CancellationToken;
 use tx_sitter::api_key::ApiKey;
 use tx_sitter::config::{
     Config, DatabaseConfig, KeysConfig, LocalKeysConfig, Predefined,
-    PredefinedNetwork, PredefinedRelayer, ServerConfig, TxSitterConfig,
+    PredefinedNetwork, PredefinedRelayer, ServerConfig, ServiceRole,
+    TxSitterConfig,
 };
 use tx_sitter::service::Service;
 use tx_sitter_client::apis::configuration::Configuration;
@@ -17,6 +18,7 @@ use super::prelude::{
 };
 
 pub struct ServiceBuilder {
+    role: ServiceRole,
     escalation_interval: Duration,
     soft_reorg_interval: Duration,
     hard_reorg_interval: Duration,
@@ -31,6 +33,7 @@ pub struct ServiceBuilder {
 impl Default for ServiceBuilder {
     fn default() -> Self {
         Self {
+            role: ServiceRole::All,
             escalation_interval: Duration::from_secs(5),
             soft_reorg_interval: Duration::from_secs(10),
             hard_reorg_interval: Duration::from_secs(15),
@@ -45,6 +48,11 @@ impl Default for ServiceBuilder {
 }
 
 impl ServiceBuilder {
+    pub fn role(mut self, role: ServiceRole) -> Self {
+        self.role = role;
+        self
+    }
+
     pub fn escalation_interval(mut self, interval: Duration) -> Self {
         self.escalation_interval = interval;
         self
@@ -120,6 +128,7 @@ impl ServiceBuilder {
 
         let config = Config {
             service: TxSitterConfig {
+                role: self.role,
                 escalation_interval: self.escalation_interval,
                 max_escalations: self.max_escalations,
                 soft_reorg_interval: self.soft_reorg_interval,
@@ -146,7 +155,7 @@ impl ServiceBuilder {
 
         let service = Service::new(config, self.shutdown).await?;
 
-        if self.inserts_predefined_values {
+        if self.role.runs_tasks() && self.inserts_predefined_values {
             await_estimates(
                 &service,
                 DEFAULT_ANVIL_CHAIN_ID,

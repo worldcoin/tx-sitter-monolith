@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy::signers::local::PrivateKeySigner;
 use eyre::Context;
@@ -10,8 +11,10 @@ use tokio_util::sync::CancellationToken;
 use crate::app::App;
 use crate::config::Config;
 use crate::keys::local_keys::signing_key_from_hex;
-use crate::task_runner::TaskRunner;
+use crate::task_runner::{TaskContext, TaskRunner};
 use crate::tasks;
+
+const NETWORK_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct Service {
     app: Arc<App>,
@@ -22,7 +25,7 @@ pub struct Service {
 }
 
 impl Service {
-    /// Starts the HTTP server and the background tasks.
+    /// Starts the parts of the service that `config.service.role` selects.
     ///
     /// The service runs until `shutdown` is cancelled, see [`Service::wait`].
     pub async fn new(
@@ -32,9 +35,6 @@ impl Service {
         let app = Arc::new(App::new(config).await?);
 
         initialize_predefined_values(&app).await?;
-
-        tracing::info!("Getting network chain ids");
-        let chain_ids = app.db.get_network_chain_ids().await?;
 
         let task_runner = Arc::new(TaskRunner::new(
             app.clone(),
@@ -49,10 +49,9 @@ impl Service {
         )
         .await?;
 
-        tracing::info!("Spawning tasks");
-        add_background_tasks(&task_runner, &app);
-        for chain_id in chain_ids {
-            Self::spawn_chain_tasks(&task_runner, chain_id);
+        if app.config.service.role.runs_tasks() {
+            tracing::info!("Spawning tasks");
+            add_background_tasks(&task_runner, &app);
         }
 
         Ok(Self {
@@ -62,19 +61,6 @@ impl Service {
             local_addr: server.local_addr(),
             server_handle: server.server_handle,
         })
-    }
-
-    /// Spawns the tasks that index `chain_id` and estimate its fees, unless
-    /// they are already running.
-    pub fn spawn_chain_tasks(task_runner: &TaskRunner<App>, chain_id: u64) {
-        task_runner
-            .add_task(format!("index_blocks/{chain_id}"), move |app, ctx| {
-                tasks::index::index_chain(app, ctx, chain_id)
-            });
-        task_runner
-            .add_task(format!("estimate_fees/{chain_id}"), move |app, ctx| {
-                tasks::index::estimate_gas(app, ctx, chain_id)
-            });
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -139,6 +125,36 @@ fn add_background_tasks(task_runner: &Arc<TaskRunner<App>>, app: &App) {
             task_runner.add_task("emit_metrics", tasks::emit_metrics);
         }
     }
+
+    let runner = task_runner.clone();
+    task_runner.add_task("reconcile_networks", move |app, ctx| {
+        reconcile_networks(app, ctx, runner.clone())
+    });
+}
+
+/// Keeps one set of chain tasks running for every network in the database,
+/// including networks added after startup.
+async fn reconcile_networks(
+    app: Arc<App>,
+    ctx: TaskContext,
+    task_runner: Arc<TaskRunner<App>>,
+) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
+        for chain_id in app.db.get_network_chain_ids().await? {
+            task_runner.add_task(
+                format!("index_blocks/{chain_id}"),
+                move |app, ctx| tasks::index::index_chain(app, ctx, chain_id),
+            );
+            task_runner.add_task(
+                format!("estimate_fees/{chain_id}"),
+                move |app, ctx| tasks::index::estimate_gas(app, ctx, chain_id),
+            );
+        }
+
+        ctx.idle(NETWORK_RECONCILIATION_INTERVAL).await;
+    }
+
+    Ok(())
 }
 
 async fn initialize_predefined_values(
