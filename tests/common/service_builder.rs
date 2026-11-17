@@ -67,6 +67,7 @@ impl ServiceBuilder {
                 soft_reorg_interval: self.soft_reorg_interval,
                 hard_reorg_interval: self.hard_reorg_interval,
                 block_stream_timeout: Duration::from_secs(60),
+                rpc_timeout: Duration::from_secs(10),
                 telemetry: None,
                 predefined: Some(Predefined {
                     network: PredefinedNetwork {

@@ -1,3 +1,4 @@
+use std::future::IntoFuture;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,7 +38,14 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     let rpc = app.http_provider(chain_id).await?;
 
     tracing::info!("Subscribing to new blocks");
-    let mut blocks_stream = ws_rpc.subscribe_blocks().await?.into_stream();
+    let mut blocks_stream = timeout(
+        app.config.service.rpc_timeout,
+        ws_rpc.subscribe_blocks().into_future(),
+    )
+    .await
+    .context("Timed out subscribing to new blocks")?
+    .context("Subscribing to new blocks")?
+    .into_stream();
 
     tracing::info!("Backfilling blocks");
     if let Some(latest_block) = blocks_stream.next().await {

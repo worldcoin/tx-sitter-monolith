@@ -1,24 +1,42 @@
 use alloy::network::TxSigner;
 use alloy::signers::aws::AwsSigner;
 use aws_config::BehaviorVersion;
+use aws_sdk_kms::config::retry::RetryConfig;
+use aws_sdk_kms::config::timeout::TimeoutConfig;
 use aws_sdk_kms::types::{KeySpec, KeyUsageType, Tag};
 use eyre::{Context, ContextCompat};
 
 use super::{KeysSource, UniversalSigner};
 use crate::config::KmsKeysConfig;
 
+/// Attempts per KMS operation, the first one included.
+const KMS_MAX_ATTEMPTS: u32 = 3;
+
 pub struct KmsKeys {
     kms_client: aws_sdk_kms::Client,
 }
 
 impl KmsKeys {
-    pub async fn new(_config: &KmsKeysConfig) -> eyre::Result<Self> {
+    pub async fn new(config: &KmsKeysConfig) -> eyre::Result<Self> {
         tracing::info!("Initializing AWS client - loading config");
         let aws_config =
             aws_config::load_defaults(BehaviorVersion::latest()).await;
 
         tracing::info!(?aws_config, "Initializing KMS client");
-        let kms_client = aws_sdk_kms::Client::new(&aws_config);
+        let kms_config = aws_sdk_kms::config::Builder::from(&aws_config)
+            .retry_config(
+                RetryConfig::standard().with_max_attempts(KMS_MAX_ATTEMPTS),
+            )
+            .timeout_config(
+                TimeoutConfig::builder()
+                    .operation_timeout(config.kms_timeout)
+                    .operation_attempt_timeout(
+                        config.kms_timeout / KMS_MAX_ATTEMPTS,
+                    )
+                    .build(),
+            )
+            .build();
+        let kms_client = aws_sdk_kms::Client::from_conf(kms_config);
 
         tracing::info!("Initialized KMS client");
 
