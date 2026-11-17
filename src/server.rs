@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use alloy::primitives::U256;
 use alloy::providers::Provider;
+use base_api_types::DecimalU256;
 use eyre::{Context, ContextCompat};
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
@@ -20,6 +21,7 @@ use url::Url;
 
 use crate::api_key::ApiKey;
 use crate::app::App;
+use crate::db::data::RelayerInfo;
 use crate::db::CreateResult;
 use crate::task_runner::{TaskHealth, TaskRunner};
 use crate::types::{
@@ -274,13 +276,7 @@ impl RelayerApi {
 
         tracing::info!(?req, "Send tx");
 
-        let gas_limit: u64 = req.gas_limit.0.try_into().map_err(|_| {
-            poem::error::Error::from_string(
-                format!("Gas limit must be at most {}", u64::MAX),
-                StatusCode::BAD_REQUEST,
-            )
-        })?;
-        let gas_limit = U256::from(gas_limit);
+        let gas_limit = parse_gas_limit(&req.gas_limit)?;
 
         let tx_id = if let Some(id) = req.tx_id {
             id
@@ -288,68 +284,9 @@ impl RelayerApi {
             uuid::Uuid::new_v4().to_string()
         };
 
-        let relayer = app
-            .db
-            .get_relayer(api_token.relayer_id())
-            .await?
-            .context("Missing relayer")?;
-
-        if !relayer.enabled {
-            return Err(poem::error::Error::from_string(
-                "Relayer is disabled".to_string(),
-                StatusCode::FORBIDDEN,
-            ));
-        }
-
-        // Rejects early, before the balance check calls the RPC. The
-        // transaction is only admitted by `create_transaction`
-        let relayer_queued_tx_count = app
-            .db
-            .get_relayer_pending_txs(api_token.relayer_id())
-            .await?;
-
-        if relayer_queued_tx_count >= relayer.max_queued_txs as usize {
-            return Err(queue_full_error());
-        }
-
-        let relayer_queued_tx_gas_limit_sum = app
-            .db
-            .get_relayer_pending_txs_gas_limit_sum(api_token.relayer_id())
-            .await?;
-
-        let block_fees = app
-            .db
-            .get_latest_block_fees_by_chain_id(relayer.chain_id)
-            .await?;
-        if let Some(block_fees) = block_fees {
-            let total_gas_limit =
-                relayer_queued_tx_gas_limit_sum.saturating_add(gas_limit);
-            let estimated_transactions_cost =
-                block_fees.gas_price.saturating_mul(total_gas_limit);
-
-            // TODO: Cache?
-            let http_provider = app.http_provider(relayer.chain_id).await?;
-
-            let balance =
-                http_provider.get_balance(relayer.address.0).await.map_err(
-                    |err| eyre::eyre!("Error checking balance: {}", err),
-                )?;
-
-            if balance < estimated_transactions_cost {
-                tracing::warn!(
-                    relayer_id = relayer.id,
-                    relayer_address = %relayer.address,
-                    balance = %balance,
-                    estimated_transactions_cost = %estimated_transactions_cost,
-                    "Relayer funds are insufficient for transaction to be mined"
-                );
-
-                return Err(poem::error::Error::from_string(
-                    "Relayer funds are insufficient for transaction to be mined.".to_string(),
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                ));
-            }
-        }
+        let relayer =
+            ensure_relayer_accepts_tx(app, api_token.relayer_id(), gas_limit)
+                .await?;
 
         let res = app
             .db
@@ -372,34 +309,15 @@ impl RelayerApi {
             // v1 sends store no request hash, so an existing id is always a
             // conflict
             CreateResult::Conflict | CreateResult::Repeat => {
-                return Err(poem::error::Error::from_response(
-                    ErrorResponse::new(
-                        StatusCode::CONFLICT,
-                        "transaction_already_exists",
-                        "Transaction with same id already exists.",
-                    )
-                    .into_response(),
-                ));
+                return Err(SendTxError::TxIdConflict.into())
             }
-            CreateResult::QueueFull => return Err(queue_full_error()),
+            CreateResult::QueueFull => {
+                return Err(SendTxError::QueueFull.into())
+            }
             CreateResult::NonceTaken { nonce } => {
-                tracing::error!(
-                    relayer_id = relayer.id,
-                    relayer_address = %relayer.address,
-                    chain_id = relayer.chain_id,
-                    tx_id,
-                    nonce,
-                    "Relayer's next nonce is taken by another of its transactions, reset the relayer"
-                );
-
-                return Err(poem::error::Error::from_response(
-                    ErrorResponse::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "relayer_nonce_taken",
-                        "The relayer's next nonce is taken by another of its transactions. Resetting the relayer repairs it.",
-                    )
-                    .into_response(),
-                ));
+                return Err(
+                    SendTxError::nonce_taken(&relayer, &tx_id, nonce).into()
+                )
             }
         }
 
@@ -574,11 +492,166 @@ fn default_false() -> bool {
     false
 }
 
-fn queue_full_error() -> poem::Error {
-    poem::Error::from_string(
-        "Relayer queue is full".to_string(),
-        StatusCode::TOO_MANY_REQUESTS,
-    )
+fn parse_gas_limit(gas_limit: &DecimalU256) -> Result<U256> {
+    let gas_limit: u64 = gas_limit.0.try_into().map_err(|_| {
+        poem::error::Error::from_string(
+            format!("Gas limit must be at most {}", u64::MAX),
+            StatusCode::BAD_REQUEST,
+        )
+    })?;
+
+    Ok(U256::from(gas_limit))
+}
+
+/// Why a send didn't store its transaction.
+#[derive(Debug)]
+enum SendTxError {
+    RelayerDisabled,
+    QueueFull,
+    /// The relayer's balance doesn't cover the gas of its queued
+    /// transactions and the new one at the latest gas price
+    InsufficientFunds,
+    /// A different request already took the transaction id
+    TxIdConflict,
+    /// Another transaction of the relayer holds its next nonce, which a
+    /// relayer reset repairs
+    NonceTaken,
+    /// The RPC didn't return the relayer's balance
+    BalanceUnavailable(eyre::Report),
+    Internal(eyre::Report),
+}
+
+impl SendTxError {
+    /// Reports that `create_transaction` found the next nonce of `relayer`
+    /// taken.
+    fn nonce_taken(relayer: &RelayerInfo, tx_id: &str, nonce: u64) -> Self {
+        tracing::error!(
+            relayer_id = relayer.id,
+            relayer_address = %relayer.address,
+            chain_id = relayer.chain_id,
+            tx_id,
+            nonce,
+            "Relayer's next nonce is taken by another of its transactions, reset the relayer"
+        );
+
+        Self::NonceTaken
+    }
+}
+
+impl From<eyre::Report> for SendTxError {
+    fn from(err: eyre::Report) -> Self {
+        Self::Internal(err)
+    }
+}
+
+impl From<SendTxError> for poem::Error {
+    fn from(err: SendTxError) -> Self {
+        match err {
+            SendTxError::RelayerDisabled => poem::Error::from_string(
+                "Relayer is disabled".to_string(),
+                StatusCode::FORBIDDEN,
+            ),
+            SendTxError::QueueFull => poem::Error::from_string(
+                "Relayer queue is full".to_string(),
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
+            SendTxError::InsufficientFunds => poem::Error::from_string(
+                "Relayer funds are insufficient for transaction to be mined."
+                    .to_string(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            SendTxError::TxIdConflict => poem::Error::from_response(
+                ErrorResponse::new(
+                    StatusCode::CONFLICT,
+                    "transaction_already_exists",
+                    "Transaction with same id already exists.",
+                )
+                .into_response(),
+            ),
+            SendTxError::NonceTaken => poem::Error::from_response(
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "relayer_nonce_taken",
+                    "The relayer's next nonce is taken by another of its transactions. Resetting the relayer repairs it.",
+                )
+                .into_response(),
+            ),
+            SendTxError::BalanceUnavailable(err) | SendTxError::Internal(err) => {
+                err.into()
+            }
+        }
+    }
+}
+
+/// Checks that relayer `relayer_id` can take a new transaction with
+/// `gas_limit`, and returns the relayer.
+///
+/// Its queue is checked here only to refuse early, before the balance check
+/// calls the RPC: `create_transaction` admits the transaction.
+async fn ensure_relayer_accepts_tx(
+    app: &App,
+    relayer_id: &str,
+    gas_limit: U256,
+) -> Result<RelayerInfo, SendTxError> {
+    let relayer = app
+        .db
+        .get_relayer(relayer_id)
+        .await?
+        .context("Missing relayer")?;
+
+    if !relayer.enabled {
+        return Err(SendTxError::RelayerDisabled);
+    }
+
+    let relayer_queued_tx_count =
+        app.db.get_relayer_pending_txs(relayer_id).await?;
+
+    if relayer_queued_tx_count >= relayer.max_queued_txs as usize {
+        return Err(SendTxError::QueueFull);
+    }
+
+    let relayer_queued_tx_gas_limit_sum = app
+        .db
+        .get_relayer_pending_txs_gas_limit_sum(relayer_id)
+        .await?;
+
+    let block_fees = app
+        .db
+        .get_latest_block_fees_by_chain_id(relayer.chain_id)
+        .await?;
+    if let Some(block_fees) = block_fees {
+        let total_gas_limit =
+            relayer_queued_tx_gas_limit_sum.saturating_add(gas_limit);
+        let estimated_transactions_cost =
+            block_fees.gas_price.saturating_mul(total_gas_limit);
+
+        // TODO: Cache?
+        let http_provider = app.http_provider(relayer.chain_id).await?;
+
+        let balance = http_provider
+            .get_balance(relayer.address.0)
+            .await
+            .map_err(|err| {
+                SendTxError::BalanceUnavailable(eyre::eyre!(
+                    "Error checking balance: {}",
+                    err
+                ))
+            })?;
+
+        if balance < estimated_transactions_cost {
+            tracing::warn!(
+                relayer_id = relayer.id,
+                relayer_address = %relayer.address,
+                balance = %balance,
+                estimated_transactions_cost = %estimated_transactions_cost,
+                "Relayer funds are insufficient for transaction to be mined"
+            );
+
+            return Err(SendTxError::InsufficientFunds);
+        }
+    }
+
+    Ok(relayer)
 }
 
 struct ServiceApi;
