@@ -1135,17 +1135,41 @@ impl Database {
         .await?)
     }
 
+    /// Records `nonce`, the on-chain transaction count of `relayer_address`,
+    /// as the confirmed nonce of its relayers on `chain_id`, and moves their
+    /// local nonce up to it.
+    ///
+    /// Returns the relayers whose local nonce was behind `nonce`, with that
+    /// local nonce. Their key sent transactions that tx-sitter didn't create.
     #[instrument(skip(self), level = "debug")]
     pub async fn update_relayer_nonce(
         &self,
         chain_id: u64,
         relayer_address: Address,
         nonce: u64,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Vec<(String, u64)>> {
+        let mut tx = self.pool.begin().await?;
+
+        // Locks the relayers, so that no create takes a nonce in between
+        let relayers: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT id, nonce
+            FROM   relayers
+            WHERE  chain_id = $1
+            AND    address = $2
+            FOR NO KEY UPDATE
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(relayer_address.as_slice())
+        .fetch_all(tx.as_mut())
+        .await?;
+
         sqlx::query(
             r#"
             UPDATE relayers
             SET    current_nonce = $3,
+                   nonce = GREATEST(nonce, $3),
                    updated_at = now()
             WHERE  chain_id = $1
             AND    address = $2
@@ -1154,10 +1178,16 @@ impl Database {
         .bind(chain_id as i64)
         .bind(relayer_address.as_slice())
         .bind(nonce as i64)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
 
-        Ok(())
+        tx.commit().await?;
+
+        Ok(relayers
+            .into_iter()
+            .map(|(id, local_nonce)| (id, local_nonce as u64))
+            .filter(|(_, local_nonce)| *local_nonce < nonce)
+            .collect())
     }
 
     #[instrument(skip(self), level = "debug")]

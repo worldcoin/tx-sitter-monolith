@@ -285,7 +285,7 @@ async fn update_relayer_nonce(
 ) -> eyre::Result<()> {
     let tx_count = rpc.get_transaction_count(relayer.address.0).await?;
 
-    if tx_count == relayer.current_nonce {
+    if tx_count == relayer.current_nonce && tx_count <= relayer.nonce {
         return Ok(());
     }
 
@@ -298,9 +298,29 @@ async fn update_relayer_nonce(
         "Updating relayer nonce"
     );
 
-    app.db
+    let relayers_behind = app
+        .db
         .update_relayer_nonce(chain_id, relayer.address.0, tx_count)
         .await?;
+
+    for (relayer_id, local_nonce) in relayers_behind {
+        tracing::error!(
+            relayer_id,
+            chain_id,
+            relayer_address = %relayer.address,
+            local_nonce,
+            chain_nonce = tx_count,
+            "Relayer key sent transactions outside tx-sitter, moved its nonce up to the chain's"
+        );
+        metrics::counter!(
+            "relayer_nonce_behind_chain",
+            &[
+                ("chain_id", chain_id.to_string()),
+                ("relayer_id", relayer_id)
+            ]
+        )
+        .increment(1);
+    }
 
     Ok(())
 }
