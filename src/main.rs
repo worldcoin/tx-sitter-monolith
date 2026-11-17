@@ -230,7 +230,7 @@ async fn reset_relayer(
     relayer_id: uuid::Uuid,
 ) -> eyre::Result<()> {
     let relayer_id = relayer_id.to_hyphenated().to_string();
-    let db = Database::new(&config.database).await?;
+    let db = Database::connect_current(&config.database).await?;
 
     db.get_relayer(&relayer_id)
         .await?
