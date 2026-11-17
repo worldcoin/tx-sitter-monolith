@@ -57,17 +57,21 @@ The Tx Sitter can be configured in 2 ways:
     TX_SITTER__KEYS__KIND="local"
     ```
 
-A string value in a config file can reference environment variables as `${NAME}`. Use this for secrets such as RPC URLs, which usually embed a provider API key. A reference to an unset variable fails startup.
+A string value in a config file can reference environment variables as `${NAME}`. Use this for secrets such as RPC URLs, which usually embed a provider API key. A reference to an unset variable fails startup. `${` always starts a reference: there is no way to write a literal `${`.
 
 ### Networks, relayers and API keys
 
 Networks, relayers and API keys are defined in the config, not through an API. Every process applies them to the database when it starts, so the database only holds runtime state such as nonces and transactions.
 
 ```toml
+[service]
+# Raised by every deploy, see "Config revisions"
+config_revision = 1731801600
+
 [[networks]]
 chain_id = 480
 name = "worldchain"
-# In order of preference: a request moves on to the next RPC when one fails or times out
+# In order of preference: a request moves on to the next RPC when one can't be reached, times out, or answers with HTTP 5xx or 429
 http_rpcs = ["${WORLDCHAIN_RPC_URL}", "${WORLDCHAIN_RPC_URL_FALLBACK}"]
 ws_rpc = "${WORLDCHAIN_WS_URL}"
 
@@ -91,36 +95,64 @@ api_key_hashes = ["0x235704acd89680dcf5be2b7ddbead1f01e93c200f8a769afad104fde70d
 
 At startup every process:
 
-1. Validates the config: distinct chain and relayer ids, every relayer on a configured network, at least one HTTP RPC per network, keys of the kind `keys.kind` selects. Every problem is reported at once.
-2. Loads the key of every enabled relayer, with KMS `GetPublicKey` for KMS keys, and fails if it derives another address than `address`.
-3. Writes the config into the database in one transaction:
+1. Validates the config: distinct chain and relayer ids, distinct addresses on each chain, every relayer on a configured network, at least one HTTP RPC per network, keys of the kind `keys.kind` selects. Every problem is reported at once.
+2. Compares `service.config_revision` with the revision the database applied last, see "Config revisions". If the database already applied this revision and config, the process starts without the next two steps.
+3. Loads the key of every enabled relayer, with KMS `GetPublicKey` for KMS keys, and fails if it derives another address than `address`. Timeouts, throttling and KMS internal errors are retried for up to 60s.
+4. Writes the config into the database in one transaction, and logs every change at warn:
    - networks and relayers are upserted, and relayers keep their nonces;
-   - a relayer's `chain_id` and `address` can't change, add a new relayer instead;
-   - a relayer that is in the database but not in the config is disabled, not deleted, and keeps its API keys, so its callers can still read its transactions;
+   - a relayer's `chain_id` and `address` can change only until it has transactions or allocated a nonce, after that add a new relayer instead;
+   - an enabled relayer can't have the chain id and address of another relayer that is enabled or has unmined transactions, because both would use the account's nonces;
+   - a relayer that is in the database but not in the config is disabled, not deleted, and loses its API keys;
    - every configured relayer accepts exactly the API keys in its `api_key_hashes`;
    - a config without relayers fails while the database has enabled relayers, which protects a database whose relayers were never moved to the config.
 
+A disabled relayer answers every request with 403, including reads, the event feed and the RPC proxy, and broadcasts nothing. Only a v2 send that repeats a stored one still gets its `txId`, as the v2 API promises. Its unsent and in-flight transactions are logged at warn when a process applies the config.
+
 The service no longer creates KMS keys, so it needs only `kms:GetPublicKey` and `kms:Sign` on the relayer keys.
+
+### Config revisions
+
+Every process applies its own config when it starts, so without a check a process with an old config, restarting or scaling up after a rollout, would undo the new config for every process. `service.config_revision` (`TX_SITTER__SERVICE__CONFIG_REVISION`) prevents that. The database stores the revision and a hash of the networks and relayers it applied last, and a starting process:
+
+- applies a higher revision;
+- does nothing for the same revision and hash;
+- refuses to start with a lower revision, or with the same revision and another config.
+
+The hash leaves out RPC URLs, so rotating an RPC secret doesn't need a new revision. Every process sends requests to the RPCs of its own config.
+
+The deploy passes the deploy run's timestamp as the revision, the same one to the API and worker releases. To roll back, run the deploy workflow again with the old version: the old config gets a new, higher revision. Restarting old pods doesn't roll back, they refuse to start.
+
+Without `config_revision`, for local development, the config is applied whatever the database applied before, and the stored revision is forgotten.
 
 ### Operating guide
 
-Every change below is a config change followed by a deploy. Processes that start while a deploy is rolling out apply their own config, so the last process to start wins until the rollout finishes.
+Every change below is a config change followed by a deploy.
 
 - **Add a network.** Add a `[[networks]]` entry, and put its RPC URLs in the secrets manager as the environment variables it references.
 - **Add a relayer.** Create a secp256k1 signing key in KMS (`ECC_SECG_P256K1`, `SIGN_VERIFY`), derive its address, and add a `[[relayers]]` entry with a new UUID (`uuidgen | tr A-Z a-z`), the key and the address. Fund the address.
-- **Add or rotate an API key.** Run `tx-sitter api-key new --relayer-id <id>`, add the printed hash to the relayer's `api_key_hashes` and give the printed key to the caller. The key can't be recovered later. To revoke a key, remove its hash.
-- **Disable a relayer.** Set `enabled = false`. It rejects new transactions with 403 and broadcasts nothing. Removing the relayer from the config has the same effect.
-- **Reset a stuck relayer.** Run `tx-sitter relayer reset --relayer-id <id>` with the service's config. It deletes the relayer's unsent transactions and rewinds its nonce.
+- **Add or rotate an API key.** Run `tx-sitter --config <the service's config> api-key new --relayer-id <id>`, add the printed hash to the relayer's `api_key_hashes` and give the printed key to the caller. The key can't be recovered later. To revoke a key, remove its hash.
+- **Disable a relayer.** Set `enabled = false`, or remove the relayer from the config, which also revokes its API keys.
+- **Reset a stuck relayer.** Run `tx-sitter --config <the service's config> relayer reset --relayer-id <id>`. It deletes the relayer's unsent transactions and moves its nonce back to the first one no remaining transaction holds, never below a nonce the chain or a sent transaction used. It needs the database schema of its own version, so run the image that is deployed.
 
 ### Migrating from the admin API
 
-Earlier versions managed networks, relayers and API keys through `/1/admin/*`. Before deploying a version without it, write the database's state into the config:
+Earlier versions managed networks, relayers and API keys through `/1/admin/*`. Before deploying a version without it, export the database's state once:
 
 ```
 tx-sitter --config <the service's config> config dump > static.toml
 ```
 
-The command prints the `[[networks]]` and `[[relayers]]` sections. RPC URLs, and local private keys, are printed as `${NAME}` references, and their values are listed on stderr: store those in the secrets manager, never in the config. Deploying the dumped config leaves the database as it is.
+The command only reads the database. It prints the `[[networks]]` and `[[relayers]]` sections. RPC URLs, and local private keys, are printed as `${NAME}` references, and their values are listed on stderr: store those in the secrets manager, never in the config. The database holds one HTTP RPC and the WS RPC per network, so only those are exported; add fallback RPCs to `http_rpcs` by hand.
+
+Deploy the dump next to the service's config, which the service loads first:
+
+```
+tx-sitter --config config.toml --config static.toml
+```
+
+Deploying the dumped config leaves the database as it is. Validation rejects relayers that share a chain id and address, which the admin API allowed: keep one of them in the config.
+
+The admin API's basic auth was open while `server.username` and `server.password` were unset. Keep both set in the deployment until rolling back to an image with the admin API is no longer possible. This version ignores them.
 
 ### Roles, probes and shutdown
 
@@ -145,7 +177,7 @@ On SIGTERM or SIGINT the service stops accepting connections and gives in-flight
 
 A relayer's key must only send transactions through tx-sitter. When the chain's nonce for the key moves past the relayer's own, tx-sitter moves the relayer's nonce up to the chain's and logs an error. Transactions that hold a nonce the chain already used can never be mined: they are no longer broadcast or escalated, and the `relayer_stale_txs` gauge counts them per relayer.
 
-To recover, reset the relayer with `POST /1/admin/relayer/{relayer_id}/reset`. That deletes its unsent transactions, so their callers have to send them again. Sent ones stay pending.
+To recover, reset the relayer with `tx-sitter relayer reset`, see "Operating guide". That deletes its unsent transactions, so their callers have to send them again. Sent ones stay pending.
 
 ### Relayer API v2
 
