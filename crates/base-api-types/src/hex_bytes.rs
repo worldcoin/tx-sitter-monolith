@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hex::hex_digits;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct HexBytes(pub Bytes);
 
