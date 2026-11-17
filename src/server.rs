@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use alloy::primitives::U256;
 use alloy::providers::Provider;
-use alloy::transports::{RpcError, TransportError, TransportErrorKind};
+use alloy::transports::RpcError;
 use base_api_types::DecimalU256;
 use eyre::{Context, ContextCompat};
 use poem::http::StatusCode;
@@ -23,6 +23,7 @@ use crate::api_key::ApiKey;
 use crate::app::App;
 use crate::db::data::RelayerInfo;
 use crate::db::CreateResult;
+use crate::failover_transport::describe_error;
 use crate::task_runner::{TaskHealth, TaskRunner};
 use crate::tx_events::EventNotifier;
 use crate::types::{
@@ -249,16 +250,16 @@ impl RelayerApi {
 
         let response = match response {
             Ok(result) => {
-                json!({ "jsonrpc": "2.0", "id": req.id, "result": result })
+                json!({ "jsonrpc": req.jsonrpc, "id": req.id, "result": result })
             }
             Err(RpcError::ErrorResp(error)) => {
-                json!({ "jsonrpc": "2.0", "id": req.id, "error": error })
+                json!({ "jsonrpc": req.jsonrpc, "id": req.id, "error": error })
             }
             Err(err) => {
                 tracing::warn!(
                     relayer_id = relayer_info.id,
                     chain_id = relayer_info.chain_id,
-                    error = %err,
+                    error = %describe_error(&err),
                     "RPC proxy request failed"
                 );
 
@@ -429,7 +430,7 @@ async fn ensure_relayer_accepts_tx(
             .map_err(|err| {
                 SendTxError::BalanceUnavailable(eyre::eyre!(
                     "Error checking balance: {}",
-                    describe_rpc_error(&err)
+                    describe_error(&err)
                 ))
             })?;
 
@@ -447,36 +448,6 @@ async fn ensure_relayer_accepts_tx(
     }
 
     Ok(relayer)
-}
-
-/// Describes an RPC error without its URL, which usually embeds a provider
-/// API key.
-fn describe_rpc_error(err: &TransportError) -> String {
-    match err {
-        RpcError::Transport(TransportErrorKind::HttpError(http_error)) => {
-            format!("HTTP status {}", http_error.status)
-        }
-        RpcError::Transport(TransportErrorKind::Custom(inner)) => {
-            match inner.downcast_ref::<reqwest::Error>() {
-                Some(err) if err.is_timeout() => {
-                    "request timed out".to_string()
-                }
-                Some(err) if err.is_connect() => {
-                    "connection failed".to_string()
-                }
-                Some(err) => match err.status() {
-                    Some(status) => format!("HTTP status {status}"),
-                    None => "request failed".to_string(),
-                },
-                None => "transport error".to_string(),
-            }
-        }
-        RpcError::Transport(_) => "transport error".to_string(),
-        RpcError::ErrorResp(payload) => {
-            format!("JSON-RPC error {}: {}", payload.code, payload.message)
-        }
-        _ => "invalid RPC response".to_string(),
-    }
 }
 
 struct ServiceApi;
