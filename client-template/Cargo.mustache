@@ -74,3 +74,6 @@ reqwest-middleware = { version = "^0.3", features = ["json", "multipart"] }
 {{/supportMiddleware}}
 {{/supportAsync}}
 {{/reqwest}}
+[lints.clippy]
+# Generated models implement Default by hand
+derivable_impls = "allow"
