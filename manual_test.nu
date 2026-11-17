@@ -3,9 +3,8 @@
 # docker run --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres
 ## Can connect to using psql postgres://postgres:postgres@127.0.0.1:5432/database
 
-## Nodes
+## Node
 # anvil --chain-id 31337 -p 8545 --block-time 1
-# anvil --chain-id 31338 -p 8546 --block-time 1
 
 ## TxSitter
 # cargo watch -x run
@@ -15,19 +14,13 @@
 echo "Start"
 
 let txSitter = "http://127.0.0.1:3000"
-let anvilSocket = "127.0.0.1:8545"
 
-http post -t application/json $"($txSitter)/1/admin/network/31337" {
-    name: "Anvil network",
-    httpRpc: $"http://($anvilSocket)",
-    wsRpc: $"ws://($anvilSocket)"
+# The relayer of config.toml
+let relayer = {
+    relayerId: "1b908a34-5dc1-4d2d-a146-5eb46e975830",
+    address: "0x1d7ffed610cc4cdC097ecDc835Ae5FEE93C9e3Da"
 }
-
-echo "Creating relayer"
-let relayer = http post -t application/json $"($txSitter)/1/admin/relayer" { "name": "My Relayer", "chainId": 31337 }
-
-echo "Create api key"
-let apiKey = http post $"($txSitter)/1/admin/relayer/($relayer.relayerId)/key" ""
+let apiKey = { apiKey: "G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=" }
 
 $env.ETH_RPC_URL = $"($txSitter)/1/api/($apiKey.apiKey)/rpc"
 

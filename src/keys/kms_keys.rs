@@ -1,14 +1,11 @@
 use std::time::Duration;
 
-use alloy::network::TxSigner;
 use alloy::signers::aws::{AwsSigner, AwsSignerError};
 use aws_config::{BehaviorVersion, SdkConfig};
-use aws_sdk_kms::config::retry::RetryConfig;
 use aws_sdk_kms::config::timeout::TimeoutConfig;
 use aws_sdk_kms::error::ProvideErrorMetadata;
-use aws_sdk_kms::types::{KeySpec, KeyUsageType, Tag};
 use aws_smithy_runtime_api::client::result::SdkError;
-use eyre::{Context, ContextCompat};
+use eyre::Context;
 use tokio::time::timeout;
 
 use super::{KeysSource, UniversalSigner};
@@ -24,7 +21,6 @@ const KMS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct KmsKeys {
     kms_client: aws_sdk_kms::Client,
-    kms_timeout: Duration,
 }
 
 impl KmsKeys {
@@ -59,80 +55,12 @@ impl KmsKeys {
 
         Self {
             kms_client: aws_sdk_kms::Client::from_conf(kms_config),
-            kms_timeout: config.kms_timeout,
         }
     }
 }
 
 #[async_trait::async_trait]
 impl KeysSource for KmsKeys {
-    async fn new_signer(
-        &self,
-        meta_name: &str,
-    ) -> eyre::Result<(String, UniversalSigner)> {
-        let kms_key = self
-            .kms_client
-            .create_key()
-            .key_spec(KeySpec::EccSecgP256K1)
-            .key_usage(KeyUsageType::SignVerify)
-            .tags(
-                Tag::builder()
-                    .tag_key("CreatedBy")
-                    .tag_value("tx-sitter")
-                    .build()?,
-            )
-            .description(format!("Key of relayer {meta_name}"))
-            .customize()
-            // CreateKey isn't idempotent: retrying after a slow attempt that
-            // succeeded would leave that key without a RelayerName tag
-            .config_override(
-                aws_sdk_kms::config::Builder::default()
-                    .retry_config(RetryConfig::disabled())
-                    .timeout_config(
-                        TimeoutConfig::builder()
-                            .operation_attempt_timeout(self.kms_timeout)
-                            .build(),
-                    ),
-            )
-            .send()
-            .await
-            .context("AWS Error")?;
-
-        let key_id =
-            kms_key.key_metadata.context("Missing key metadata")?.key_id;
-
-        let signer =
-            AwsSigner::new(self.kms_client.clone(), key_id.clone(), None)
-                .await?;
-
-        let address = signer.address();
-
-        self.kms_client
-            .update_alias()
-            .target_key_id(key_id.clone())
-            .alias_name(format!("{meta_name}-{address:?}"));
-
-        self.kms_client
-            .tag_resource()
-            .key_id(key_id.clone())
-            .tags(
-                Tag::builder()
-                    .tag_key("RelayerName")
-                    .tag_value(meta_name)
-                    .build()?,
-            )
-            .tags(
-                Tag::builder()
-                    .tag_key("RelayerAddress")
-                    .tag_value(format!("{address:?}"))
-                    .build()?,
-            )
-            .send()
-            .await?;
-
-        Ok((key_id, UniversalSigner::Aws(signer)))
-    }
-
     async fn load_signer(&self, id: String) -> eyre::Result<UniversalSigner> {
         let signer = AwsSigner::new(self.kms_client.clone(), id, None).await?;
 
@@ -171,6 +99,7 @@ pub fn is_transient_error(err: &eyre::Report) -> bool {
 mod tests {
     use std::time::Instant;
 
+    use aws_sdk_kms::config::retry::RetryConfig;
     use aws_sdk_kms::config::{Credentials, Region, SharedCredentialsProvider};
     use poem::http::StatusCode;
     use poem::listener::{Acceptor, Listener};
@@ -178,26 +107,6 @@ mod tests {
 
     use super::*;
     use crate::test_utils::UnresponsiveServer;
-
-    #[tokio::test]
-    async fn create_key_is_attempted_once() -> eyre::Result<()> {
-        let kms = UnresponsiveServer::spawn().await?;
-        let kms_timeout = Duration::from_secs(4);
-        let keys = KmsKeys::from_aws_config(
-            &aws_config(&kms, 3),
-            &KmsKeysConfig { kms_timeout },
-        );
-
-        let started = Instant::now();
-        let result = keys.new_signer("relayer").await;
-        let elapsed = started.elapsed();
-
-        assert!(result.is_err(), "Unexpected key: {result:?}");
-        assert!(elapsed <= kms_timeout * 2, "Took {elapsed:?}");
-        assert_eq!(kms.accepted_connections(), 1);
-
-        Ok(())
-    }
 
     #[tokio::test]
     async fn kms_requests_follow_the_resolved_retry_config() -> eyre::Result<()>

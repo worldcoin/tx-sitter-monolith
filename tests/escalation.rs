@@ -1,7 +1,6 @@
 mod common;
 
 use tx_sitter::types::TransactionPriority;
-use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
 use tx_sitter_client::apis::configuration::Configuration;
 use tx_sitter_client::apis::relayer_v1_api::{
     CreateTransactionParams, GetTransactionParams,
@@ -27,14 +26,7 @@ async fn escalation() -> eyre::Result<()> {
         .build(&anvil, &db_url)
         .await?;
 
-    let CreateApiKeyResponse { api_key } =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            &client,
-            RelayerCreateApiKeyParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
-        .await?;
+    let api_key = DEFAULT_API_KEY.to_string();
     let provider = setup_provider(anvil.endpoint()).await?;
 
     // Send a transaction

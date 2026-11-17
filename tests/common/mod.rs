@@ -208,6 +208,16 @@ impl UnresponsiveRpc {
     pub fn accepted_connections(&self) -> usize {
         self.accepted_connections.load(Ordering::SeqCst)
     }
+
+    /// A network `chain_id` whose HTTP and WS RPCs are this server.
+    pub fn network(&self, chain_id: u64) -> NetworkConfig {
+        NetworkConfig {
+            chain_id,
+            name: "Unresponsive".to_string(),
+            http_rpcs: vec![rpc_url(&format!("http://{}", self.addr))],
+            ws_rpc: rpc_url(&format!("ws://{}", self.addr)),
+        }
+    }
 }
 
 pub async fn setup_provider(

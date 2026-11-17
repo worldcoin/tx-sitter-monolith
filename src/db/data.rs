@@ -170,13 +170,6 @@ pub struct NetworkInfo {
     pub ws_rpc: String,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct NewNetworkInfo {
-    pub name: String,
-    pub http_rpc: String,
-    pub ws_rpc: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayerGasPriceLimit {

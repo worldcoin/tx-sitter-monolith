@@ -1,10 +1,6 @@
 mod common;
 
 use poem::http;
-use tx_sitter_client::apis::admin_v1_api::{
-    CreateNetworkParams, CreateRelayerParams, GetRelayerParams,
-    RelayerCreateApiKeyParams,
-};
 use tx_sitter_client::apis::relayer_v1_api::{
     CreateTransactionParams, GetTransactionsParams,
 };
@@ -14,7 +10,7 @@ use crate::common::prelude::*;
 
 /// A chain whose RPC never answers, so it never gets fee estimates and
 /// tx-sitter skips the balance check.
-const UNINDEXED_CHAIN_ID: i32 = 1337;
+const UNINDEXED_CHAIN_ID: u64 = 1337;
 const UNREACHABLE_RPC: &str = "127.0.0.1:1";
 
 #[tokio::test]
@@ -24,40 +20,19 @@ async fn send_tx_with_gas_limit_above_u64_max() -> eyre::Result<()> {
     let (db_url, _db_container) = setup_db().await?;
     let anvil = AnvilBuilder::default().spawn().await?;
 
-    let (_service, client) =
-        ServiceBuilder::default().build(&anvil, &db_url).await?;
+    let relayer = TestRelayer::random(UNINDEXED_CHAIN_ID);
+    let relayer_id = relayer.config.id.clone();
+    let api_key = relayer.api_key;
 
-    tx_sitter_client::apis::admin_v1_api::create_network(
-        &client,
-        CreateNetworkParams {
+    let (_service, client) = ServiceBuilder::default()
+        .network(NetworkConfig {
             chain_id: UNINDEXED_CHAIN_ID,
-            create_network_request: CreateNetworkRequest::new(
-                "Unindexed".to_string(),
-                format!("http://{UNREACHABLE_RPC}"),
-                format!("ws://{UNREACHABLE_RPC}"),
-            ),
-        },
-    )
-    .await?;
-
-    let CreateRelayerResponse { relayer_id, .. } =
-        tx_sitter_client::apis::admin_v1_api::create_relayer(
-            &client,
-            CreateRelayerParams {
-                create_relayer_request: CreateRelayerRequest::new(
-                    "Test relayer".to_string(),
-                    UNINDEXED_CHAIN_ID,
-                ),
-            },
-        )
-        .await?;
-    let CreateApiKeyResponse { api_key } =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            &client,
-            RelayerCreateApiKeyParams {
-                relayer_id: relayer_id.clone(),
-            },
-        )
+            name: "Unindexed".to_string(),
+            http_rpcs: vec![rpc_url(&format!("http://{UNREACHABLE_RPC}"))],
+            ws_rpc: rpc_url(&format!("ws://{UNREACHABLE_RPC}")),
+        })
+        .relayer(relayer.config)
+        .build(&anvil, &db_url)
         .await?;
 
     let response = tx_sitter_client::apis::relayer_v1_api::create_transaction(
@@ -90,11 +65,11 @@ async fn send_tx_with_gas_limit_above_u64_max() -> eyre::Result<()> {
     .await?;
     assert!(txs.is_empty(), "Transactions were created: {txs:?}");
 
-    let relayer = tx_sitter_client::apis::admin_v1_api::get_relayer(
-        &client,
-        GetRelayerParams { relayer_id },
-    )
-    .await?;
+    let relayer = connect_db(&db_url)
+        .await?
+        .get_relayer(&relayer_id)
+        .await?
+        .ok_or_else(|| eyre::eyre!("Relayer was not stored"))?;
     assert_eq!(relayer.nonce, 0);
 
     Ok(())

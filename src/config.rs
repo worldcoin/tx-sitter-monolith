@@ -421,20 +421,8 @@ pub struct ServerConfig {
     #[serde(default = "default::max_event_waiters")]
     pub max_event_waiters: usize,
 
-    pub username: Option<SecretString>,
-    pub password: Option<SecretString>,
-
     // Optional address to show in API explorer
     pub server_address: Option<String>,
-}
-
-impl ServerConfig {
-    pub fn credentials(&self) -> Option<(&str, &str)> {
-        let username = self.username.as_deref()?;
-        let password = self.password.as_deref()?;
-
-        Some((username, password))
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,8 +483,7 @@ pub enum KeysConfig {
 #[serde(rename_all = "snake_case")]
 pub struct KmsKeysConfig {
     /// Max amount of time a KMS operation may take, retries included. The
-    /// SDK retries attempts that take longer than 2s, except for CreateKey,
-    /// which gets a single attempt.
+    /// SDK retries attempts that take longer than 2s.
     #[serde(with = "humantime_serde", default = "default::kms_timeout")]
     pub kms_timeout: Duration,
 }
@@ -696,8 +683,6 @@ mod tests {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
                 shutdown_timeout: default::shutdown_timeout(),
                 max_event_waiters: default::max_event_waiters(),
-                username: None,
-                password: None,
                 server_address: None,
             },
             database: DatabaseConfig::connection_string(
@@ -735,8 +720,6 @@ mod tests {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
                 shutdown_timeout: default::shutdown_timeout(),
                 max_event_waiters: default::max_event_waiters(),
-                username: None,
-                password: None,
                 server_address: None,
             },
             database: DatabaseConfig::Parts(DbParts {
@@ -788,8 +771,6 @@ mod tests {
             "tx-sitter",
         );
         std::env::set_var("TX_SITTER__SERVER__HOST", "0.0.0.0:8080");
-        std::env::set_var("TX_SITTER__SERVER__USERNAME", "authUsername");
-        std::env::set_var("TX_SITTER__SERVER__PASSWORD", "authPassword");
         std::env::set_var("TX_SITTER__KEYS__KIND", "kms");
 
         let config = load_config(std::iter::empty()).unwrap();

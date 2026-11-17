@@ -178,8 +178,6 @@ impl ServiceBuilder {
                 )),
                 shutdown_timeout: self.shutdown_timeout,
                 max_event_waiters: self.max_event_waiters,
-                username: None,
-                password: None,
                 server_address: None,
             },
             database: DatabaseConfig::connection_string(db_url),

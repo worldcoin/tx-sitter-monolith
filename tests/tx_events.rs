@@ -213,9 +213,7 @@ async fn relayers_see_only_their_events() -> eyre::Result<()> {
 
     let service = TestService::spawn(api_service()).await?;
     let client = service.v2_client(&service.api_key);
-    let (other_relayer_id, other_api_key) =
-        service.create_relayer_with_api_key().await?;
-    let other_client = service.v2_client(&other_api_key);
+    let other_client = service.v2_client(&service.other_relayer.api_key);
     send_tx_v2(&client, send_tx_request("tx-1")).await?;
     send_tx_v2(&other_client, send_tx_request("other-tx-1")).await?;
     send_tx_v2(&client, send_tx_request("tx-2")).await?;
@@ -234,7 +232,7 @@ async fn relayers_see_only_their_events() -> eyre::Result<()> {
     assert!(other_events
         .events
         .iter()
-        .all(|event| event.relayer_id == other_relayer_id));
+        .all(|event| event.relayer_id == service.other_relayer.config.id));
 
     // A cursor is a position in its relayer's feed only
     let first = get_events(&client, None, Some(1), None).await?;

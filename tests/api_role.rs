@@ -1,9 +1,6 @@
 mod common;
 
 use tx_sitter::db::Database;
-use tx_sitter_client::apis::admin_v1_api::{
-    CreateNetworkParams, RelayerCreateApiKeyParams,
-};
 use tx_sitter_client::apis::relayer_v1_api::{
     CreateTransactionParams, GetTransactionParams,
 };
@@ -27,14 +24,7 @@ async fn api_role_runs_no_background_tasks() -> eyre::Result<()> {
         .role(ServiceRole::Api)
         .build(&anvil, &db_url)
         .await?;
-    let CreateApiKeyResponse { api_key } =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            &client,
-            RelayerCreateApiKeyParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
-        .await?;
+    let api_key = DEFAULT_API_KEY.to_string();
 
     let value: U256 = parse_units("1", "ether")?.into();
     let SendTxResponse { tx_id } =
@@ -51,22 +41,6 @@ async fn api_role_runs_no_background_tasks() -> eyre::Result<()> {
             },
         )
         .await?;
-
-    tokio::time::sleep(TASK_GRACE_PERIOD).await;
-    assert_chain_not_indexed(&db).await?;
-
-    tx_sitter_client::apis::admin_v1_api::create_network(
-        &client,
-        CreateNetworkParams {
-            chain_id: DEFAULT_ANVIL_CHAIN_ID as i32,
-            create_network_request: CreateNetworkRequest::new(
-                "Anvil".to_string(),
-                anvil.endpoint(),
-                anvil.ws_endpoint(),
-            ),
-        },
-    )
-    .await?;
 
     tokio::time::sleep(TASK_GRACE_PERIOD).await;
     assert_chain_not_indexed(&db).await?;

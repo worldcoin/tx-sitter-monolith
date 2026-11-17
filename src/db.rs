@@ -25,9 +25,7 @@ use crate::db::wrappers::hex_u256::HexU256Wrapper;
 use crate::db::wrappers::xid8::Xid8;
 use crate::static_config::{self, ConfigVersion, Plan};
 use crate::tx_events::EventCursor;
-use crate::types::{
-    RelayerUpdateRequest, TransactionPriority, TxMetadata, TxStatus,
-};
+use crate::types::{TransactionPriority, TxMetadata, TxStatus};
 
 pub mod data;
 pub mod wrappers;
@@ -186,124 +184,6 @@ impl Database {
         )
         .await
         .map_err(|_| eyre::eyre!("No answer within {timeout:?}"))??;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self), level = "debug")]
-    pub async fn create_relayer(
-        &self,
-        id: &str,
-        name: &str,
-        chain_id: u64,
-        key_id: &str,
-        address: Address,
-    ) -> eyre::Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO relayers (id, name, chain_id, key_id, address)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT DO NOTHING
-        "#,
-        )
-        .bind(id)
-        .bind(name)
-        .bind(chain_id as i64)
-        .bind(key_id)
-        .bind(address.as_slice())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self), level = "debug")]
-    pub async fn update_relayer(
-        &self,
-        id: &str,
-        update: &RelayerUpdateRequest,
-    ) -> eyre::Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        let RelayerUpdateRequest {
-            relayer_name,
-            max_inflight_txs,
-            max_queued_txs,
-            gas_price_limits,
-            enabled,
-        } = update;
-
-        if let Some(name) = relayer_name {
-            sqlx::query(
-                r#"
-                UPDATE relayers
-                SET    name = $2
-                WHERE  id = $1
-                "#,
-            )
-            .bind(id)
-            .bind(name)
-            .execute(tx.as_mut())
-            .await?;
-        }
-
-        if let Some(max_inflight_txs) = max_inflight_txs {
-            sqlx::query(
-                r#"
-                UPDATE relayers
-                SET    max_inflight_txs = $2
-                WHERE  id = $1
-                "#,
-            )
-            .bind(id)
-            .bind(*max_inflight_txs as i64)
-            .execute(tx.as_mut())
-            .await?;
-        }
-
-        if let Some(max_queued_txs) = max_queued_txs {
-            sqlx::query(
-                r#"
-                UPDATE relayers
-                SET    max_queued_txs = $2
-                WHERE  id = $1
-                "#,
-            )
-            .bind(id)
-            .bind(*max_queued_txs as i64)
-            .execute(tx.as_mut())
-            .await?;
-        }
-
-        if let Some(gas_price_limits) = gas_price_limits {
-            sqlx::query(
-                r#"
-                UPDATE relayers
-                SET    gas_price_limits = $2
-                WHERE  id = $1
-                "#,
-            )
-            .bind(id)
-            .bind(Json(gas_price_limits))
-            .execute(tx.as_mut())
-            .await?;
-        }
-
-        if let Some(enabled) = enabled {
-            sqlx::query(
-                r#"
-                UPDATE relayers
-                SET    enabled = $2
-                WHERE  id = $1
-                "#,
-            )
-            .bind(id)
-            .bind(*enabled)
-            .execute(tx.as_mut())
-            .await?;
-        }
-
-        tx.commit().await?;
 
         Ok(())
     }
@@ -1621,24 +1501,6 @@ impl Database {
         .await?)
     }
 
-    #[instrument(skip(self), level = "debug")]
-    pub async fn upsert_network(
-        &self,
-        chain_id: u64,
-        name: &str,
-        http_rpc: &str,
-        ws_rpc: &str,
-    ) -> eyre::Result<()> {
-        let mut tx = self.pool.begin().await?;
-
-        upsert_network_in(tx.as_mut(), chain_id, name, http_rpc, ws_rpc)
-            .await?;
-
-        tx.commit().await?;
-
-        Ok(())
-    }
-
     /// Returns the version of the static config the database applied last,
     /// or `None` if that config had no revision.
     #[instrument(skip(self), level = "debug")]
@@ -1654,7 +1516,8 @@ impl Database {
     /// holds `version`.
     ///
     /// - Networks are upserted, and `rpcs` gets the first HTTP RPC and the WS
-    ///   RPC of each. Networks missing from `networks` are left as they are.
+    ///   RPC of each, which previous versions read. Networks missing from
+    ///   `networks` are left as they are.
     /// - Relayers are upserted and keep their nonces.
     /// - Relayers missing from `relayers` are disabled rather than deleted,
     ///   because their transactions reference them, and lose their API keys.
@@ -1852,46 +1715,6 @@ impl Database {
     #[instrument(skip(self), level = "debug")]
     pub async fn get_networks(&self) -> eyre::Result<Vec<NetworkInfo>> {
         select_networks(&self.pool).await
-    }
-
-    #[instrument(skip(self), level = "debug")]
-    pub async fn get_network(
-        &self,
-        chain_id: u64,
-    ) -> eyre::Result<Option<NetworkInfo>> {
-        Ok(sqlx::query_as(
-            r#"
-            SELECT networks.chain_id, name, http.url as http_rpc, ws.url as ws_rpc
-            FROM   networks
-            INNER JOIN rpcs http ON networks.chain_id = http.chain_id AND http.kind = 'http'
-            INNER JOIN rpcs ws ON networks.chain_id = ws.chain_id AND ws.kind = 'ws'
-            WHERE networks.chain_id = $1
-            "#,
-        )
-        .bind(chain_id as i64)
-        .fetch_optional(&self.pool)
-        .await?)
-    }
-
-    #[instrument(skip(self), level = "debug")]
-    pub async fn upsert_api_key(
-        &self,
-        relayer_id: &str,
-        api_key_hash: [u8; 32],
-    ) -> eyre::Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO api_keys (relayer_id, key_hash)
-            VALUES ($1, $2)
-            ON CONFLICT DO NOTHING
-            "#,
-        )
-        .bind(relayer_id)
-        .bind(api_key_hash)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
     }
 
     /// Returns whether relayer `relayer_id` accepts the API key whose secret
@@ -2635,6 +2458,54 @@ fn config_changes(
     changes
 }
 
+/// Fixtures for rows that only [`Database::apply_static_config`] writes
+/// in production
+#[cfg(test)]
+impl Database {
+    pub(crate) async fn create_relayer(
+        &self,
+        id: &str,
+        name: &str,
+        chain_id: u64,
+        key_id: &str,
+        address: Address,
+    ) -> eyre::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO relayers (id, name, chain_id, key_id, address)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(id)
+        .bind(name)
+        .bind(chain_id as i64)
+        .bind(key_id)
+        .bind(address.as_slice())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn upsert_network(
+        &self,
+        chain_id: u64,
+        name: &str,
+        http_rpc: &str,
+        ws_rpc: &str,
+    ) -> eyre::Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        upsert_network_in(tx.as_mut(), chain_id, name, http_rpc, ws_rpc)
+            .await?;
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
@@ -2647,7 +2518,6 @@ mod tests {
     use crate::db::wrappers::address::AddressWrapper;
     use crate::db::wrappers::decimal_u256::DecimalU256Wrapper;
     use crate::types::secret_url::SecretUrl;
-    use crate::types::{RelayerGasPriceLimitResponse, RelayerUpdateRequest};
 
     const ADDRESS: [u8; 20] = hex!("1ed53d680b8890dae2a63f673a85ffde1fd5c7a2");
     const HASH: [u8; 32] = hex!(
@@ -2787,22 +2657,7 @@ mod tests {
     async fn reset_racing_with_sends_reuses_no_nonce() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let relayer_id = create_relayer(&db).await?;
-        // The queue limit must stay above the inflight limit after each update
-        for (max_inflight_txs, max_queued_txs) in
-            [(None, Some(2_000)), (Some(1_000), None)]
-        {
-            db.update_relayer(
-                &relayer_id,
-                &RelayerUpdateRequest {
-                    relayer_name: None,
-                    max_inflight_txs,
-                    max_queued_txs,
-                    gas_price_limits: None,
-                    enabled: None,
-                },
-            )
-            .await?;
-        }
+        set_relayer_limits(&db, &relayer_id, 1_000, 2_000).await?;
 
         let creates = async {
             for i in 0..100 {
@@ -2906,89 +2761,6 @@ mod tests {
         assert_eq!(db.prune_blocks(prune_timestamp, 10).await?, 1);
 
         assert!(!db.has_blocks_for_chain(1).await?, "Should not have blocks");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn relayer_methods() -> eyre::Result<()> {
-        let (db, _db_container) = setup_db().await?;
-
-        let chain_id = 123;
-        let network_name = "network_name";
-        let http_rpc = "http_rpc";
-        let ws_rpc = "ws_rpc";
-
-        db.upsert_network(chain_id, network_name, http_rpc, ws_rpc)
-            .await?;
-
-        let relayer_id = uuid();
-        let relayer_id = relayer_id.as_str();
-
-        let relayer_name = "relayer_name";
-        let key_id = "key_id";
-        let relayer_address = Address::with_last_byte(1);
-
-        db.create_relayer(
-            relayer_id,
-            relayer_name,
-            chain_id,
-            key_id,
-            relayer_address,
-        )
-        .await?;
-
-        let relayer = db
-            .get_relayer(relayer_id)
-            .await?
-            .context("Missing relayer")?;
-
-        assert_eq!(relayer.id, relayer_id);
-        assert_eq!(relayer.name, relayer_name);
-        assert_eq!(relayer.chain_id, chain_id);
-        assert_eq!(relayer.key_id, key_id);
-        assert_eq!(relayer.address.0, relayer_address);
-        assert_eq!(relayer.nonce, 0);
-        assert_eq!(relayer.current_nonce, 0);
-        assert_eq!(relayer.max_inflight_txs, 5);
-        assert_eq!(relayer.gas_price_limits, vec![]);
-
-        db.update_relayer(
-            relayer_id,
-            &RelayerUpdateRequest {
-                relayer_name: None,
-                max_inflight_txs: Some(10),
-                max_queued_txs: Some(20),
-                gas_price_limits: Some(vec![RelayerGasPriceLimitResponse {
-                    chain_id: 1,
-                    value: U256::from(10_123u64).into(),
-                }]),
-                enabled: None,
-            },
-        )
-        .await?;
-
-        let relayer = db
-            .get_relayer(relayer_id)
-            .await?
-            .context("Missing relayer")?;
-
-        assert_eq!(relayer.id, relayer_id);
-        assert_eq!(relayer.name, relayer_name);
-        assert_eq!(relayer.chain_id, chain_id);
-        assert_eq!(relayer.key_id, key_id);
-        assert_eq!(relayer.address.0, relayer_address);
-        assert_eq!(relayer.nonce, 0);
-        assert_eq!(relayer.current_nonce, 0);
-        assert_eq!(relayer.max_inflight_txs, 10);
-        assert_eq!(relayer.max_queued_txs, 20);
-        assert_eq!(
-            relayer.gas_price_limits,
-            vec![RelayerGasPriceLimit {
-                chain_id: 1,
-                value: U256::from(10_123u64).into(),
-            }]
-        );
 
         Ok(())
     }
@@ -4030,21 +3802,7 @@ mod tests {
     async fn stale_txs_hold_no_queue_slots() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let relayer_id = create_relayer(&db).await?;
-        for (max_inflight_txs, max_queued_txs) in
-            [(Some(1), None), (None, Some(2))]
-        {
-            db.update_relayer(
-                &relayer_id,
-                &RelayerUpdateRequest {
-                    relayer_name: None,
-                    max_inflight_txs,
-                    max_queued_txs,
-                    gas_price_limits: None,
-                    enabled: None,
-                },
-            )
-            .await?;
-        }
+        set_relayer_limits(&db, &relayer_id, 1, 2).await?;
         create_tx(&db, &relayer_id, "sent").await?;
         create_tx(&db, &relayer_id, "unsent").await?;
         let fee = U256::from(1);
@@ -4312,27 +4070,18 @@ mod tests {
         let (db, _db_container) = setup_db().await?;
 
         let chain_id = 123;
-        db.upsert_network(chain_id, "network_name", "http_rpc", "ws_rpc")
-            .await?;
-
-        let relayer_id = uuid();
         let address = Address::from(ADDRESS);
-        db.create_relayer(&relayer_id, "relayer", chain_id, "key_id", address)
+        let relayer = RelayerConfig {
+            address,
+            gas_price_limits: vec![GasPriceLimitConfig {
+                chain_id: 1,
+                value: U256::from(10_123u64).into(),
+            }],
+            ..relayer_config(chain_id, 1)
+        };
+        let relayer_id = relayer.id.clone();
+        db.apply_static_config(&[network_config(chain_id)], &[relayer], None)
             .await?;
-        db.update_relayer(
-            &relayer_id,
-            &RelayerUpdateRequest {
-                relayer_name: None,
-                max_inflight_txs: None,
-                max_queued_txs: None,
-                gas_price_limits: Some(vec![RelayerGasPriceLimitResponse {
-                    chain_id: 1,
-                    value: U256::from(10_123u64).into(),
-                }]),
-                enabled: None,
-            },
-        )
-        .await?;
 
         let tx_id = "tx_id";
         db.create_transaction(
@@ -4483,6 +4232,31 @@ mod tests {
         .await?;
 
         Ok(relayer_id)
+    }
+
+    /// Sets the queue limits of `relayer_id`, which the static config does
+    /// in production.
+    async fn set_relayer_limits(
+        db: &Database,
+        relayer_id: &str,
+        max_inflight_txs: i64,
+        max_queued_txs: i64,
+    ) -> eyre::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE relayers
+            SET    max_inflight_txs = $2,
+                   max_queued_txs = $3
+            WHERE  id = $1
+            "#,
+        )
+        .bind(relayer_id)
+        .bind(max_inflight_txs)
+        .bind(max_queued_txs)
+        .execute(&db.pool)
+        .await?;
+
+        Ok(())
     }
 
     async fn create_tx(
@@ -4770,14 +4544,10 @@ mod tests {
         );
         assert!(!stored.enabled);
 
-        assert_eq!(
-            db.get_network_rpc(1, RpcKind::Http).await?,
-            "https://primary.example.com/key"
-        );
-        assert_eq!(
-            db.get_network_rpc(1, RpcKind::Ws).await?,
-            "wss://ws.example.com/key"
-        );
+        let networks = db.get_networks().await?;
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].http_rpc, "https://primary.example.com/key");
+        assert_eq!(networks[0].ws_rpc, "wss://ws.example.com/key");
 
         Ok(())
     }

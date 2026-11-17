@@ -10,9 +10,10 @@ use tokio::net::TcpListener;
 
 use crate::app::App;
 use crate::config::{
-    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, ServerConfig,
-    ServiceRole, TxSitterConfig,
+    Config, DatabaseConfig, KeysConfig, LocalKeysConfig, NetworkConfig,
+    ServerConfig, ServiceRole, TxSitterConfig,
 };
+use crate::types::secret_url::SecretUrl;
 
 pub const RPC_TIMEOUT: Duration = Duration::from_secs(1);
 pub const BLOCK_STREAM_TIMEOUT: Duration = Duration::from_secs(1);
@@ -85,19 +86,22 @@ pub async fn setup_app(
             host: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             shutdown_timeout: Duration::from_secs(20),
             max_event_waiters: 64,
-            username: None,
-            password: None,
             server_address: None,
         },
         database: DatabaseConfig::connection_string(db_url),
         keys: KeysConfig::Local(LocalKeysConfig::default()),
-        networks: vec![],
+        networks: vec![NetworkConfig {
+            chain_id: CHAIN_ID,
+            name: "test".to_string(),
+            http_rpcs: vec![SecretUrl::new(http_rpc.parse()?)],
+            ws_rpc: SecretUrl::new(ws_rpc.parse()?),
+        }],
         relayers: vec![],
     };
 
     let app = init_app(config).await?;
     app.db
-        .upsert_network(CHAIN_ID, "test", http_rpc, ws_rpc)
+        .apply_static_config(&app.config.networks, &[], None)
         .await?;
 
     Ok((app, db_container))
