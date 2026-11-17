@@ -294,7 +294,9 @@ impl Database {
         .await?)
     }
 
-    /// Counts the unsent and pending transactions of `relayer_id`.
+    /// Counts the unsent and pending transactions of `relayer_id`, leaving
+    /// out [stale ones](Database::count_stale_txs), which a reset or the
+    /// chain settles.
     #[instrument(skip(self), level = "debug")]
     pub async fn get_relayer_pending_txs(
         &self,
@@ -312,8 +314,10 @@ impl Database {
             r#"
             SELECT t.gas_limit
             FROM transactions t
+            JOIN relayers r ON (t.relayer_id = r.id)
             LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
             WHERE t.relayer_id = $1
+            AND t.nonce >= r.current_nonce
             AND (s.tx_id IS NULL OR s.status = $2)
             "#,
         )
@@ -1536,8 +1540,10 @@ async fn count_queued_txs(
         r#"
         SELECT COUNT(1)
         FROM transactions t
+        JOIN relayers r ON (t.relayer_id = r.id)
         LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
         WHERE t.relayer_id = $1
+        AND t.nonce >= r.current_nonce
         AND (s.tx_id IS NULL OR s.status = $2)
         "#,
     )
@@ -2245,6 +2251,56 @@ mod tests {
         assert_eq!(finalized?, Vec::<String>::new());
         let tx = db.read_tx(&tx_id).await?.context("Missing tx")?;
         assert_eq!(tx.status, Some(TxStatus::Pending));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_txs_hold_no_queue_slots() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        for (max_inflight_txs, max_queued_txs) in
+            [(Some(1), None), (None, Some(2))]
+        {
+            db.update_relayer(
+                &relayer_id,
+                &RelayerUpdateRequest {
+                    relayer_name: None,
+                    max_inflight_txs,
+                    max_queued_txs,
+                    gas_price_limits: None,
+                    enabled: None,
+                },
+            )
+            .await?;
+        }
+        create_tx(&db, &relayer_id, "sent").await?;
+        create_tx(&db, &relayer_id, "unsent").await?;
+        let fee = U256::from(1);
+        db.insert_tx_broadcast("sent", B256::with_last_byte(1), &[1], fee, fee)
+            .await?;
+        assert_eq!(
+            create_tx(&db, &relayer_id, "queue_full").await?,
+            CreateResult::QueueFull
+        );
+
+        // The key used both nonces outside tx-sitter
+        db.update_relayer_nonce(123, Address::with_last_byte(1), 2)
+            .await?;
+        db.purge_unsent_txs(&relayer_id).await?;
+
+        assert_eq!(db.get_relayer_pending_txs(&relayer_id).await?, 0);
+        assert_eq!(
+            db.get_relayer_pending_txs_gas_limit_sum(&relayer_id)
+                .await?,
+            U256::ZERO
+        );
+        for tx_id in ["after_reset_1", "after_reset_2"] {
+            assert_eq!(
+                create_tx(&db, &relayer_id, tx_id).await?,
+                CreateResult::Created
+            );
+        }
 
         Ok(())
     }
