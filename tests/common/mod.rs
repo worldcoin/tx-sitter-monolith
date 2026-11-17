@@ -14,9 +14,12 @@ use tracing_subscriber::EnvFilter;
 use tx_sitter::config::DatabaseConfig;
 use tx_sitter::db::Database;
 use tx_sitter::service::Service;
+use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
 use tx_sitter_client::apis::configuration::Configuration;
-use tx_sitter_client::apis::relayer_v1_api::GetTransactionParams;
-use tx_sitter_client::models::TxStatus;
+use tx_sitter_client::apis::relayer_v1_api::{
+    CreateTransactionParams, GetTransactionParams,
+};
+use tx_sitter_client::models::{SendTxRequest, TxStatus};
 
 mod anvil_builder;
 mod service_builder;
@@ -62,15 +65,17 @@ pub const DEFAULT_ANVIL_BLOCK_TIME: u64 = 2;
 
 pub const DEFAULT_RELAYER_ID: &str = "1b908a34-5dc1-4d2d-a146-5eb46e975830";
 
+/// Installs the log subscriber, unless an earlier test in the same binary
+/// already did.
 pub fn setup_tracing() {
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().pretty().compact())
         .with(
             EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())
                 .parse_lossy("info,tx_sitter=debug"),
         )
-        .init();
+        .try_init();
 }
 
 pub async fn setup_db() -> eyre::Result<(String, DockerContainerGuard)> {
@@ -128,6 +133,44 @@ pub async fn await_balance(
     }
 
     eyre::bail!("Balance did not reach expected value");
+}
+
+/// Creates an API key for the predefined relayer.
+pub async fn create_api_key(client: &Configuration) -> eyre::Result<String> {
+    let response =
+        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
+            client,
+            RelayerCreateApiKeyParams {
+                relayer_id: DEFAULT_RELAYER_ID.to_string(),
+            },
+        )
+        .await?;
+
+    Ok(response.api_key)
+}
+
+/// Sends `value` wei to [`ARBITRARY_ADDRESS`] through tx-sitter and returns
+/// the transaction id.
+pub async fn send_transfer(
+    client: &Configuration,
+    api_key: &str,
+    value: U256,
+) -> eyre::Result<String> {
+    let response = tx_sitter_client::apis::relayer_v1_api::create_transaction(
+        client,
+        CreateTransactionParams {
+            api_token: api_key.to_owned(),
+            send_tx_request: SendTxRequest {
+                to: ARBITRARY_ADDRESS.into(),
+                value: value.into(),
+                gas_limit: U256::from(21_000).into(),
+                ..Default::default()
+            },
+        },
+    )
+    .await?;
+
+    Ok(response.tx_id)
 }
 
 /// Waits until tx-sitter reports the transaction as mined and returns the

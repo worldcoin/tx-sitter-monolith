@@ -26,6 +26,17 @@ pub struct UnsentTx {
     pub chain_id: u64,
 }
 
+/// A relayer's count of pending transactions whose fees are no longer bumped,
+/// see [`Database::count_txs_at_max_escalations`](crate::db::Database::count_txs_at_max_escalations).
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct RelayerTxsAtMaxEscalations {
+    pub relayer_id: String,
+    #[sqlx(try_from = "i64")]
+    pub chain_id: u64,
+    #[sqlx(try_from = "i64")]
+    pub txs: u64,
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct TxForEscalation {
     pub relayer_id: String,
@@ -44,6 +55,12 @@ pub struct TxForEscalation {
     pub initial_max_priority_fee_per_gas: HexU256Wrapper,
     #[sqlx(try_from = "i64")]
     pub escalation_count: usize,
+    /// The bytes of the latest signed version, `None` if it was stored
+    /// before signed bytes were kept
+    pub raw_signed_tx: Option<Vec<u8>>,
+    /// Milliseconds since the latest signed version was stored
+    #[sqlx(try_from = "i64")]
+    pub latest_hash_age_ms: u64,
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]

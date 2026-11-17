@@ -20,7 +20,9 @@ use crate::types::{RelayerUpdateRequest, TransactionPriority, TxStatus};
 pub mod data;
 pub mod wrappers;
 
-use self::data::{BlockFees, NetworkStats, ReadTxData, RpcKind};
+use self::data::{
+    BlockFees, NetworkStats, ReadTxData, RelayerTxsAtMaxEscalations, RpcKind,
+};
 pub use self::data::{TxForEscalation, UnsentTx};
 
 // Statically link in migration files.
@@ -404,11 +406,17 @@ impl Database {
         .await?)
     }
 
-    #[instrument(skip(self), level = "debug")]
+    /// Records the first signed version of `tx_id`, which must be stored
+    /// before it is sent.
+    ///
+    /// Fails if `tx_id` was already broadcast, so that two broadcasts of the
+    /// same transaction can't both be sent.
+    #[instrument(skip(self, raw_signed_tx), level = "debug")]
     pub async fn insert_tx_broadcast(
         &self,
         tx_id: &str,
         tx_hash: B256,
+        raw_signed_tx: &[u8],
         initial_max_fee_per_gas: U256,
         initial_max_priority_fee_per_gas: U256,
     ) -> eyre::Result<()> {
@@ -421,12 +429,13 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO tx_hashes (tx_id, tx_hash, raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas)
+            VALUES ($1, $2, $3, $4, $5)
             "#,
         )
         .bind(tx_id)
         .bind(tx_hash.as_slice())
+        .bind(raw_signed_tx)
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
         .execute(tx.as_mut())
@@ -831,17 +840,21 @@ impl Database {
         Ok(())
     }
 
+    /// Returns the pending transactions whose latest signed version was
+    /// stored more than `escalation_interval` ago, however often they were
+    /// escalated.
     #[instrument(skip(self), level = "debug")]
     pub async fn get_txs_for_escalation(
         &self,
         escalation_interval: Duration,
-        max_escalations: usize,
     ) -> eyre::Result<Vec<TxForEscalation>> {
         Ok(sqlx::query_as(
             r#"
             SELECT r.id as relayer_id, t.id, t.tx_to, t.data, t.value, t.gas_limit, t.nonce,
                    t.blobs, r.key_id, r.chain_id,
-                   s.initial_max_fee_per_gas, s.initial_max_priority_fee_per_gas, s.escalation_count
+                   s.initial_max_fee_per_gas, s.initial_max_priority_fee_per_gas, s.escalation_count,
+                   h.raw_signed_tx,
+                   GREATEST(EXTRACT(EPOCH FROM now() - h.created_at) * 1000, 0)::BIGINT AS latest_hash_age_ms
             FROM   transactions t
             JOIN   sent_transactions s ON t.id = s.tx_id
             JOIN   tx_hashes h ON t.id = h.tx_id
@@ -849,31 +862,93 @@ impl Database {
             WHERE  now() - h.created_at > $1
             AND    s.status = $2
             AND    NOT h.escalated
-            AND    s.escalation_count < $3
             "#,
         )
         .bind(escalation_interval)
+        .bind(TxStatus::Pending)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Counts the pending transactions of every relayer that have at least
+    /// `max_escalations` escalations, including relayers without any.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn count_txs_at_max_escalations(
+        &self,
+        max_escalations: usize,
+    ) -> eyre::Result<Vec<RelayerTxsAtMaxEscalations>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT    r.id AS relayer_id, r.chain_id, COUNT(t.id) AS txs
+            FROM      relayers r
+            LEFT JOIN (
+                          transactions t
+                          JOIN sent_transactions s ON (
+                              s.tx_id = t.id
+                          AND s.status = $1
+                          AND s.escalation_count >= $2
+                          )
+                      ) ON t.relayer_id = r.id
+            GROUP BY  r.id
+            "#,
+        )
         .bind(TxStatus::Pending)
         .bind(max_escalations as i64)
         .fetch_all(&self.pool)
         .await?)
     }
 
-    #[instrument(skip(self), level = "debug")]
+    /// Records `tx_hash` as the replacement of `tx_id` that follows its
+    /// `escalation_count` earlier escalations. It must be stored before it is
+    /// sent. The versions it replaces keep their hashes, so that indexing
+    /// still finds them mined, but drop their signed bytes, which are never
+    /// sent again.
+    ///
+    /// Returns `false`, and changes nothing, unless `tx_id` is still pending
+    /// with exactly `escalation_count` escalations. Then another escalation or
+    /// a status change won the race, and this replacement must not be sent.
+    #[instrument(skip(self, raw_signed_tx), level = "debug")]
     pub async fn escalate_tx(
         &self,
         tx_id: &str,
+        escalation_count: usize,
         tx_hash: B256,
+        raw_signed_tx: &[u8],
         max_fee_per_gas: U256,
         max_priority_fee_per_gas: U256,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<bool> {
         let mut tx = self.pool.begin().await?;
+
+        // Locks the row, so a concurrent escalation waits here and then finds
+        // the count changed
+        let escalated = sqlx::query(
+            r#"
+            UPDATE sent_transactions
+            SET    escalation_count = escalation_count + 1,
+                   updated_at = now()
+            WHERE  tx_id = $1
+            AND    escalation_count = $2
+            AND    status = $3
+            "#,
+        )
+        .bind(tx_id)
+        .bind(escalation_count as i64)
+        .bind(TxStatus::Pending)
+        .execute(tx.as_mut())
+        .await?;
+
+        if escalated.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
 
         sqlx::query(
             r#"
             UPDATE tx_hashes
-            SET    escalated = true
+            SET    escalated = true,
+                   raw_signed_tx = NULL
             WHERE  tx_id = $1
+            AND    NOT escalated
             "#,
         )
         .bind(tx_id)
@@ -886,12 +961,13 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO tx_hashes (tx_id, tx_hash, max_fee_per_gas, max_priority_fee_per_gas)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO tx_hashes (tx_id, tx_hash, raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas)
+            VALUES ($1, $2, $3, $4, $5)
             "#
         )
         .bind(tx_id)
         .bind(tx_hash.as_slice())
+        .bind(raw_signed_tx)
         .bind(max_fee_per_gas_bytes)
         .bind(max_priority_fee_per_gas_bytes)
         .execute(tx.as_mut())
@@ -900,8 +976,7 @@ impl Database {
         sqlx::query(
             r#"
             UPDATE sent_transactions
-            SET    escalation_count = escalation_count + 1,
-                   valid_tx_hash = $2
+            SET    valid_tx_hash = $2
             WHERE  tx_id = $1
             "#,
         )
@@ -912,7 +987,7 @@ impl Database {
 
         tx.commit().await?;
 
-        Ok(())
+        Ok(true)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1649,6 +1724,7 @@ mod tests {
         db.insert_tx_broadcast(
             tx_id,
             tx_hash_1,
+            &[1],
             initial_max_fee_per_gas,
             initial_max_priority_fee_per_gas,
         )
@@ -1671,13 +1747,17 @@ mod tests {
 
         assert_eq!(all_txs, pending_txs);
 
-        db.escalate_tx(
-            tx_id,
-            tx_hash_2,
-            initial_max_fee_per_gas,
-            initial_max_priority_fee_per_gas,
-        )
-        .await?;
+        let is_escalated = db
+            .escalate_tx(
+                tx_id,
+                0,
+                tx_hash_2,
+                &[2],
+                initial_max_fee_per_gas,
+                initial_max_priority_fee_per_gas,
+            )
+            .await?;
+        assert!(is_escalated);
 
         let tx = db.read_tx(tx_id).await?.context("Missing tx")?;
 
@@ -1749,6 +1829,160 @@ mod tests {
 
         assert_eq!(tx.tx_hash.unwrap().0, tx_hash_2);
         assert_eq!(tx.status, Some(TxStatus::Finalized));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn second_broadcast_of_a_tx_fails() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        create_tx(&db, &relayer_id, "tx_id").await?;
+
+        let fee = U256::from(1);
+        db.insert_tx_broadcast(
+            "tx_id",
+            B256::with_last_byte(1),
+            &[1],
+            fee,
+            fee,
+        )
+        .await?;
+        let second_broadcast = db
+            .insert_tx_broadcast(
+                "tx_id",
+                B256::with_last_byte(2),
+                &[2],
+                fee,
+                fee,
+            )
+            .await;
+
+        assert!(second_broadcast.is_err());
+        assert_eq!(tx_hashes(&db, "tx_id").await?, [B256::with_last_byte(1)]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_escalations_store_one_replacement() -> eyre::Result<()>
+    {
+        let (db, _db_container) = setup_db().await?;
+        let tx_id = create_broadcast_tx(&db).await?;
+
+        let escalations = (2..10u8).map(|hash_byte| {
+            let (db, tx_id) = (&db, &tx_id);
+
+            async move {
+                db.escalate_tx(
+                    tx_id,
+                    0,
+                    B256::with_last_byte(hash_byte),
+                    &[hash_byte],
+                    U256::from(hash_byte) * U256::from(10),
+                    U256::from(hash_byte),
+                )
+                .await
+            }
+        });
+        let results = futures::future::try_join_all(escalations).await?;
+
+        assert_eq!(results.iter().filter(|stored| **stored).count(), 1);
+
+        let hashes = tx_hashes(&db, &tx_id).await?;
+        assert_eq!(hashes.len(), 2);
+        let replacement = hashes[1];
+
+        let (escalation_count, valid_tx_hash): (i64, H256Wrapper) =
+            sqlx::query_as(
+                "SELECT escalation_count, valid_tx_hash FROM sent_transactions WHERE tx_id = $1",
+            )
+            .bind(&tx_id)
+            .fetch_one(&db.pool)
+            .await?;
+        assert_eq!(escalation_count, 1);
+        assert_eq!(valid_tx_hash.0, replacement);
+
+        let (raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas, escalated): (
+            Vec<u8>,
+            HexU256Wrapper,
+            HexU256Wrapper,
+            bool,
+        ) = sqlx::query_as(
+            "SELECT raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas, escalated FROM tx_hashes WHERE tx_hash = $1",
+        )
+        .bind(replacement.as_slice())
+        .fetch_one(&db.pool)
+        .await?;
+        let hash_byte = replacement[31];
+        assert_eq!(raw_signed_tx, [hash_byte]);
+        assert_eq!(max_fee_per_gas.0, U256::from(hash_byte) * U256::from(10));
+        assert_eq!(max_priority_fee_per_gas.0, U256::from(hash_byte));
+        assert!(!escalated);
+
+        let (original_raw_signed_tx,): (Option<Vec<u8>>,) = sqlx::query_as(
+            "SELECT raw_signed_tx FROM tx_hashes WHERE tx_hash = $1",
+        )
+        .bind(hashes[0].as_slice())
+        .fetch_one(&db.pool)
+        .await?;
+        assert_eq!(original_raw_signed_tx, None);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_of_a_changed_tx_is_not_stored() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let tx_id = create_broadcast_tx(&db).await?;
+        let fee = U256::from(1);
+
+        let stale_count = db
+            .escalate_tx(&tx_id, 1, B256::with_last_byte(2), &[2], fee, fee)
+            .await?;
+
+        sqlx::query(
+            "UPDATE sent_transactions SET status = $1 WHERE tx_id = $2",
+        )
+        .bind(TxStatus::Mined)
+        .bind(&tx_id)
+        .execute(&db.pool)
+        .await?;
+        let mined = db
+            .escalate_tx(&tx_id, 0, B256::with_last_byte(3), &[3], fee, fee)
+            .await?;
+
+        assert!(!stale_count);
+        assert!(!mined);
+        assert_eq!(tx_hashes(&db, &tx_id).await?, [B256::with_last_byte(1)]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn counts_pending_txs_at_max_escalations() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let tx_id = create_broadcast_tx(&db).await?;
+        let idle_relayer_id = create_relayer(&db).await?;
+        let fee = U256::from(1);
+        db.escalate_tx(&tx_id, 0, B256::with_last_byte(2), &[2], fee, fee)
+            .await?;
+
+        let txs_at = |max_escalations| {
+            txs_at_max_escalations(&db, max_escalations, &idle_relayer_id)
+        };
+
+        assert_eq!(txs_at(2).await?, [0, 0]);
+        assert_eq!(txs_at(1).await?, [0, 1]);
+
+        sqlx::query(
+            "UPDATE sent_transactions SET status = $1 WHERE tx_id = $2",
+        )
+        .bind(TxStatus::Mined)
+        .bind(&tx_id)
+        .execute(&db.pool)
+        .await?;
+        assert_eq!(txs_at(1).await?, [0, 0]);
 
         Ok(())
     }
@@ -1981,6 +2215,7 @@ mod tests {
         db.insert_tx_broadcast(
             tx_id,
             tx_hash,
+            &[0x02, 0xf8],
             U256::from(2_000_000_000u64),
             U256::from(1_000_000_000u64),
         )
@@ -2030,18 +2265,20 @@ mod tests {
         assert_eq!(value, u256_be_bytes(1_000_000_000_000_000_000));
         assert_eq!(gas_limit, u256_be_bytes(21_000));
 
-        let (hash, max_fee_per_gas, max_priority_fee_per_gas): (
+        let (hash, raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas): (
+            Vec<u8>,
             Vec<u8>,
             Vec<u8>,
             Vec<u8>,
         ) = sqlx::query_as(
-            "SELECT tx_hash, max_fee_per_gas, max_priority_fee_per_gas FROM tx_hashes WHERE tx_id = $1",
+            "SELECT tx_hash, raw_signed_tx, max_fee_per_gas, max_priority_fee_per_gas FROM tx_hashes WHERE tx_id = $1",
         )
         .bind(tx_id)
         .fetch_one(&db.pool)
         .await?;
 
         assert_eq!(hash, HASH);
+        assert_eq!(raw_signed_tx, [0x02, 0xf8]);
         assert_eq!(max_fee_per_gas, u256_be_bytes(2_000_000_000));
         assert_eq!(max_priority_fee_per_gas, u256_be_bytes(1_000_000_000));
 
@@ -2089,6 +2326,82 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Creates a network with a relayer and returns the relayer id.
+    async fn create_relayer(db: &Database) -> eyre::Result<String> {
+        let chain_id = 123;
+        db.upsert_network(chain_id, "network_name", "http_rpc", "ws_rpc")
+            .await?;
+
+        let relayer_id = uuid();
+        db.create_relayer(
+            &relayer_id,
+            "relayer_name",
+            chain_id,
+            "key_id",
+            Address::with_last_byte(1),
+        )
+        .await?;
+
+        Ok(relayer_id)
+    }
+
+    async fn create_tx(
+        db: &Database,
+        relayer_id: &str,
+        tx_id: &str,
+    ) -> eyre::Result<CreateResult> {
+        db.create_transaction(
+            tx_id,
+            Address::with_last_byte(1),
+            &[],
+            U256::ZERO,
+            U256::from(21_000),
+            TransactionPriority::Regular,
+            None,
+            relayer_id,
+        )
+        .await
+    }
+
+    /// Returns the counts of [`Database::count_txs_at_max_escalations`], that
+    /// of `first_relayer_id` first.
+    async fn txs_at_max_escalations(
+        db: &Database,
+        max_escalations: usize,
+        first_relayer_id: &str,
+    ) -> eyre::Result<Vec<u64>> {
+        let mut relayers =
+            db.count_txs_at_max_escalations(max_escalations).await?;
+        relayers.sort_by_key(|relayer| relayer.relayer_id != first_relayer_id);
+
+        Ok(relayers.into_iter().map(|relayer| relayer.txs).collect())
+    }
+
+    /// Creates a transaction broadcast with hash `0x..01` and returns its id.
+    async fn create_broadcast_tx(db: &Database) -> eyre::Result<String> {
+        let relayer_id = create_relayer(db).await?;
+        let tx_id = "tx_id".to_string();
+        create_tx(db, &relayer_id, &tx_id).await?;
+
+        let fee = U256::from(1);
+        db.insert_tx_broadcast(&tx_id, B256::with_last_byte(1), &[1], fee, fee)
+            .await?;
+
+        Ok(tx_id)
+    }
+
+    /// Returns the hashes stored for `tx_id`, oldest first.
+    async fn tx_hashes(db: &Database, tx_id: &str) -> eyre::Result<Vec<B256>> {
+        let hashes: Vec<(H256Wrapper,)> = sqlx::query_as(
+            "SELECT tx_hash FROM tx_hashes WHERE tx_id = $1 ORDER BY created_at, tx_hash",
+        )
+        .bind(tx_id)
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(hashes.into_iter().map(|(hash,)| hash.0).collect())
     }
 
     /// Big-endian 32-byte encoding of a U256 that fits in a `u64`.
