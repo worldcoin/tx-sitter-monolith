@@ -40,6 +40,8 @@ async fn escalate_txs(app: &App, ctx: &TaskContext) -> eyre::Result<()> {
 
     tracing::info!("Got {} transactions to escalate", txs_for_escalation.len());
 
+    report_txs_at_max_escalations(app).await?;
+
     let txs_for_escalation = split_txs_per_relayer(txs_for_escalation);
 
     let mut futures = FuturesUnordered::new();
@@ -52,6 +54,29 @@ async fn escalate_txs(app: &App, ctx: &TaskContext) -> eyre::Result<()> {
         if let Err(err) = result {
             tracing::error!(error = ?err, "Failed escalating txs");
         }
+    }
+
+    Ok(())
+}
+
+/// Sets the `relayer_txs_at_max_escalations` gauge of every relayer, which
+/// stays raised while a transaction whose fees are no longer bumped is
+/// pending.
+async fn report_txs_at_max_escalations(app: &App) -> eyre::Result<()> {
+    let relayers = app
+        .db
+        .count_txs_at_max_escalations(app.config.service.max_escalations)
+        .await?;
+
+    for relayer in relayers {
+        metrics::gauge!(
+            "relayer_txs_at_max_escalations",
+            &[
+                ("relayer_id", relayer.relayer_id),
+                ("chain_id", relayer.chain_id.to_string()),
+            ]
+        )
+        .set(relayer.txs as f64);
     }
 
     Ok(())

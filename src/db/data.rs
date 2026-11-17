@@ -26,6 +26,17 @@ pub struct UnsentTx {
     pub chain_id: u64,
 }
 
+/// A relayer's count of pending transactions whose fees are no longer bumped,
+/// see [`Database::count_txs_at_max_escalations`](crate::db::Database::count_txs_at_max_escalations).
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct RelayerTxsAtMaxEscalations {
+    pub relayer_id: String,
+    #[sqlx(try_from = "i64")]
+    pub chain_id: u64,
+    #[sqlx(try_from = "i64")]
+    pub txs: u64,
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct TxForEscalation {
     pub relayer_id: String,

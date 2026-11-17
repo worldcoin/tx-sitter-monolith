@@ -20,7 +20,9 @@ use crate::types::{RelayerUpdateRequest, TransactionPriority, TxStatus};
 pub mod data;
 pub mod wrappers;
 
-use self::data::{BlockFees, NetworkStats, ReadTxData, RpcKind};
+use self::data::{
+    BlockFees, NetworkStats, ReadTxData, RelayerTxsAtMaxEscalations, RpcKind,
+};
 pub use self::data::{TxForEscalation, UnsentTx};
 
 // Statically link in migration files.
@@ -864,6 +866,34 @@ impl Database {
         )
         .bind(escalation_interval)
         .bind(TxStatus::Pending)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Counts the pending transactions of every relayer that have at least
+    /// `max_escalations` escalations, including relayers without any.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn count_txs_at_max_escalations(
+        &self,
+        max_escalations: usize,
+    ) -> eyre::Result<Vec<RelayerTxsAtMaxEscalations>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT    r.id AS relayer_id, r.chain_id, COUNT(t.id) AS txs
+            FROM      relayers r
+            LEFT JOIN (
+                          transactions t
+                          JOIN sent_transactions s ON (
+                              s.tx_id = t.id
+                          AND s.status = $1
+                          AND s.escalation_count >= $2
+                          )
+                      ) ON t.relayer_id = r.id
+            GROUP BY  r.id
+            "#,
+        )
+        .bind(TxStatus::Pending)
+        .bind(max_escalations as i64)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -1930,6 +1960,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn counts_pending_txs_at_max_escalations() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let tx_id = create_broadcast_tx(&db).await?;
+        let idle_relayer_id = create_relayer(&db).await?;
+        let fee = U256::from(1);
+        db.escalate_tx(&tx_id, 0, B256::with_last_byte(2), &[2], fee, fee)
+            .await?;
+
+        let txs_at = |max_escalations| {
+            txs_at_max_escalations(&db, max_escalations, &idle_relayer_id)
+        };
+
+        assert_eq!(txs_at(2).await?, [0, 0]);
+        assert_eq!(txs_at(1).await?, [0, 1]);
+
+        sqlx::query(
+            "UPDATE sent_transactions SET status = $1 WHERE tx_id = $2",
+        )
+        .bind(TxStatus::Mined)
+        .bind(&tx_id)
+        .execute(&db.pool)
+        .await?;
+        assert_eq!(txs_at(1).await?, [0, 0]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn read_tx() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
 
@@ -2305,6 +2363,20 @@ mod tests {
             relayer_id,
         )
         .await
+    }
+
+    /// Returns the counts of [`Database::count_txs_at_max_escalations`], that
+    /// of `first_relayer_id` first.
+    async fn txs_at_max_escalations(
+        db: &Database,
+        max_escalations: usize,
+        first_relayer_id: &str,
+    ) -> eyre::Result<Vec<u64>> {
+        let mut relayers =
+            db.count_txs_at_max_escalations(max_escalations).await?;
+        relayers.sort_by_key(|relayer| relayer.relayer_id != first_relayer_id);
+
+        Ok(relayers.into_iter().map(|relayer| relayer.txs).collect())
     }
 
     /// Creates a transaction broadcast with hash `0x..01` and returns its id.
