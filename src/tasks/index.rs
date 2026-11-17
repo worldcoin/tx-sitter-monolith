@@ -47,11 +47,6 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     .context("Subscribing to new blocks")?
     .into_stream();
 
-    tracing::info!("Backfilling blocks");
-    if let Some(latest_block) = blocks_stream.next().await {
-        backfill_to_block(app.clone(), chain_id, &rpc, latest_block).await?;
-    }
-
     loop {
         let next_block = timeout(
             app.config.service.block_stream_timeout,
@@ -69,8 +64,10 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
                 break;
             }
             Err(_) => {
-                // Timeout occurred
-                tracing::warn!("Timed out waiting for a block");
+                tracing::warn!(
+                    timeout = ?app.config.service.block_stream_timeout,
+                    "Timed out waiting for a block"
+                );
                 break;
             }
         }
@@ -316,4 +313,88 @@ pub async fn get_block_fee_estimates(
     let fee_estimates = estimate_percentile_fees(&fee_history)?;
 
     Ok(fee_estimates)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Instant;
+
+    use futures::SinkExt;
+    use postgres_docker_utils::DockerContainerGuard;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    use super::*;
+    use crate::test_utils::{
+        setup_app, UnresponsiveServer, BLOCK_STREAM_TIMEOUT, CHAIN_ID,
+    };
+
+    #[tokio::test]
+    async fn waiting_for_a_block_ends_after_block_stream_timeout(
+    ) -> eyre::Result<()> {
+        let ws_addr = spawn_ws_rpc_without_blocks().await?;
+        let (app, _db_container) = setup_app_with_ws_rpc(ws_addr).await?;
+
+        let started = Instant::now();
+        timeout(BLOCK_STREAM_TIMEOUT * 3, index_inner(app, CHAIN_ID))
+            .await
+            .context("Waiting for a block outlived block_stream_timeout")??;
+        let elapsed = started.elapsed();
+
+        assert!(elapsed >= BLOCK_STREAM_TIMEOUT, "Took {elapsed:?}");
+        assert!(elapsed <= BLOCK_STREAM_TIMEOUT * 2, "Took {elapsed:?}");
+
+        Ok(())
+    }
+
+    /// Starts a WS server that answers every request with a subscription id
+    /// and never sends a block.
+    async fn spawn_ws_rpc_without_blocks() -> eyre::Result<SocketAddr> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(stream)
+                        .await
+                        .expect("WS upgrade failed");
+
+                    while let Some(Ok(message)) = ws.next().await {
+                        let Message::Text(request) = message else {
+                            continue;
+                        };
+
+                        let request: serde_json::Value =
+                            serde_json::from_str(&request)
+                                .expect("Invalid JSON-RPC request");
+                        let response = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": "0x1",
+                        });
+                        ws.send(Message::text(response.to_string()))
+                            .await
+                            .expect("Failed to answer");
+                    }
+                });
+            }
+        });
+
+        Ok(addr)
+    }
+
+    async fn setup_app_with_ws_rpc(
+        ws_addr: SocketAddr,
+    ) -> eyre::Result<(Arc<App>, DockerContainerGuard)> {
+        let http_rpc = UnresponsiveServer::spawn().await?;
+        let (app, db_container) = setup_app(
+            &format!("http://{}", http_rpc.addr),
+            &format!("ws://{ws_addr}"),
+        )
+        .await?;
+
+        Ok((Arc::new(app), db_container))
+    }
 }

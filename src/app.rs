@@ -138,24 +138,23 @@ fn rpc_http_client(rpc_timeout: Duration) -> eyre::Result<reqwest::Client> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Instant;
 
     use alloy::providers::Provider;
-    use postgres_docker_utils::DockerContainerGuard;
-    use tokio::net::TcpListener;
 
     use super::*;
-    use crate::config::{
-        DatabaseConfig, LocalKeysConfig, ServerConfig, TxSitterConfig,
+    use crate::test_utils::{
+        setup_app, UnresponsiveServer, CHAIN_ID, RPC_TIMEOUT,
     };
-
-    const RPC_TIMEOUT: Duration = Duration::from_secs(1);
-    const CHAIN_ID: u64 = 1;
 
     #[tokio::test]
     async fn http_rpc_call_fails_within_rpc_timeout() -> eyre::Result<()> {
-        let (app, _db_container) = setup_app_with_unresponsive_rpc().await?;
+        let rpc = UnresponsiveServer::spawn().await?;
+        let (app, _db_container) = setup_app(
+            &format!("http://{}", rpc.addr),
+            &format!("ws://{}", rpc.addr),
+        )
+        .await?;
         let provider = app.http_provider(CHAIN_ID).await?;
 
         let started = Instant::now();
@@ -171,7 +170,12 @@ mod tests {
 
     #[tokio::test]
     async fn ws_connect_fails_within_rpc_timeout() -> eyre::Result<()> {
-        let (app, _db_container) = setup_app_with_unresponsive_rpc().await?;
+        let rpc = UnresponsiveServer::spawn().await?;
+        let (app, _db_container) = setup_app(
+            &format!("http://{}", rpc.addr),
+            &format!("ws://{}", rpc.addr),
+        )
+        .await?;
 
         let started = Instant::now();
         let result = timeout(RPC_TIMEOUT * 3, app.ws_provider(CHAIN_ID))
@@ -182,79 +186,5 @@ mod tests {
         assert!(started.elapsed() >= RPC_TIMEOUT);
 
         Ok(())
-    }
-
-    async fn setup_app_with_unresponsive_rpc(
-    ) -> eyre::Result<(App, DockerContainerGuard)> {
-        let rpc_addr = spawn_unresponsive_rpc().await?;
-        let (app, db_container) = setup_app().await?;
-
-        app.db
-            .upsert_network(
-                CHAIN_ID,
-                "unresponsive",
-                &format!("http://{rpc_addr}"),
-                &format!("ws://{rpc_addr}"),
-            )
-            .await?;
-
-        Ok((app, db_container))
-    }
-
-    /// Starts a TCP server that accepts connections and never answers.
-    async fn spawn_unresponsive_rpc() -> eyre::Result<SocketAddr> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-        let addr = listener.local_addr()?;
-
-        tokio::spawn(async move {
-            let mut connections = Vec::new();
-
-            while let Ok((stream, _)) = listener.accept().await {
-                connections.push(stream);
-            }
-        });
-
-        Ok(addr)
-    }
-
-    async fn setup_app() -> eyre::Result<(App, DockerContainerGuard)> {
-        let db_container = postgres_docker_utils::setup().await?;
-        let db_url = format!(
-            "postgres://postgres:postgres@{}/database",
-            db_container.address()
-        );
-
-        let config = Config {
-            service: TxSitterConfig {
-                escalation_interval: Duration::from_secs(60),
-                max_escalations: 100,
-                soft_reorg_interval: Duration::from_secs(60),
-                hard_reorg_interval: Duration::from_secs(60),
-                block_stream_timeout: Duration::from_secs(60),
-                rpc_timeout: RPC_TIMEOUT,
-                predefined: None,
-                telemetry: None,
-            },
-            server: ServerConfig {
-                host: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-                username: None,
-                password: None,
-                server_address: None,
-            },
-            database: DatabaseConfig::connection_string(db_url),
-            keys: KeysConfig::Local(LocalKeysConfig::default()),
-        };
-
-        for _ in 0..5 {
-            match App::new(config.clone()).await {
-                Ok(app) => return Ok((app, db_container)),
-                Err(err) => {
-                    eprintln!("Failed to initialize the app: {err:?}");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
-
-        Err(eyre::eyre!("Failed to initialize the app"))
     }
 }
