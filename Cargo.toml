@@ -94,7 +94,6 @@ tracing-error = "0.2.0"
 url = "2.4.1"
 uuid = { version = "0.8", features = ["v4"] }
 version = "3.0.0"
-regex = "1.10.4"
 webpki-root-certs = "1.0.12"
 
 [dev-dependencies]
