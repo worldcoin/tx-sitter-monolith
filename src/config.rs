@@ -80,7 +80,7 @@ pub struct Config {
     pub networks: Vec<NetworkConfig>,
 
     /// Every relayer the service knows. A relayer in the database but not
-    /// in this list is disabled at startup.
+    /// in this list is disabled at startup, and loses its API keys.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relayers: Vec<RelayerConfig>,
 }

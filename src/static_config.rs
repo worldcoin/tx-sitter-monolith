@@ -26,8 +26,7 @@ const KEY_LOAD_MAX_ATTEMPTS: u32 = 5;
 /// further retry
 const KEY_LOAD_FIRST_BACKOFF: Duration = Duration::from_millis(500);
 
-/// The revision of a static config and a hash of what it writes into the
-/// database
+/// The revision of a static config and a hash of its networks and relayers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigVersion {
     pub revision: u64,
@@ -113,8 +112,9 @@ pub fn plan(
 }
 
 /// Writes the networks, relayers and API keys of the config into the
-/// database, see [`Database::apply_static_config`], and logs every change at
-/// warn.
+/// database, see [`Database::apply_static_config`], and logs at warn every
+/// change, and every disabled relayer that still has unsent or in-flight
+/// transactions.
 ///
 /// When the database already holds this config's revision and hash, this
 /// does nothing, so that restarts don't depend on KMS. Otherwise it first
@@ -161,7 +161,12 @@ pub async fn apply(app: &App) -> eyre::Result<()> {
 
     changes.iter().for_each(log_change);
 
-    for backlog in app.db.get_disabled_relayer_backlogs().await? {
+    let backlogs = app
+        .db
+        .get_disabled_relayer_backlogs()
+        .await
+        .context("Reading the transactions of disabled relayers")?;
+    for backlog in backlogs {
         tracing::warn!(
             relayer_id = backlog.relayer_id,
             relayer_name = backlog.relayer_name,
