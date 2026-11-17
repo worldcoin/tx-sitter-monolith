@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::time::Duration;
 
 use alloy::primitives::B256;
 use eyre::Context;
@@ -8,9 +9,22 @@ use sha3::{Digest, Sha3_256};
 use crate::app::App;
 use crate::config::{NetworkConfig, RelayerConfig};
 use crate::db::data::{ConfigChange, Reconciliation};
+use crate::keys::kms_keys::is_transient_error;
+use crate::keys::{KeysSource, UniversalSigner};
+use crate::task_runner::with_jitter;
 
 /// How many relayer keys are loaded at once at startup
 const KEY_CHECK_CONCURRENCY: usize = 8;
+
+/// Max amount of time the key check may take, retries included
+const KEY_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How many times a key load that fails with a transient KMS error is tried
+const KEY_LOAD_MAX_ATTEMPTS: u32 = 5;
+
+/// The backoff before the first retry of a key load, doubled for every
+/// further retry
+const KEY_LOAD_FIRST_BACKOFF: Duration = Duration::from_millis(500);
 
 /// The revision of a static config and a hash of what it writes into the
 /// database
@@ -128,7 +142,13 @@ pub async fn apply(app: &App) -> eyre::Result<()> {
         ),
     }
 
-    verify_relayer_keys(app).await?;
+    tokio::time::timeout(KEY_CHECK_TIMEOUT, verify_relayer_keys(app))
+        .await
+        .map_err(|_| {
+            eyre::eyre!(
+                "The relayer key check didn't finish within {KEY_CHECK_TIMEOUT:?}"
+            )
+        })??;
 
     let reconciliation = app
         .db
@@ -205,7 +225,8 @@ fn log_change(change: &ConfigChange) {
 /// fault, if a key can't be loaded or derives another address than the
 /// configured one.
 ///
-/// KMS keys are loaded with `GetPublicKey`, bounded by `keys.kms_timeout`.
+/// KMS keys are loaded with `GetPublicKey`, each attempt bounded by
+/// `keys.kms_timeout`, see [`load_signer_with_retries`].
 async fn verify_relayer_keys(app: &App) -> eyre::Result<()> {
     let errors: Vec<String> = stream::iter(&app.config.relayers)
         .filter(|relayer| std::future::ready(relayer.enabled))
@@ -227,9 +248,7 @@ async fn verify_relayer_key(
     app: &App,
     relayer: &RelayerConfig,
 ) -> eyre::Result<()> {
-    let signer = app
-        .keys_source
-        .load_signer(relayer.key.key_id().to_string())
+    let signer = load_signer_with_retries(app.keys_source.as_ref(), relayer)
         .await
         .with_context(|| format!("relayer {}: loading its key", relayer.id))?;
 
@@ -245,13 +264,53 @@ async fn verify_relayer_key(
     Ok(())
 }
 
+/// Loads the key of `relayer`, retrying errors that [`is_transient_error`]
+/// accepts up to [`KEY_LOAD_MAX_ATTEMPTS`] times with exponential backoff and
+/// jitter.
+async fn load_signer_with_retries(
+    keys_source: &dyn KeysSource,
+    relayer: &RelayerConfig,
+) -> eyre::Result<UniversalSigner> {
+    let mut backoff = KEY_LOAD_FIRST_BACKOFF;
+    let mut attempt = 1;
+
+    loop {
+        let err = match keys_source
+            .load_signer(relayer.key.key_id().to_string())
+            .await
+        {
+            Ok(signer) => return Ok(signer),
+            Err(err) => err,
+        };
+
+        if attempt >= KEY_LOAD_MAX_ATTEMPTS || !is_transient_error(&err) {
+            return Err(err);
+        }
+
+        tracing::warn!(
+            relayer_id = relayer.id,
+            attempt,
+            error = %format!("{err:#}"),
+            "Loading a relayer's key failed, retrying"
+        );
+        tokio::time::sleep(with_jitter(backoff)).await;
+        backoff *= 2;
+        attempt += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+
     use alloy::primitives::Address;
+    use alloy::signers::aws::AwsSignerError;
+    use aws_smithy_runtime_api::client::result::SdkError;
     use test_case::test_case;
 
     use super::*;
-    use crate::config::RelayerKey;
+    use crate::config::{LocalKeysConfig, RelayerKey};
+    use crate::keys::LocalKeys;
     use crate::types::secret_string::SecretString;
     use crate::types::secret_url::SecretUrl;
 
@@ -370,5 +429,71 @@ mod tests {
         let err = plan(stored, incoming).unwrap_err();
 
         assert!(err.to_string().starts_with(expected_error), "{err}");
+    }
+
+    /// Fails its first `failures` loads with `error`, then loads local keys.
+    struct FlakyKeys {
+        failures: u32,
+        error: fn() -> eyre::Report,
+        attempts: AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl KeysSource for FlakyKeys {
+        async fn new_signer(
+            &self,
+            _meta_name: &str,
+        ) -> eyre::Result<(String, UniversalSigner)> {
+            eyre::bail!("Not supported")
+        }
+
+        async fn load_signer(
+            &self,
+            id: String,
+        ) -> eyre::Result<UniversalSigner> {
+            if self.attempts.fetch_add(1, AtomicOrdering::SeqCst)
+                < self.failures
+            {
+                return Err((self.error)());
+            }
+
+            LocalKeys::new(&LocalKeysConfig::default())
+                .load_signer(id)
+                .await
+        }
+    }
+
+    fn kms_timeout() -> eyre::Report {
+        AwsSignerError::GetPublicKey(SdkError::timeout_error("timed out"))
+            .into()
+    }
+
+    fn not_found() -> eyre::Report {
+        eyre::eyre!("Key not found")
+    }
+
+    #[test_case(2, kms_timeout, true, 3 ; "transient errors are retried")]
+    #[test_case(10, kms_timeout, false, KEY_LOAD_MAX_ATTEMPTS ; "retries are bounded")]
+    #[test_case(1, not_found, false, 1 ; "other errors are not retried")]
+    #[tokio::test(start_paused = true)]
+    async fn key_loads_retry_transient_errors(
+        failures: u32,
+        error: fn() -> eyre::Report,
+        succeeds: bool,
+        expected_attempts: u32,
+    ) {
+        let keys = FlakyKeys {
+            failures,
+            error,
+            attempts: AtomicU32::new(0),
+        };
+
+        let result = load_signer_with_retries(&keys, &relayer("a", &[])).await;
+
+        assert_eq!(result.is_ok(), succeeds, "{result:?}");
+        assert_eq!(
+            keys.attempts.load(AtomicOrdering::SeqCst),
+            expected_attempts
+        );
     }
 }
