@@ -10,7 +10,6 @@ use chrono::{DateTime, Utc};
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use tokio::time::timeout;
 
 use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
@@ -29,28 +28,36 @@ const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
 
 /// Indexes the blocks of `chain_id` as they arrive on its block stream.
 ///
-/// Returns an error once the stream ends or goes quiet for
+/// Returns an error once connecting or subscribing takes longer than
+/// `rpc_timeout`, or the stream ends or goes quiet for
 /// `block_stream_timeout`, so that the task runner restarts indexing after a
 /// backoff. Every start reads the RPC URLs from the database, so a changed URL
-/// takes effect on the next reconnect.
+/// takes effect on the next reconnect. Once shutdown is requested it returns
+/// at once, also while connecting or subscribing.
 #[tracing::instrument(skip(app, ctx), level = "info")]
 pub async fn index_chain(
     app: Arc<App>,
     ctx: TaskContext,
     chain_id: u64,
 ) -> eyre::Result<()> {
-    let ws_rpc = app.ws_provider(chain_id).await?;
+    let rpc_timeout = app.config.service.rpc_timeout;
     let rpc = app.http_provider(chain_id).await?;
 
+    let ws_rpc = match ctx.wait(rpc_timeout, app.ws_provider(chain_id)).await {
+        Wait::Ready(ws_rpc) => ws_rpc?,
+        Wait::TimedOut => eyre::bail!("Timed out connecting to WS provider"),
+        Wait::ShuttingDown => return Ok(()),
+    };
+
     tracing::info!("Subscribing to new blocks");
-    let mut blocks_stream = timeout(
-        app.config.service.rpc_timeout,
-        ws_rpc.subscribe_blocks().into_future(),
-    )
-    .await
-    .context("Timed out subscribing to new blocks")?
-    .context("Subscribing to new blocks")?
-    .into_stream();
+    let subscription = ws_rpc.subscribe_blocks().into_future();
+    let mut blocks_stream = match ctx.wait(rpc_timeout, subscription).await {
+        Wait::Ready(subscription) => subscription
+            .context("Subscribing to new blocks")?
+            .into_stream(),
+        Wait::TimedOut => eyre::bail!("Timed out subscribing to new blocks"),
+        Wait::ShuttingDown => return Ok(()),
+    };
     let block_stream_timeout = app.config.service.block_stream_timeout;
 
     while !ctx.is_shutting_down() {
@@ -365,16 +372,37 @@ mod tests {
     use futures::SinkExt;
     use postgres_docker_utils::DockerContainerGuard;
     use tokio::net::TcpListener;
+    use tokio::time::timeout;
     use tokio_tungstenite::tungstenite::Message;
     use tokio_util::sync::CancellationToken;
-
-    use tokio::time::error::Elapsed;
 
     use super::*;
     use crate::test_utils::{
         setup_app, UnresponsiveServer, BLOCK_STREAM_TIMEOUT, CHAIN_ID,
         RPC_TIMEOUT,
     };
+
+    #[tokio::test]
+    async fn connecting_fails_within_rpc_timeout() -> eyre::Result<()> {
+        let ws_rpc = UnresponsiveServer::spawn().await?;
+        let (app, _db_container) = setup_app_with_ws_rpc(ws_rpc.addr).await?;
+
+        let started = Instant::now();
+        let result =
+            timeout(RPC_TIMEOUT * 3, index_chain(app, ctx(), CHAIN_ID))
+                .await
+                .context("Connecting outlived rpc_timeout")?;
+        let elapsed = started.elapsed();
+
+        let Err(err) = result else {
+            eyre::bail!("Connected without an answer");
+        };
+        assert_eq!(err.to_string(), "Timed out connecting to WS provider");
+        assert!(elapsed >= RPC_TIMEOUT, "Took {elapsed:?}");
+        assert!(elapsed <= RPC_TIMEOUT * 2, "Took {elapsed:?}");
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn subscribing_fails_within_rpc_timeout() -> eyre::Result<()> {
@@ -391,12 +419,35 @@ mod tests {
         let Err(err) = result else {
             eyre::bail!("Subscribed without an answer");
         };
-        assert!(
-            err.chain().any(|cause| cause.is::<Elapsed>()),
-            "Unexpected error: {err:?}"
-        );
+        assert_eq!(err.to_string(), "Timed out subscribing to new blocks");
         assert!(elapsed >= RPC_TIMEOUT, "Took {elapsed:?}");
         assert!(elapsed <= RPC_TIMEOUT * 2, "Took {elapsed:?}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_connecting_and_subscribing() -> eyre::Result<()> {
+        let unresponsive = UnresponsiveServer::spawn().await?;
+        let never_answers = spawn_ws_rpc(WsRpc::NeverAnswers).await?;
+
+        for ws_addr in [unresponsive.addr, never_answers] {
+            let (app, _db_container) = setup_app_with_ws_rpc(ws_addr).await?;
+            let shutdown = CancellationToken::new();
+            let indexing = tokio::spawn(index_chain(
+                app,
+                TaskContext::new(shutdown.clone()),
+                CHAIN_ID,
+            ));
+
+            tokio::time::sleep(RPC_TIMEOUT / 2).await;
+            let started = Instant::now();
+            shutdown.cancel();
+            indexing.await??;
+
+            let elapsed = started.elapsed();
+            assert!(elapsed < RPC_TIMEOUT / 4, "Took {elapsed:?}");
+        }
 
         Ok(())
     }
