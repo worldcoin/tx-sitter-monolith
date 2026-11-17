@@ -15,6 +15,7 @@ use sqlx::{
 use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
+use crate::broadcast_utils::l1_fees::L1Fees;
 use crate::config::{DatabaseConfig, NetworkConfig, RelayerConfig};
 use crate::db::data::{
     ApiKeyStatus, ChainNonces, ConfigChange, NetworkInfo, NonceSync,
@@ -644,9 +645,9 @@ impl Database {
         &self,
         chain_id: u64,
     ) -> eyre::Result<Option<BlockFees>> {
-        let row: Option<(Json<FeesEstimate>, BigDecimal)> = sqlx::query_as(
+        let row: Option<(Json<FeesEstimate>, BigDecimal, Option<Json<L1Fees>>)> = sqlx::query_as(
             r#"
-            SELECT   bf.fee_estimate, bf.gas_price
+            SELECT   bf.fee_estimate, bf.gas_price, bf.l1_fees
             FROM     blocks b
             JOIN     block_fees bf ON (b.block_number = bf.block_number AND b.chain_id = bf.chain_id)
             WHERE    b.chain_id = $1
@@ -658,7 +659,7 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        let Some((fees, gas_price)) = row else {
+        let Some((fees, gas_price, l1_fees)) = row else {
             return Ok(None);
         };
 
@@ -670,6 +671,7 @@ impl Database {
         Ok(Some(BlockFees {
             fee_estimates,
             gas_price,
+            l1_fees: l1_fees.map(|l1_fees| l1_fees.0),
         }))
     }
 
@@ -769,23 +771,26 @@ impl Database {
         chain_id: u64,
         fee_estimates: &FeesEstimate,
         gas_price: U256,
+        l1_fees: Option<&L1Fees>,
     ) -> eyre::Result<()> {
         // TODO: Figure out how to do this without parsing
         let gas_price: BigDecimal = gas_price.to_string().parse()?;
 
         sqlx::query(
             r#"
-            INSERT INTO block_fees (block_number, chain_id, fee_estimate, gas_price)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO block_fees (block_number, chain_id, fee_estimate, gas_price, l1_fees)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (block_number, chain_id) DO UPDATE
             SET fee_estimate = EXCLUDED.fee_estimate,
-                gas_price = EXCLUDED.gas_price
+                gas_price = EXCLUDED.gas_price,
+                l1_fees = EXCLUDED.l1_fees
             "#,
         )
         .bind(block_number as i64)
         .bind(chain_id as i64)
         .bind(Json(fee_estimates))
         .bind(gas_price)
+        .bind(l1_fees.map(Json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -4430,10 +4435,29 @@ mod tests {
         let gas_price = U256::from(1_000_000_007);
 
         db.save_block_fees(
+            block_numbers[0],
+            chain_id,
+            &fee_estimates,
+            gas_price,
+            None,
+        )
+        .await?;
+
+        let block_fees = db.get_latest_block_fees_by_chain_id(chain_id).await?;
+        assert_eq!(block_fees.context("Missing fees")?.l1_fees, None);
+
+        let l1_fees = L1Fees {
+            l1_base_fee: U256::from(168_039_652),
+            blob_base_fee: U256::from(10_274_004),
+            read_at: ymd_hms(2023, 11, 23, 12, 32, 1),
+        };
+
+        db.save_block_fees(
             block_numbers[1],
             chain_id,
             &fee_estimates,
             gas_price,
+            Some(&l1_fees),
         )
         .await?;
 
@@ -4454,6 +4478,7 @@ mod tests {
             fee_estimates.percentile_fees
         );
         assert_eq!(block_fees.gas_price, gas_price);
+        assert_eq!(block_fees.l1_fees, Some(l1_fees));
 
         Ok(())
     }
@@ -4525,7 +4550,7 @@ mod tests {
         };
 
         db.save_block(1, chain_id, timestamp, &[tx_hash]).await?;
-        db.save_block_fees(1, chain_id, &fee_estimates, U256::from(7))
+        db.save_block_fees(1, chain_id, &fee_estimates, U256::from(7), None)
             .await?;
 
         let txs = [tx_hash];
@@ -4614,6 +4639,7 @@ mod tests {
                 ],
             },
             U256::from(1_000_000_007u64),
+            None,
         )
         .await?;
 
@@ -4932,6 +4958,7 @@ mod tests {
                 url("https://fallback.example.com/key"),
             ],
             ws_rpc: url("wss://ws.example.com/key"),
+            op_stack: None,
         }
     }
 

@@ -143,6 +143,7 @@ pub async fn setup_app(
             hard_reorg_interval: Duration::from_secs(60),
             block_stream_timeout: BLOCK_STREAM_TIMEOUT,
             rpc_timeout: RPC_TIMEOUT,
+            fee_estimation_interval: Duration::from_secs(30),
             task_stall_timeout: Duration::from_secs(60),
             tx_retention: Duration::from_secs(30 * 24 * 60 * 60),
             event_retention: Duration::from_secs(7 * 24 * 60 * 60),
@@ -161,6 +162,7 @@ pub async fn setup_app(
             name: "test".to_string(),
             http_rpcs: vec![SecretUrl::new(http_rpc.parse()?)],
             ws_rpc: SecretUrl::new(ws_rpc.parse()?),
+            op_stack: None,
         }],
         relayers: vec![],
     };

@@ -30,6 +30,7 @@ async fn send_tx_with_gas_limit_above_u64_max() -> eyre::Result<()> {
             name: "Unindexed".to_string(),
             http_rpcs: vec![rpc_url(&format!("http://{UNREACHABLE_RPC}"))],
             ws_rpc: rpc_url(&format!("ws://{UNREACHABLE_RPC}")),
+            op_stack: None,
         })
         .relayer(relayer.config)
         .build(&anvil, &db_url)

@@ -75,6 +75,12 @@ name = "worldchain"
 http_rpcs = ["${WORLDCHAIN_RPC_URL}", "${WORLDCHAIN_RPC_URL_FALLBACK}"]
 ws_rpc = "${WORLDCHAIN_WS_URL}"
 
+# OP-stack chains only, see "L1 fee gating"
+[networks.op_stack]
+max_l1_base_fee = "100000000000" # in wei
+max_blob_base_fee = "400000000000" # in wei
+max_fee_age = "2m" # default 2m
+
 [[relayers]]
 # A lowercase UUID. API keys embed it, so it never changes.
 id = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29"
@@ -113,6 +119,18 @@ A relayer whose nonce isn't synced answers sends with 503 (`relayer_not_ready`) 
 A disabled relayer answers every request with 403, including reads, the event feed and the RPC proxy, and broadcasts nothing. Only a v2 send that repeats a stored one still gets its `txId`, as the v2 API promises. Its unsent and in-flight transactions are logged at warn when a process applies the config.
 
 The service no longer creates KMS keys, so it needs only `kms:GetPublicKey` and `kms:Sign` on the relayer keys.
+
+### L1 fee gating
+
+A transaction on an OP-stack chain such as Optimism or Worldchain also pays for posting its data to L1. On a network with an `op_stack` section, broadcasting and escalation pause while the chain's L1 base fee is above `max_l1_base_fee`, or its blob base fee is above `max_blob_base_fee`.
+
+- **Source.** Every `service.fee_estimation_interval` (default `30s`) the worker reads both fees from the chain's own `GasPriceOracle` predeploy, `0x420000000000000000000000000000000000000F`, through the network's HTTP RPCs, and stores them with the fee estimate.
+- **Failed reads.** A failed read is logged at warn (`Failed to read L1 fees`) and counted in `l1_fee_read_failures`. The fees last read stay in effect for `max_fee_age`.
+- **Unknown fees hold transactions.** Until the fees are first read, and once the last successful read is older than `max_fee_age`, transactions are held as if a fee were above its cap. `max_fee_age` must be greater than `service.fee_estimation_interval`.
+- **Logs.** The gate logs at warn when it starts holding transactions (`Holding transactions because of L1 fees`, with the reason and the fees) and when it stops, not on every check.
+- **Metrics.** `l1_base_fee` and `blob_base_fee` gauges in gwei, and `l1_fee_held_txs`, the chain's unsent transactions while the gate holds them. All are tagged with `chain_id`.
+
+Networks without `op_stack` never read the oracle.
 
 ### Config revisions
 

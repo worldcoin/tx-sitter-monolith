@@ -7,6 +7,7 @@ use alloy::transports::utils::guess_local_url;
 use eyre::{Context, ContextCompat};
 
 use crate::api_key::ApiKey;
+use crate::broadcast_utils::l1_fees::L1FeeGate;
 use crate::config::{Config, KeysConfig, NetworkConfig};
 use crate::db::data::ApiKeyStatus;
 use crate::db::Database;
@@ -25,6 +26,9 @@ pub struct App {
     /// The HTTP RPCs of every configured network by chain id, with requests
     /// bounded by `service.rpc_timeout`
     http_rpcs: HashMap<u64, FailoverTransport>,
+
+    /// The L1 fee gates of the OP-stack networks by chain id
+    l1_fee_gates: HashMap<u64, L1FeeGate>,
 }
 
 impl App {
@@ -50,11 +54,22 @@ impl App {
             })
             .collect();
 
+        let l1_fee_gates = config
+            .networks
+            .iter()
+            .filter_map(|network| {
+                let caps = network.op_stack.clone()?;
+
+                Some((network.chain_id, L1FeeGate::new(network.chain_id, caps)))
+            })
+            .collect();
+
         Ok(Self {
             config,
             keys_source,
             db,
             http_rpcs,
+            l1_fee_gates,
         })
     }
 
@@ -92,6 +107,12 @@ impl App {
             .connect_ws(WsConnect::new(url))
             .await
             .context("Connecting to WS provider")
+    }
+
+    /// Returns the L1 fee gate of `chain_id`, or `None` unless the network
+    /// configures `op_stack`.
+    pub fn l1_fee_gate(&self, chain_id: u64) -> Option<&L1FeeGate> {
+        self.l1_fee_gates.get(&chain_id)
     }
 
     fn network(&self, chain_id: u64) -> eyre::Result<&NetworkConfig> {

@@ -73,6 +73,7 @@ async fn create_tx_on_unresponsive_chain(
             percentile_fees: vec![gwei; 5],
         },
         gwei,
+        None,
     )
     .await?;
 

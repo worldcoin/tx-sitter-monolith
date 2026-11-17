@@ -134,12 +134,6 @@ async fn escalate_relayer_tx(
     tx: TxForEscalation,
 ) -> eyre::Result<()> {
     if !should_send_relayer_transactions(app, relayer).await? {
-        tracing::warn!(
-            relayer_id = relayer.id,
-            relayer_address = %relayer.address,
-            "Skipping relayer escalations"
-        );
-
         return Ok(());
     }
 
@@ -517,6 +511,7 @@ mod tests {
                         percentile_fees: vec![U256::from(GWEI); 5],
                     },
                     U256::from(GWEI),
+                    None,
                 )
                 .await?;
 

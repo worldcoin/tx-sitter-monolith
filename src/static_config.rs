@@ -331,6 +331,7 @@ mod tests {
             name: format!("chain {chain_id}"),
             http_rpcs: vec![url(rpc)],
             ws_rpc: url("wss://ws.example.com"),
+            op_stack: None,
         }
     }
 
