@@ -91,6 +91,8 @@ pub async fn setup_app(
         },
         database: DatabaseConfig::connection_string(db_url),
         keys: KeysConfig::Local(LocalKeysConfig::default()),
+        networks: vec![],
+        relayers: vec![],
     };
 
     let app = init_app(config).await?;

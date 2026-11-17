@@ -171,6 +171,8 @@ impl ServiceBuilder {
             },
             database: DatabaseConfig::connection_string(db_url),
             keys: KeysConfig::Local(LocalKeysConfig::default()),
+            networks: vec![],
+            relayers: vec![],
         };
 
         let service = Service::new(config, self.shutdown).await?;

@@ -1,22 +1,42 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
+use alloy::primitives::{Address, B256};
+use base_api_types::DecimalU256;
 use config::FileFormat;
+use eyre::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::api_key::ApiKey;
+use crate::keys::local_keys::signing_key_from_hex;
 use crate::types::secret_string::SecretString;
+use crate::types::secret_url::SecretUrl;
 
+mod env_substitution;
+
+/// Loads the config from `config_files`, later files overriding earlier ones,
+/// and from `TX_SITTER__*` environment variables, which override every file.
+///
+/// Every `${NAME}` in a string value of a config file is replaced by the
+/// environment variable `NAME`, so that secrets such as RPC URLs can stay out
+/// of the files. A reference to an unset variable fails loading.
+///
+/// The cross-field invariants are checked separately, see
+/// [`Config::validate`].
 pub fn load_config<'a>(
     config_files: impl Iterator<Item = &'a Path>,
 ) -> eyre::Result<Config> {
     let mut settings = config::Config::builder();
 
     for config_file in config_files {
-        settings = settings.add_source(
-            config::File::from(config_file).format(FileFormat::Toml),
-        );
+        let contents = read_config_file(config_file).with_context(|| {
+            format!("Reading config file {}", config_file.display())
+        })?;
+
+        settings = settings
+            .add_source(config::File::from_str(&contents, FileFormat::Toml));
     }
 
     let settings = settings
@@ -31,9 +51,21 @@ pub fn load_config<'a>(
         )
         .build()?;
 
-    let config = settings.try_deserialize::<Config>()?;
+    let config = serde_path_to_error::deserialize(settings)?;
 
     Ok(config)
+}
+
+/// Returns the TOML in `path` with its environment variable references
+/// substituted.
+fn read_config_file(path: &Path) -> eyre::Result<String> {
+    let mut value: toml::Value = std::fs::read_to_string(path)?.parse()?;
+
+    env_substitution::substitute_env_vars(&mut value, &|name| {
+        std::env::var(name)
+    })?;
+
+    Ok(toml::to_string(&value)?)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +75,133 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub keys: KeysConfig,
+
+    /// The networks the service sends transactions on
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub networks: Vec<NetworkConfig>,
+
+    /// Every relayer the service knows. A relayer in the database but not
+    /// in this list is disabled at startup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relayers: Vec<RelayerConfig>,
+}
+
+impl Config {
+    /// Checks the invariants that deserialization can't express, and reports
+    /// every violation in one error.
+    ///
+    /// The networks must have distinct chain ids, at least one HTTP RPC, and
+    /// HTTP and WS URLs of the right schemes. The relayers must have distinct
+    /// ids in the form the API uses, belong to a configured network, queue
+    /// more transactions than they keep in flight, and have keys of the kind
+    /// `keys` selects.
+    pub fn validate(&self) -> eyre::Result<()> {
+        let errors: Vec<String> = network_errors(&self.networks)
+            .chain(relayer_errors(&self.relayers, &self.networks, &self.keys))
+            .collect();
+
+        if !errors.is_empty() {
+            eyre::bail!("Invalid config:\n- {}", errors.join("\n- "));
+        }
+
+        Ok(())
+    }
+}
+
+fn network_errors(
+    networks: &[NetworkConfig],
+) -> impl Iterator<Item = String> + '_ {
+    let mut chain_ids = HashSet::new();
+
+    networks
+        .iter()
+        .enumerate()
+        .flat_map(move |(index, network)| {
+            let name =
+                format!("networks[{index}] (chain id {})", network.chain_id);
+            let mut errors = vec![];
+
+            if !chain_ids.insert(network.chain_id) {
+                errors.push(format!("{name}: duplicate chain id"));
+            }
+
+            if network.http_rpcs.is_empty() {
+                errors.push(format!("{name}: http_rpcs is empty"));
+            }
+
+            for (rpc_index, rpc) in network.http_rpcs.iter().enumerate() {
+                if !matches!(rpc.expose().scheme(), "http" | "https") {
+                    errors.push(format!(
+                    "{name}: http_rpcs[{rpc_index}] is not an http or https URL"
+                ));
+                }
+            }
+
+            if !matches!(network.ws_rpc.expose().scheme(), "ws" | "wss") {
+                errors.push(format!("{name}: ws_rpc is not a ws or wss URL"));
+            }
+
+            errors
+        })
+}
+
+fn relayer_errors<'a>(
+    relayers: &'a [RelayerConfig],
+    networks: &'a [NetworkConfig],
+    keys: &'a KeysConfig,
+) -> impl Iterator<Item = String> + 'a {
+    let chain_ids: HashSet<u64> = networks.iter().map(|n| n.chain_id).collect();
+    let mut relayer_ids = HashSet::new();
+
+    relayers.iter().enumerate().flat_map(move |(index, relayer)| {
+        let name = format!("relayers[{index}] ({})", relayer.id);
+        let mut errors = vec![];
+
+        let is_canonical_uuid = uuid::Uuid::parse_str(&relayer.id)
+            .is_ok_and(|id| id.to_hyphenated().to_string() == relayer.id);
+        if !is_canonical_uuid {
+            errors.push(format!(
+                "{name}: id is not a lowercase hyphenated UUID"
+            ));
+        }
+
+        if !relayer_ids.insert(relayer.id.as_str()) {
+            errors.push(format!("{name}: duplicate relayer id"));
+        }
+
+        if !chain_ids.contains(&relayer.chain_id) {
+            errors.push(format!(
+                "{name}: chain id {} is not in networks",
+                relayer.chain_id
+            ));
+        }
+
+        if relayer.max_queued_txs <= relayer.max_inflight_txs {
+            errors.push(format!(
+                "{name}: max_queued_txs ({}) must be greater than max_inflight_txs ({})",
+                relayer.max_queued_txs, relayer.max_inflight_txs
+            ));
+        }
+
+        match (&relayer.key, keys) {
+            (RelayerKey::Kms(_), KeysConfig::Kms(_)) => {}
+            (RelayerKey::Local(key), KeysConfig::Local(_)) => {
+                if signing_key_from_hex(key.expose()).is_err() {
+                    errors.push(format!(
+                        "{name}: key.local is not a hex-encoded secp256k1 private key"
+                    ));
+                }
+            }
+            (RelayerKey::Kms(_), KeysConfig::Local(_)) => errors.push(format!(
+                "{name}: key.kms requires keys.kind = \"kms\""
+            )),
+            (RelayerKey::Local(_), KeysConfig::Kms(_)) => errors.push(format!(
+                "{name}: key.local requires keys.kind = \"local\""
+            )),
+        }
+
+        errors
+    })
 }
 
 impl Config {
@@ -188,6 +347,83 @@ pub struct PredefinedRelayer {
     pub key_id: String,
     pub chain_id: u64,
     pub api_key: ApiKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct NetworkConfig {
+    pub chain_id: u64,
+    pub name: String,
+
+    /// HTTP RPC URLs in order of preference
+    pub http_rpcs: Vec<SecretUrl>,
+
+    /// The RPC URL of the block subscription
+    pub ws_rpc: SecretUrl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RelayerConfig {
+    /// A lowercase hyphenated UUID. API keys embed it, so it must never
+    /// change.
+    pub id: String,
+    pub name: String,
+    pub chain_id: u64,
+    pub key: RelayerKey,
+
+    /// The address `key` must derive, checked at startup
+    pub address: Address,
+
+    #[serde(default = "default::max_inflight_txs")]
+    pub max_inflight_txs: u64,
+
+    /// Must be greater than `max_inflight_txs`
+    #[serde(default = "default::max_queued_txs")]
+    pub max_queued_txs: u64,
+
+    /// The relayer stops broadcasting while the gas price of its chain is
+    /// above any of these values
+    #[serde(default)]
+    pub gas_price_limits: Vec<GasPriceLimitConfig>,
+
+    /// A disabled relayer rejects new transactions and broadcasts nothing
+    #[serde(default = "default::enabled")]
+    pub enabled: bool,
+
+    /// SHA3-256 hashes of the secrets of the relayer's API keys, the only API
+    /// keys it accepts
+    #[serde(default)]
+    pub api_key_hashes: Vec<B256>,
+}
+
+/// The key a relayer signs with
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum RelayerKey {
+    /// A KMS key id, key ARN or alias, for `keys.kind = "kms"`
+    Kms(String),
+    /// A hex-encoded secp256k1 private key, for `keys.kind = "local"`
+    Local(SecretString),
+}
+
+impl RelayerKey {
+    /// Returns the id the keys source loads the key by.
+    pub fn key_id(&self) -> &str {
+        match self {
+            Self::Kms(key_id) => key_id,
+            Self::Local(private_key) => private_key.expose(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct GasPriceLimitConfig {
+    /// Not used: a limit applies to the gas price of the relayer's own chain
+    pub chain_id: u64,
+    /// In wei, as a decimal string
+    pub value: DecimalU256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,6 +597,18 @@ mod default {
         64
     }
 
+    pub fn max_inflight_txs() -> u64 {
+        5
+    }
+
+    pub fn max_queued_txs() -> u64 {
+        20
+    }
+
+    pub fn enabled() -> bool {
+        true
+    }
+
     pub fn max_escalations() -> usize {
         100
     }
@@ -387,6 +635,7 @@ mod default {
 #[cfg(test)]
 mod tests {
     use indoc::indoc;
+    use test_case::test_case;
 
     use super::*;
 
@@ -476,6 +725,8 @@ mod tests {
                     .to_string(),
             ),
             keys: KeysConfig::Local(LocalKeysConfig::default()),
+            networks: vec![],
+            relayers: vec![],
         };
 
         let toml = toml::to_string_pretty(&config).unwrap();
@@ -516,6 +767,8 @@ mod tests {
                 database: "db".to_string(),
             }),
             keys: KeysConfig::Local(LocalKeysConfig::default()),
+            networks: vec![],
+            relayers: vec![],
         };
 
         let toml = toml::to_string_pretty(&config).unwrap();
@@ -581,6 +834,427 @@ mod tests {
         assert_eq!(
             config.database.to_connection_string(),
             "postgres://dbUsername:dbPassword@dbHost:dbPort/dbName"
+        );
+    }
+
+    const RELAYER_ID: &str = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29";
+
+    /// One of anvil's default dev accounts
+    const LOCAL_KEY: &str =
+        "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
+    const STATIC_CONFIG: &str = indoc! {r#"
+        [service]
+        escalation_interval = "1m"
+
+        [server]
+        host = "127.0.0.1:3000"
+
+        [database]
+        kind = "connection_string"
+        connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"
+
+        [keys]
+        kind = "kms"
+
+        [[networks]]
+        chain_id = 480
+        name = "worldchain"
+        http_rpcs = ["${TX_SITTER_TEST_RPC_URL}", "https://fallback.example.com/${TX_SITTER_TEST_RPC_KEY}"]
+        ws_rpc = "wss://ws.example.com/${TX_SITTER_TEST_RPC_KEY}"
+
+        [[relayers]]
+        id = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29"
+        name = "wc_enableSafe4337Module_1"
+        chain_id = 480
+        key = { kms = "arn:aws:kms:eu-central-1:123456789012:key/0b3e2a5c" }
+        address = "0x1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
+        max_inflight_txs = 10
+        max_queued_txs = 50
+        gas_price_limits = [{ chain_id = 480, value = "100000000000" }]
+        enabled = false
+        api_key_hashes = ["0x46239dbfe5502b9f82c3dff992927d8d9b3168e732b4fd5771288569f5a1813d"]
+
+        [[relayers]]
+        id = "1b908a34-5dc1-4d2d-a146-5eb46e975830"
+        name = "defaults"
+        chain_id = 480
+        key = { kms = "0b3e2a5c-0000-4000-8000-000000000000" }
+        address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    "#};
+
+    /// Writes `toml` to a new file and returns its path.
+    fn config_file(toml: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir()
+            .join(format!("tx-sitter-config-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml).unwrap();
+
+        path
+    }
+
+    fn url(url: &str) -> SecretUrl {
+        SecretUrl::new(url.parse().unwrap())
+    }
+
+    #[test]
+    fn loads_networks_and_relayers_with_env_vars() {
+        std::env::set_var(
+            "TX_SITTER_TEST_RPC_URL",
+            "https://rpc.example.com/v2/secret",
+        );
+        std::env::set_var("TX_SITTER_TEST_RPC_KEY", "fallback-secret");
+        let path = config_file(STATIC_CONFIG);
+
+        let config = load_config(std::iter::once(path.as_path())).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(
+            config.networks,
+            vec![NetworkConfig {
+                chain_id: 480,
+                name: "worldchain".to_string(),
+                http_rpcs: vec![
+                    url("https://rpc.example.com/v2/secret"),
+                    url("https://fallback.example.com/fallback-secret"),
+                ],
+                ws_rpc: url("wss://ws.example.com/fallback-secret"),
+            }]
+        );
+        assert_eq!(
+            config.relayers,
+            vec![
+                RelayerConfig {
+                    id: RELAYER_ID.to_string(),
+                    name: "wc_enableSafe4337Module_1".to_string(),
+                    chain_id: 480,
+                    key: RelayerKey::Kms(
+                        "arn:aws:kms:eu-central-1:123456789012:key/0b3e2a5c"
+                            .to_string()
+                    ),
+                    address: alloy::primitives::address!(
+                        "1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
+                    ),
+                    max_inflight_txs: 10,
+                    max_queued_txs: 50,
+                    gas_price_limits: vec![GasPriceLimitConfig {
+                        chain_id: 480,
+                        value: DecimalU256(alloy::primitives::U256::from(
+                            100_000_000_000u64
+                        )),
+                    }],
+                    enabled: false,
+                    api_key_hashes: vec![alloy::primitives::b256!(
+                        "46239dbfe5502b9f82c3dff992927d8d9b3168e732b4fd5771288569f5a1813d"
+                    )],
+                },
+                RelayerConfig {
+                    id: "1b908a34-5dc1-4d2d-a146-5eb46e975830".to_string(),
+                    name: "defaults".to_string(),
+                    chain_id: 480,
+                    key: RelayerKey::Kms(
+                        "0b3e2a5c-0000-4000-8000-000000000000".to_string()
+                    ),
+                    address: alloy::primitives::address!(
+                        "f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+                    ),
+                    max_inflight_txs: default::max_inflight_txs(),
+                    max_queued_txs: default::max_queued_txs(),
+                    gas_price_limits: vec![],
+                    enabled: true,
+                    api_key_hashes: vec![],
+                },
+            ]
+        );
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn loading_fails_on_an_unset_env_var() {
+        let path = config_file(indoc! {r#"
+            [[networks]]
+            http_rpcs = ["${TX_SITTER_TEST_UNSET_RPC_URL}"]
+        "#});
+
+        let err = load_config(std::iter::once(path.as_path())).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+
+        assert!(
+            format!("{err:#}").contains(
+                "networks[0].http_rpcs[0]: environment variable TX_SITTER_TEST_UNSET_RPC_URL is not set"
+            ),
+            "{err:#}"
+        );
+    }
+
+    /// Parses the config of one relayer whose fields are valid, except for
+    /// `field`, which replaces the valid field of the same name.
+    fn parse_relayer(field: &str) -> Result<(), String> {
+        let (field_name, _) = field.split_once(" = ").unwrap();
+        let valid_fields = [
+            format!("id = \"{RELAYER_ID}\""),
+            "name = \"relayer\"".to_string(),
+            "chain_id = 1".to_string(),
+            "key = { kms = \"key-id\" }".to_string(),
+            "address = \"0x1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2\""
+                .to_string(),
+        ];
+        let fields: Vec<String> = valid_fields
+            .into_iter()
+            .filter(|valid| !valid.starts_with(&format!("{field_name} ")))
+            .chain(std::iter::once(field.to_string()))
+            .collect();
+
+        let settings = config::Config::builder()
+            .add_source(config::File::from_str(
+                &format!("[[relayers]]\n{}", fields.join("\n")),
+                FileFormat::Toml,
+            ))
+            .build()
+            .unwrap();
+
+        #[derive(Debug, Deserialize)]
+        struct Relayers {
+            #[allow(dead_code)]
+            relayers: Vec<RelayerConfig>,
+        }
+        serde_path_to_error::deserialize::<_, Relayers>(settings)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    #[test]
+    fn parses_a_relayer() {
+        parse_relayer("name = \"relayer\"").unwrap();
+    }
+
+    #[test_case(
+        "address = \"0x1234\"",
+        "relayers[0].address: invalid string length" ;
+        "short address"
+    )]
+    #[test_case(
+        "address = \"0xzzd53d680B8890DAe2a63f673a85fFDE1FD5C7a2\"",
+        "relayers[0].address: invalid character 'z' at position 0" ;
+        "non hex address"
+    )]
+    #[test_case(
+        "key = \"key-id\"",
+        "relayers[0].key: enum RelayerKey does not have variant constructor key-id" ;
+        "key without a kind"
+    )]
+    #[test_case(
+        "key = { hsm = \"a\" }",
+        "relayers[0].key: enum RelayerKey does not have variant constructor hsm" ;
+        "unknown key kind"
+    )]
+    #[test_case(
+        "key = { kms = \"a\", local = \"b\" }",
+        "relayers[0].key: value of enum RelayerKey should be represented by either string or table with exactly one key" ;
+        "two key kinds"
+    )]
+    #[test_case(
+        "api_key_hashes = [\"0x1234\"]",
+        "relayers[0].api_key_hashes[0]: invalid string length" ;
+        "short api key hash"
+    )]
+    #[test_case(
+        "gas_price_limits = [{ chain_id = 1, value = \"1.5\" }]",
+        "relayers[0].gas_price_limits[0].value: invalid value: string \"1.5\", expected a decimal number" ;
+        "fractional gas price limit"
+    )]
+    #[test_case(
+        "max_inflight_tx = 5",
+        "relayers[0].max_inflight_tx: unknown field `max_inflight_tx`, expected one of `id`, `name`, `chain_id`, `key`, `address`, `max_inflight_txs`, `max_queued_txs`, `gas_price_limits`, `enabled`, `api_key_hashes`" ;
+        "misspelled field"
+    )]
+    fn rejects_a_malformed_relayer(field: &str, expected_error: &str) {
+        assert_eq!(parse_relayer(field).unwrap_err(), expected_error);
+    }
+
+    fn network(chain_id: u64) -> NetworkConfig {
+        NetworkConfig {
+            chain_id,
+            name: format!("chain {chain_id}"),
+            http_rpcs: vec![url("https://rpc.example.com")],
+            ws_rpc: url("wss://rpc.example.com"),
+        }
+    }
+
+    fn relayer(id: &str, chain_id: u64) -> RelayerConfig {
+        RelayerConfig {
+            id: id.to_string(),
+            name: "relayer".to_string(),
+            chain_id,
+            key: RelayerKey::Local(SecretString::new(LOCAL_KEY.to_string())),
+            address: Address::ZERO,
+            max_inflight_txs: 5,
+            max_queued_txs: 20,
+            gas_price_limits: vec![],
+            enabled: true,
+            api_key_hashes: vec![],
+        }
+    }
+
+    fn static_config(
+        keys: KeysConfig,
+        networks: Vec<NetworkConfig>,
+        relayers: Vec<RelayerConfig>,
+    ) -> Config {
+        let mut config: Config =
+            toml::from_str(WITH_DB_CONNECTION_STRING).unwrap();
+        config.keys = keys;
+        config.networks = networks;
+        config.relayers = relayers;
+
+        config
+    }
+
+    fn local_keys() -> KeysConfig {
+        KeysConfig::Local(LocalKeysConfig::default())
+    }
+
+    #[test]
+    fn accepts_a_config_without_networks_and_relayers() {
+        static_config(local_keys(), vec![], vec![])
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn accepts_valid_networks_and_relayers() {
+        let other_id = "1b908a34-5dc1-4d2d-a146-5eb46e975830";
+
+        static_config(
+            local_keys(),
+            vec![network(1), network(480)],
+            vec![relayer(RELAYER_ID, 1), relayer(other_id, 480)],
+        )
+        .validate()
+        .unwrap();
+    }
+
+    #[test_case(
+        vec![network(1), network(1)],
+        vec![],
+        "networks[1] (chain id 1): duplicate chain id" ;
+        "duplicate chain id"
+    )]
+    #[test_case(
+        vec![NetworkConfig { http_rpcs: vec![], ..network(1) }],
+        vec![],
+        "networks[0] (chain id 1): http_rpcs is empty" ;
+        "no http rpc"
+    )]
+    #[test_case(
+        vec![NetworkConfig { http_rpcs: vec![url("https://a.example.com"), url("wss://b.example.com")], ..network(1) }],
+        vec![],
+        "networks[0] (chain id 1): http_rpcs[1] is not an http or https URL" ;
+        "ws url as http rpc"
+    )]
+    #[test_case(
+        vec![NetworkConfig { ws_rpc: url("https://ws.example.com"), ..network(1) }],
+        vec![],
+        "networks[0] (chain id 1): ws_rpc is not a ws or wss URL" ;
+        "http url as ws rpc"
+    )]
+    #[test_case(
+        vec![network(1)],
+        vec![relayer(RELAYER_ID, 1), relayer(RELAYER_ID, 1)],
+        "relayers[1] (6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29): duplicate relayer id" ;
+        "duplicate relayer id"
+    )]
+    #[test_case(
+        vec![network(1)],
+        vec![relayer(RELAYER_ID, 480)],
+        "relayers[0] (6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29): chain id 480 is not in networks" ;
+        "unknown chain"
+    )]
+    #[test_case(
+        vec![network(1)],
+        vec![relayer("relayer-1", 1)],
+        "relayers[0] (relayer-1): id is not a lowercase hyphenated UUID" ;
+        "id that is not a uuid"
+    )]
+    #[test_case(
+        vec![network(1)],
+        vec![relayer("6B0B6D1C-7B0E-4C2A-9D3E-2F1A5C4B3A29", 1)],
+        "relayers[0] (6B0B6D1C-7B0E-4C2A-9D3E-2F1A5C4B3A29): id is not a lowercase hyphenated UUID" ;
+        "uppercase uuid"
+    )]
+    #[test_case(
+        vec![network(1)],
+        vec![RelayerConfig { max_inflight_txs: 20, max_queued_txs: 20, ..relayer(RELAYER_ID, 1) }],
+        "relayers[0] (6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29): max_queued_txs (20) must be greater than max_inflight_txs (20)" ;
+        "queue no larger than inflight"
+    )]
+    #[test_case(
+        vec![network(1)],
+        vec![RelayerConfig { key: RelayerKey::Local(SecretString::new("abcd".to_string())), ..relayer(RELAYER_ID, 1) }],
+        "relayers[0] (6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29): key.local is not a hex-encoded secp256k1 private key" ;
+        "invalid local key"
+    )]
+    #[test_case(
+        vec![network(1)],
+        vec![RelayerConfig { key: RelayerKey::Kms("key-id".to_string()), ..relayer(RELAYER_ID, 1) }],
+        "relayers[0] (6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29): key.kms requires keys.kind = \"kms\"" ;
+        "kms key with local keys"
+    )]
+    fn rejects(
+        networks: Vec<NetworkConfig>,
+        relayers: Vec<RelayerConfig>,
+        expected_error: &str,
+    ) {
+        let err = static_config(local_keys(), networks, relayers)
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("Invalid config:\n- {expected_error}")
+        );
+    }
+
+    #[test]
+    fn rejects_a_local_key_with_kms_keys() {
+        let kms_keys = KeysConfig::Kms(KmsKeysConfig {
+            kms_timeout: default::kms_timeout(),
+        });
+
+        let err = static_config(
+            kms_keys,
+            vec![network(1)],
+            vec![relayer(RELAYER_ID, 1)],
+        )
+        .validate()
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("Invalid config:\n- relayers[0] ({RELAYER_ID}): key.local requires keys.kind = \"local\"")
+        );
+    }
+
+    #[test]
+    fn reports_every_error() {
+        let err = static_config(
+            local_keys(),
+            vec![NetworkConfig {
+                http_rpcs: vec![],
+                ..network(1)
+            }],
+            vec![relayer("relayer-1", 480)],
+        )
+        .validate()
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            indoc! {"
+                Invalid config:
+                - networks[0] (chain id 1): http_rpcs is empty
+                - relayers[0] (relayer-1): id is not a lowercase hyphenated UUID
+                - relayers[0] (relayer-1): chain id 480 is not in networks"
+            }
         );
     }
 }
