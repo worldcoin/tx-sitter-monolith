@@ -21,7 +21,8 @@ pub mod data;
 pub mod wrappers;
 
 use self::data::{
-    BlockFees, NetworkStats, ReadTxData, RelayerTxsAtMaxEscalations, RpcKind,
+    BlockFees, NetworkStats, ReadTxData, RelayerStaleTxs,
+    RelayerTxsAtMaxEscalations, RpcKind,
 };
 pub use self::data::{TxForEscalation, UnsentTx};
 
@@ -417,6 +418,11 @@ impl Database {
         Ok(CreateResult::Created)
     }
 
+    /// Returns the transactions that were never broadcast and fit in their
+    /// relayer's in-flight window.
+    ///
+    /// Transactions whose nonce the chain already used are left out, see
+    /// [`Database::count_stale_txs`].
     #[instrument(skip(self), level = "debug")]
     pub async fn get_unsent_txs(&self) -> eyre::Result<Vec<UnsentTx>> {
         Ok(sqlx::query_as(
@@ -426,6 +432,7 @@ impl Database {
             LEFT JOIN  sent_transactions s ON (t.id = s.tx_id)
             INNER JOIN relayers r ON (t.relayer_id = r.id)
             WHERE      s.tx_id IS NULL
+            AND        t.nonce >= r.current_nonce
             AND        (t.nonce - r.current_nonce < r.max_inflight_txs)
             ORDER BY   r.id, t.nonce ASC
             "#,
@@ -833,6 +840,9 @@ impl Database {
     /// Returns the pending transactions whose latest signed version was
     /// stored more than `escalation_interval` ago, however often they were
     /// escalated.
+    ///
+    /// Transactions whose nonce the chain already used are left out, see
+    /// [`Database::count_stale_txs`].
     #[instrument(skip(self), level = "debug")]
     pub async fn get_txs_for_escalation(
         &self,
@@ -852,6 +862,7 @@ impl Database {
             WHERE  now() - h.created_at > $1
             AND    s.status = $2
             AND    NOT h.escalated
+            AND    t.nonce >= r.current_nonce
             "#,
         )
         .bind(escalation_interval)
@@ -1131,6 +1142,35 @@ impl Database {
             .map(|(id, local_nonce)| (id, local_nonce as u64))
             .filter(|(_, local_nonce)| *local_nonce < nonce)
             .collect())
+    }
+
+    /// Counts, for every relayer, the transactions that aren't mined but
+    /// whose nonce is below the relayer's confirmed nonce.
+    ///
+    /// The chain used those nonces for other transactions, sent with the
+    /// relayer's key outside tx-sitter, so they can never be mined.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn count_stale_txs(&self) -> eyre::Result<Vec<RelayerStaleTxs>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT    r.id AS relayer_id, r.chain_id, r.current_nonce, COUNT(t.id) AS stale_txs
+            FROM      relayers r
+            LEFT JOIN transactions t ON (
+                          t.relayer_id = r.id
+                      AND t.nonce < r.current_nonce
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM   sent_transactions s
+                          WHERE  s.tx_id = t.id
+                          AND    s.status <> $1
+                      )
+                  )
+            GROUP BY  r.id
+            "#,
+        )
+        .bind(TxStatus::Pending)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     #[instrument(skip(self), level = "debug")]

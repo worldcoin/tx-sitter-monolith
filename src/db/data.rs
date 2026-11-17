@@ -63,6 +63,18 @@ pub struct TxForEscalation {
     pub latest_hash_age_ms: u64,
 }
 
+/// A relayer's count of [stale transactions](crate::db::Database::count_stale_txs).
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct RelayerStaleTxs {
+    pub relayer_id: String,
+    #[sqlx(try_from = "i64")]
+    pub chain_id: u64,
+    #[sqlx(try_from = "i64")]
+    pub current_nonce: u64,
+    #[sqlx(try_from = "i64")]
+    pub stale_txs: u64,
+}
+
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct ReadTxData {
     pub tx_id: String,

@@ -76,6 +76,12 @@ Probes:
 
 On SIGTERM or SIGINT the service stops accepting connections and gives in-flight requests and background tasks `server.shutdown_timeout` (default `20s`) to finish.
 
+### Relayer keys used elsewhere
+
+A relayer's key must only send transactions through tx-sitter. When the chain's nonce for the key moves past the relayer's own, tx-sitter moves the relayer's nonce up to the chain's and logs an error. Transactions that hold a nonce the chain already used can never be mined: they are no longer broadcast or escalated, and the `relayer_stale_txs` gauge counts them per relayer.
+
+To recover, reset the relayer with `POST /1/admin/relayer/{relayer_id}/reset`. That deletes its unsent transactions, so their callers have to send them again. Sent ones stay pending.
+
 ## Running tests
 
 While you obviously can run tests with
