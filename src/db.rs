@@ -688,10 +688,12 @@ impl Database {
                    UNNEST($1::TEXT[], $2::BYTEA[]) AS mined(tx_id, tx_hash)
             WHERE  t.id = mined.tx_id
             AND    t.id = s.tx_id
+            AND    s.status = $3
             "#,
         )
         .bind(&tx_ids)
         .bind(&tx_hashes)
+        .bind(TxStatus::Mined)
         .execute(tx.as_mut())
         .await?;
 
@@ -730,7 +732,8 @@ impl Database {
         let tx_ids: Vec<_> = items.into_iter().map(|(x,)| x).collect();
 
         // Set status to pending
-        // and set valid tx hash to the latest tx hash
+        // and set valid tx hash to the latest tx hash.
+        // The status may have changed since the select, so check it again
         sqlx::query(
             r#"
             UPDATE sent_transactions s
@@ -746,10 +749,12 @@ impl Database {
             FROM   transactions t, UNNEST($2::TEXT[]) AS reorged(tx_id)
             WHERE  t.id = reorged.tx_id
             AND    t.id = s.tx_id
+            AND    s.status = $3
             "#,
         )
         .bind(TxStatus::Pending)
         .bind(&tx_ids)
+        .bind(TxStatus::Mined)
         .execute(tx.as_mut())
         .await?;
 
@@ -786,6 +791,7 @@ impl Database {
                       mined_at = cte.timestamp
             FROM      cte
             WHERE     sent_transactions.tx_id = cte.id
+            AND       sent_transactions.status = $1
             RETURNING sent_transactions.tx_id, sent_transactions.valid_tx_hash
             "#,
         )
@@ -828,7 +834,8 @@ impl Database {
 
         let tx_ids: Vec<_> = items.into_iter().map(|(x,)| x).collect();
 
-        // Set status to finalized
+        // Set status to finalized.
+        // The status may have changed since the select, so check it again
         sqlx::query(
             r#"
             UPDATE sent_transactions s
@@ -836,10 +843,12 @@ impl Database {
             FROM   transactions t, UNNEST($2::TEXT[]) AS finalized(tx_id)
             WHERE  t.id = finalized.tx_id
             AND    t.id = s.tx_id
+            AND    s.status = $3
             "#,
         )
         .bind(TxStatus::Finalized)
         .bind(&tx_ids)
+        .bind(TxStatus::Mined)
         .execute(tx.as_mut())
         .await?;
 
