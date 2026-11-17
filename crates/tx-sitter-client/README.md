@@ -63,6 +63,8 @@ Class | Method | HTTP request | Description
 *RelayerV1Api* | [**create_transaction**](docs/RelayerV1Api.md#create_transaction) | **POST** /1/api/{api_token}/tx | Send Transaction
 *RelayerV1Api* | [**get_transaction**](docs/RelayerV1Api.md#get_transaction) | **GET** /1/api/{api_token}/tx/{tx_id} | Get Transaction
 *RelayerV1Api* | [**get_transactions**](docs/RelayerV1Api.md#get_transactions) | **GET** /1/api/{api_token}/txs | Get Transactions
+*RelayerV2Api* | [**create_transaction_v2**](docs/RelayerV2Api.md#create_transaction_v2) | **POST** /2/tx | Send Transaction
+*RelayerV2Api* | [**get_transaction_v2**](docs/RelayerV2Api.md#get_transaction_v2) | **GET** /2/tx/{tx_id} | Get Transaction
 *ServiceApi* | [**health**](docs/ServiceApi.md#health) | **GET** /health | Health
 *ServiceApi* | [**health_live**](docs/ServiceApi.md#health_live) | **GET** /health/live | Liveness
 *ServiceApi* | [**health_ready**](docs/ServiceApi.md#health_ready) | **GET** /health/ready | Readiness
@@ -74,7 +76,9 @@ Class | Method | HTTP request | Description
  - [CreateNetworkRequest](docs/CreateNetworkRequest.md)
  - [CreateRelayerRequest](docs/CreateRelayerRequest.md)
  - [CreateRelayerResponse](docs/CreateRelayerResponse.md)
+ - [ErrorResponseBody](docs/ErrorResponseBody.md)
  - [GetTxResponse](docs/GetTxResponse.md)
+ - [GetTxResponseV2](docs/GetTxResponseV2.md)
  - [JsonRpcVersion](docs/JsonRpcVersion.md)
  - [NetworkResponse](docs/NetworkResponse.md)
  - [RelayerGasPriceLimitResponse](docs/RelayerGasPriceLimitResponse.md)
@@ -82,9 +86,11 @@ Class | Method | HTTP request | Description
  - [RelayerUpdateRequest](docs/RelayerUpdateRequest.md)
  - [RpcRequest](docs/RpcRequest.md)
  - [SendTxRequest](docs/SendTxRequest.md)
+ - [SendTxRequestV2](docs/SendTxRequestV2.md)
  - [SendTxResponse](docs/SendTxResponse.md)
  - [TransactionPriority](docs/TransactionPriority.md)
  - [TxStatus](docs/TxStatus.md)
+ - [TxStatusV2](docs/TxStatusV2.md)
 
 
 To get access to the crate's generated documentation, use:

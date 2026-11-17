@@ -110,6 +110,7 @@ pub fn parse_deep_object(
 
 pub mod admin_v1_api;
 pub mod relayer_v1_api;
+pub mod relayer_v2_api;
 pub mod service_api;
 
 pub mod configuration;
