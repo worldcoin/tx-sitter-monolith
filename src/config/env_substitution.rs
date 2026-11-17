@@ -1,10 +1,23 @@
 use std::env::VarError;
+use std::sync::LazyLock;
+
+use regex::Regex;
+
+/// `${` up to the next `}`, which may hold anything, so that malformed names
+/// are reported rather than kept as literals
+static REFERENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{([^}]*)\}").expect("Valid regex"));
+
+static VARIABLE_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").expect("Valid regex")
+});
 
 /// Replaces every `${NAME}` in the string values of `value`, including those
 /// nested in tables and arrays, with the value `env` returns for `NAME`.
 ///
-/// Substituted values are not scanned again, and table keys are left as they
-/// are. `$` without a following `{` stays a literal `$`.
+/// `${` always starts a reference: there is no escape for a literal `${`.
+/// `$` without a following `{` stays a literal `$`. Substituted values are
+/// not scanned again, and table keys are left as they are.
 ///
 /// Fails on the first reference to a variable that `env` doesn't know, naming
 /// the variable and the key that references it.
@@ -53,23 +66,19 @@ fn expand(
     env: &impl Fn(&str) -> Result<String, VarError>,
 ) -> eyre::Result<String> {
     let mut expanded = String::with_capacity(s.len());
-    let mut rest = s;
+    let mut literal_start = 0;
 
-    while let Some(start) = rest.find("${") {
-        expanded.push_str(&rest[..start]);
+    for reference in REFERENCE.captures_iter(s) {
+        let whole = reference.get(0).expect("Group 0 is the whole match");
+        let name = &reference[1];
 
-        let reference = &rest[start + 2..];
-        let end = reference
-            .find('}')
-            .ok_or_else(|| eyre::eyre!("`${{` without a closing `}}`"))?;
-        let name = &reference[..end];
-
-        if !is_variable_name(name) {
+        expanded.push_str(literal(&s[literal_start..whole.start()])?);
+        if !VARIABLE_NAME.is_match(name) {
             eyre::bail!(
-                "`${{{name}}}` is not a valid environment variable reference"
+                "`{}` is not a valid environment variable reference",
+                whole.as_str()
             );
         }
-
         let value = env(name).map_err(|err| match err {
             VarError::NotPresent => {
                 eyre::eyre!("environment variable {name} is not set")
@@ -80,20 +89,21 @@ fn expand(
         })?;
         expanded.push_str(&value);
 
-        rest = &reference[end + 1..];
+        literal_start = whole.end();
     }
-    expanded.push_str(rest);
+    expanded.push_str(literal(&s[literal_start..])?);
 
     Ok(expanded)
 }
 
-fn is_variable_name(name: &str) -> bool {
-    let mut chars = name.chars();
+/// Returns `text` between references, which can only hold a `${` that is
+/// never closed.
+fn literal(text: &str) -> eyre::Result<&str> {
+    if text.contains("${") {
+        eyre::bail!("`${{` without a closing `}}`");
+    }
 
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -159,6 +169,8 @@ mod tests {
     #[test_case("${EMPTY}", "" ; "empty variable")]
     #[test_case("${NESTED}", "${KEY}" ; "substituted values are not expanded")]
     #[test_case("$KEY and $", "$KEY and $" ; "dollar without a brace")]
+    #[test_case("a}b", "a}b" ; "closing brace without a reference")]
+    #[test_case("$${KEY}", "$secret" ; "no escape for a reference")]
     fn expands(input: &str, expected: &str) {
         assert_eq!(expand(input, &env).unwrap(), expected);
     }
@@ -182,6 +194,11 @@ mod tests {
         r#"url = "${}""#,
         "url: `${}` is not a valid environment variable reference" ;
         "empty name"
+    )]
+    #[test_case(
+        r#"url = "${KEY}${OTHER""#,
+        "url: `${` without a closing `}`" ;
+        "unterminated reference after a reference"
     )]
     #[test_case(
         r#"url = "${1KEY}""#,

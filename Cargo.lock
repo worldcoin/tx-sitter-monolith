@@ -6809,6 +6809,7 @@ dependencies = [
  "poem-openapi",
  "postgres-docker-utils",
  "rand 0.8.5",
+ "regex",
  "reqwest 0.13.5",
  "serde",
  "serde_json",

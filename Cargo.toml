@@ -63,6 +63,7 @@ poem-openapi = { version = "5", features = [
     "swagger-ui",
 ] }
 rand = "0.8.5"
+regex = "1.10.4"
 reqwest = { version = "0.13.5", default-features = false, features = [
     "json",
     "rustls",
