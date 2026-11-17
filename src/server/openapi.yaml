@@ -1,0 +1,663 @@
+openapi: 3.0.0
+info:
+  title: Tx Sitter
+  description: |
+    A transaction relayer service!
+
+    ## Operating a relayer
+    Below is a guide on using this service. Note that steps 1 through 4 require authentication using HTTP Basic auth. Using swagger explorer make sure to click the authorize button and use the correct credentials. Default dev creds are `admin:admin`.
+
+    ### 1. Setup a network
+    tx-sitter keeps track of supported networks in its internal database. In order to be able to create any relayers at least one network must be present. To add a network use the `POST /1/admin/networks/:chain_id` endpoint.
+
+    To see the list of currently added networks use the `GET /1/admin/networks` endpoint.
+
+    ### 2. Create a relayer
+    A relayer is an abstraction layer on top of a private key stored locally (for testing purposes only!) or using a secrets manager (currently only AWS KMS is supported).
+
+    To create a relayer use the `POST /1/admin/relayer` endpoint. The data returned will contain a relayer id, make sure to copy it to the clipboard.
+
+    ### 3. Create an API key
+    By itself a relayer is not very useful. In order to send transactions one must create an API key. To do that use the `POST /1/admin/relayer/:relayer_id/key` endpoint. **Make sure to copy the API key from the response. It's not possible to recover it!** But it's always possible to create a new one.
+
+    ### 4. Use the API key
+    Once an API keys has been created it's possible to use the relayer api to, among other things, send transactions.
+
+    You can use the `POST /1/api/:api_token/tx` endpoint to create a transaction.
+  version: 0.1.0
+servers:
+- url: http://localhost:8000
+tags:
+- name: AdminV1
+- name: RelayerV1
+- name: Service
+paths:
+  /1/admin/relayer:
+    post:
+      tags:
+      - AdminV1
+      summary: Create Relayer
+      requestBody:
+        content:
+          application/json; charset=utf-8:
+            schema:
+              $ref: '#/components/schemas/CreateRelayerRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/CreateRelayerResponse'
+      security:
+      - BasicAuth: []
+      operationId: create_relayer
+  /1/admin/relayers:
+    get:
+      tags:
+      - AdminV1
+      summary: Get Relayers
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RelayerResponse'
+      security:
+      - BasicAuth: []
+      operationId: get_relayers
+  /1/admin/relayer/{relayer_id}:
+    get:
+      tags:
+      - AdminV1
+      summary: Get Relayer
+      parameters:
+      - name: relayer_id
+        schema:
+          type: string
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/RelayerResponse'
+      security:
+      - BasicAuth: []
+      operationId: get_relayer
+    post:
+      tags:
+      - AdminV1
+      summary: Update Relayer
+      parameters:
+      - name: relayer_id
+        schema:
+          type: string
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      requestBody:
+        content:
+          application/json; charset=utf-8:
+            schema:
+              $ref: '#/components/schemas/RelayerUpdateRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+      security:
+      - BasicAuth: []
+      operationId: update_relayer
+  /1/admin/relayer/{relayer_id}/reset:
+    post:
+      tags:
+      - AdminV1
+      summary: Reset Relayer transactions
+      description: Purges unsent transactions, useful for unstucking the relayer
+      parameters:
+      - name: relayer_id
+        schema:
+          type: string
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      responses:
+        '200':
+          description: ''
+      security:
+      - BasicAuth: []
+      operationId: reset_relayer
+  /1/admin/relayer/{relayer_id}/key:
+    post:
+      tags:
+      - AdminV1
+      summary: Create Relayer API Key
+      parameters:
+      - name: relayer_id
+        schema:
+          type: string
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/CreateApiKeyResponse'
+      security:
+      - BasicAuth: []
+      operationId: relayer_create_api_key
+  /1/admin/network/{chain_id}:
+    post:
+      tags:
+      - AdminV1
+      summary: Create Network
+      parameters:
+      - name: chain_id
+        schema:
+          type: integer
+          format: uint64
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      requestBody:
+        content:
+          application/json; charset=utf-8:
+            schema:
+              $ref: '#/components/schemas/CreateNetworkRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+      security:
+      - BasicAuth: []
+      operationId: create_network
+  /1/admin/networks:
+    get:
+      tags:
+      - AdminV1
+      summary: Get Networks
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NetworkResponse'
+      security:
+      - BasicAuth: []
+      operationId: get_networks
+  /1/api/{api_token}/tx:
+    post:
+      tags:
+      - RelayerV1
+      summary: Send Transaction
+      parameters:
+      - name: api_token
+        schema:
+          type: string
+          format: api-key
+          title: Api Key
+          description: Base64 encoded API key
+          example: G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      requestBody:
+        content:
+          application/json; charset=utf-8:
+            schema:
+              $ref: '#/components/schemas/SendTxRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/SendTxResponse'
+      operationId: create_transaction
+  /1/api/{api_token}/tx/{tx_id}:
+    get:
+      tags:
+      - RelayerV1
+      summary: Get Transaction
+      parameters:
+      - name: api_token
+        schema:
+          type: string
+          format: api-key
+          title: Api Key
+          description: Base64 encoded API key
+          example: G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      - name: tx_id
+        schema:
+          type: string
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/GetTxResponse'
+      operationId: get_transaction
+  /1/api/{api_token}/txs:
+    get:
+      tags:
+      - RelayerV1
+      summary: Get Transactions
+      parameters:
+      - name: api_token
+        schema:
+          type: string
+          format: api-key
+          title: Api Key
+          description: Base64 encoded API key
+          example: G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      - name: status
+        schema:
+          $ref: '#/components/schemas/TxStatus'
+        in: query
+        description: Optional tx status to filter by
+        required: false
+        deprecated: false
+        explode: true
+      - name: unsent
+        schema:
+          type: boolean
+          default: false
+        in: query
+        description: Fetch unsent txs, overrides the status query
+        required: false
+        deprecated: false
+        explode: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GetTxResponse'
+      operationId: get_transactions
+  /1/api/{api_token}/rpc:
+    post:
+      tags:
+      - RelayerV1
+      summary: Relayer RPC
+      parameters:
+      - name: api_token
+        schema:
+          type: string
+          format: api-key
+          title: Api Key
+          description: Base64 encoded API key
+          example: G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      requestBody:
+        content:
+          application/json; charset=utf-8:
+            schema:
+              $ref: '#/components/schemas/RpcRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema: {}
+      operationId: call_rpc
+  /health:
+    get:
+      tags:
+      - Service
+      summary: Health
+      responses:
+        '200':
+          description: ''
+      operationId: health
+components:
+  schemas:
+    CreateApiKeyResponse:
+      type: object
+      required:
+      - apiKey
+      properties:
+        apiKey:
+          type: string
+          format: api-key
+          title: Api Key
+          description: Base64 encoded API key
+          example: G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=
+    CreateNetworkRequest:
+      type: object
+      required:
+      - name
+      - httpRpc
+      - wsRpc
+      properties:
+        name:
+          type: string
+        httpRpc:
+          type: string
+        wsRpc:
+          type: string
+    CreateRelayerRequest:
+      type: object
+      required:
+      - name
+      - chainId
+      properties:
+        name:
+          type: string
+          description: New relayer name
+        chainId:
+          type: integer
+          format: uint64
+          description: The chain id of the relayer
+    CreateRelayerResponse:
+      type: object
+      required:
+      - relayerId
+      - address
+      properties:
+        relayerId:
+          type: string
+          description: ID of the created relayer
+        address:
+          type: string
+          format: address
+          title: Address
+          description: Address of the created relayer
+          example: '0x000000000000000000000000000000000000000f'
+    GetTxResponse:
+      type: object
+      required:
+      - txId
+      - to
+      - value
+      - gasLimit
+      - nonce
+      properties:
+        txId:
+          type: string
+        to:
+          type: string
+          format: address
+          title: Address
+          description: Hex encoded ethereum address
+          example: '0x000000000000000000000000000000000000000f'
+        data:
+          type: string
+          format: bytes
+        value:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: A decimal 256-bit unsigned integer
+          default: '0'
+          example: '0'
+        gasLimit:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: A decimal 256-bit unsigned integer
+          default: '0'
+          example: '0'
+        nonce:
+          type: integer
+          format: uint64
+        txHash:
+          type: string
+          format: h256
+          title: H256
+          description: A hex encoded 256-bit hash
+          default: '0x0000000000000000000000000000000000000000000000000000000000000000'
+          example: 0x46239dbfe5502b9f82c3dff992927d8d9b3168e732b4fd5771288569f5a1813d
+        status:
+          allOf:
+          - $ref: '#/components/schemas/TxStatus'
+          - default: null
+    JsonRpcVersion:
+      type: string
+      enum:
+      - '2.0'
+    NetworkResponse:
+      type: object
+      required:
+      - chainId
+      - name
+      - httpRpc
+      - wsRpc
+      properties:
+        chainId:
+          type: integer
+          format: uint64
+        name:
+          type: string
+        httpRpc:
+          type: string
+        wsRpc:
+          type: string
+    RelayerGasPriceLimitResponse:
+      type: object
+      required:
+      - value
+      - chainId
+      properties:
+        value:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: A decimal 256-bit unsigned integer
+          default: '0'
+          example: '0'
+        chainId:
+          type: integer
+          format: int64
+    RelayerResponse:
+      type: object
+      required:
+      - id
+      - name
+      - chainId
+      - keyId
+      - address
+      - nonce
+      - currentNonce
+      - maxInflightTxs
+      - maxQueuedTxs
+      - gasPriceLimits
+      - enabled
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        chainId:
+          type: integer
+          format: uint64
+        keyId:
+          type: string
+        address:
+          type: string
+          format: address
+          title: Address
+          description: Hex encoded ethereum address
+          example: '0x000000000000000000000000000000000000000f'
+        nonce:
+          type: integer
+          format: uint64
+        currentNonce:
+          type: integer
+          format: uint64
+        maxInflightTxs:
+          type: integer
+          format: uint64
+        maxQueuedTxs:
+          type: integer
+          format: uint64
+        gasPriceLimits:
+          type: array
+          items:
+            $ref: '#/components/schemas/RelayerGasPriceLimitResponse'
+        enabled:
+          type: boolean
+    RelayerUpdateRequest:
+      type: object
+      properties:
+        relayerName:
+          type: string
+        maxInflightTxs:
+          type: integer
+          format: uint64
+        maxQueuedTxs:
+          type: integer
+          format: uint64
+        gasPriceLimits:
+          type: array
+          items:
+            $ref: '#/components/schemas/RelayerGasPriceLimitResponse'
+        enabled:
+          type: boolean
+    RpcRequest:
+      type: object
+      required:
+      - id
+      - method
+      - jsonrpc
+      properties:
+        id:
+          type: integer
+          format: int32
+        method:
+          type: string
+        params:
+          default: null
+        jsonrpc:
+          $ref: '#/components/schemas/JsonRpcVersion'
+    SendTxRequest:
+      type: object
+      required:
+      - to
+      - value
+      - gasLimit
+      properties:
+        to:
+          type: string
+          format: address
+          title: Address
+          description: Hex encoded ethereum address
+          example: '0x000000000000000000000000000000000000000f'
+        value:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: Transaction value
+          default: '0'
+          example: '0'
+        data:
+          type: string
+          format: bytes
+          default: null
+        gasLimit:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: Transaction gas limit
+          default: '0'
+          example: '0'
+        priority:
+          allOf:
+          - $ref: '#/components/schemas/TransactionPriority'
+          - description: |-
+              Transaction priority
+
+              The values map to the following percentiles:
+
+              slowest -> 5th percentile
+
+              slow -> 25th percentile
+
+              regular -> 50th percentile
+
+              fast -> 75th percentile
+
+              fastest -> 95th percentile
+
+              i.e. a transaction with priority `fast` will have a gas price that is higher than 75% of the gas prices of other transactions (based on fee estimates from previous blocks).
+            default: regular
+        txId:
+          type: string
+          description: |-
+            An optional transaction id. If not provided tx-sitter will generate a UUID.
+
+            Can be used to provide idempotency for the transaction.
+          default: null
+        blobs:
+          type: array
+          default: null
+          items:
+            type: array
+            items:
+              type: integer
+              format: uint8
+    SendTxResponse:
+      type: object
+      required:
+      - txId
+      properties:
+        txId:
+          type: string
+    TransactionPriority:
+      type: string
+      enum:
+      - slowest
+      - slow
+      - regular
+      - fast
+      - fastest
+    TxStatus:
+      type: string
+      enum:
+      - pending
+      - mined
+      - finalized
+  securitySchemes:
+    BasicAuth:
+      type: http
+      scheme: basic
+
