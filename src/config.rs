@@ -369,7 +369,10 @@ pub struct RelayerConfig {
 }
 
 /// The key a relayer signs with
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Its `Debug` output hides the key id and the private key, so that neither
+/// reaches the logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RelayerKey {
     /// A KMS key id, key ARN or alias, for `keys.kind = "kms"`
@@ -385,6 +388,17 @@ impl RelayerKey {
             Self::Kms(key_id) => key_id,
             Self::Local(private_key) => private_key.expose(),
         }
+    }
+}
+
+impl std::fmt::Debug for RelayerKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self {
+            Self::Kms(_) => "Kms",
+            Self::Local(_) => "Local",
+        };
+
+        f.debug_tuple(kind).field(&"********").finish()
     }
 }
 
@@ -953,6 +967,34 @@ mod tests {
             ),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn loading_errors_hide_malformed_rpc_urls() {
+        let path = config_file(indoc! {r#"
+            [[networks]]
+            chain_id = 1
+            name = "chain"
+            http_rpcs = ["rpc.example.com/v2/provider-key"]
+            ws_rpc = "wss://rpc.example.com/v2/provider-key"
+        "#});
+
+        let err = load_config(std::iter::once(path.as_path())).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(
+            format!("{err:#}"),
+            "networks[0].http_rpcs[0]: invalid URL: relative URL without a base"
+        );
+    }
+
+    #[test]
+    fn debug_output_hides_relayer_keys() {
+        let kms = RelayerKey::Kms("arn:aws:kms:key/0b3e2a5c".to_string());
+        let local = RelayerKey::Local(SecretString::new(LOCAL_KEY.to_string()));
+
+        assert_eq!(format!("{kms:?}"), r#"Kms("********")"#);
+        assert_eq!(format!("{local:?}"), r#"Local("********")"#);
     }
 
     /// Parses the config of one relayer whose fields are valid, except for
