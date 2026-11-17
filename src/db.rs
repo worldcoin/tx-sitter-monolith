@@ -5,9 +5,9 @@ use std::time::Duration;
 use alloy::primitives::{Address, B256, U256};
 use chrono::{DateTime, Utc};
 use sqlx::migrate::{MigrateDatabase, Migrator};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::types::{BigDecimal, Json};
-use sqlx::{PgExecutor, Pool, Postgres, Row};
+use sqlx::{Connection, PgConnection, PgExecutor, Pool, Postgres, Row};
 use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
@@ -37,7 +37,12 @@ static MIGRATOR: Migrator = Migrator {
     ..sqlx::migrate!("db/migrations")
 };
 
+/// How long a statement on [`Database::pool`] may run, including the time it
+/// waits for locks
+const STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct Database {
+    /// Connections whose statements fail after [`STATEMENT_TIMEOUT`]
     pub pool: Pool<Postgres>,
     /// Reserved for [`Database::ping`]
     probe_pool: Pool<Postgres>,
@@ -68,15 +73,27 @@ impl Database {
             Postgres::create_database(&connection_string).await?;
         }
 
-        tracing::info!("Connecting to the database");
-        let pool = Pool::connect(&connection_string).await?;
+        let connect_options: PgConnectOptions = connection_string.parse()?;
 
+        // Migrations may take longer than the statement timeout, so they run
+        // on a connection of their own
         tracing::info!("Running migrations");
-        MIGRATOR.run(&pool).await?;
+        let mut connection =
+            PgConnection::connect_with(&connect_options).await?;
+        MIGRATOR.run(&mut connection).await?;
+        connection.close().await?;
+
+        tracing::info!("Connecting to the database");
+        let pool = PgPoolOptions::new()
+            .connect_with(connect_options.clone().options([(
+                "statement_timeout",
+                format!("{}ms", STATEMENT_TIMEOUT.as_millis()),
+            )]))
+            .await?;
 
         let probe_pool = PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy(&connection_string)?;
+            .connect_lazy_with(connect_options);
 
         tracing::info!("Database initialized");
         Ok(Self { pool, probe_pool })
@@ -1628,6 +1645,20 @@ mod tests {
     #[tokio::test]
     async fn migration() -> eyre::Result<()> {
         let (_db, _db_container) = setup_db().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pool_statements_time_out() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let (statement_timeout,): (String,) =
+            sqlx::query_as("SHOW statement_timeout")
+                .fetch_one(&db.pool)
+                .await?;
+
+        assert_eq!(statement_timeout, "30s");
 
         Ok(())
     }
