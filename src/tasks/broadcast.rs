@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use alloy::consensus::TxEip1559;
 use alloy::primitives::{keccak256, TxKind};
-use alloy::providers::Provider;
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -12,7 +11,8 @@ use itertools::Itertools;
 
 use crate::app::App;
 use crate::broadcast_utils::{
-    calculate_gas_fees_from_estimates, should_send_relayer_transactions,
+    calculate_gas_fees_from_estimates, send_raw_tx,
+    should_send_relayer_transactions, SendOutcome,
 };
 use crate::db::data::RelayerInfo;
 use crate::db::UnsentTx;
@@ -91,15 +91,24 @@ async fn broadcast_relayer_txs(
             break;
         }
 
-        broadcast_relayer_tx(app, &relayer, tx).await?;
+        let outcome = broadcast_relayer_tx(app, ctx, &relayer, tx).await?;
         ctx.report_progress();
+
+        // The node is unavailable, so leave the rest unsigned for the next pass
+        if let SendOutcome::Failed(failure) = outcome {
+            if failure.is_retryable() {
+                break;
+            }
+        }
     }
 
     Ok(())
 }
 
+/// Signs `tx`, stores it and only then sends it, so that the stored bytes can
+/// be sent again if this send fails or the process stops before it.
 #[tracing::instrument(
-    skip(app, relayer, tx),
+    skip(app, ctx, relayer, tx),
     fields(
         relayer_id = tx.relayer_id,
         relayer_address = %relayer.address,
@@ -108,9 +117,10 @@ async fn broadcast_relayer_txs(
 )]
 async fn broadcast_relayer_tx(
     app: &App,
+    ctx: &TaskContext,
     relayer: &RelayerInfo,
     tx: UnsentTx,
-) -> eyre::Result<()> {
+) -> eyre::Result<SendOutcome> {
     tracing::info!(
         relayer_id = relayer.id,
         relayer_address = %relayer.address,
@@ -180,27 +190,21 @@ async fn broadcast_relayer_tx(
         "Sending transaction"
     );
 
-    if let Err(err) = provider.send_raw_transaction(&raw_signed_tx).await {
-        tracing::error!(
+    let outcome =
+        send_raw_tx(&provider, ctx, relayer, &tx.id, &raw_signed_tx).await;
+
+    if let SendOutcome::Accepted | SendOutcome::AlreadyKnown = outcome {
+        tracing::info!(
             relayer_id = relayer.id,
             relayer_address = %relayer.address,
             tx_id = tx.id,
-            error = ?err,
-            "Failed to send transaction"
+            tx_nonce = tx.nonce,
+            tx_hash = ?tx_hash,
+            "Transaction broadcast"
         );
-        return Ok(());
     }
 
-    tracing::info!(
-        relayer_id = relayer.id,
-        relayer_address = %relayer.address,
-        tx_id = tx.id,
-        tx_nonce = tx.nonce,
-        tx_hash = ?tx_hash,
-        "Transaction broadcast"
-    );
-
-    Ok(())
+    Ok(outcome)
 }
 
 fn sort_txs_by_relayer(

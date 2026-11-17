@@ -362,9 +362,9 @@ fn determine_backoff(failures: &[Instant]) -> Duration {
     base_backoff
 }
 
-/// Adds up to 50% to `backoff` so that tasks failing together don't restart
+/// Adds up to 50% to `backoff` so that tasks failing together don't retry
 /// together.
-fn with_jitter(backoff: Duration) -> Duration {
+pub(crate) fn with_jitter(backoff: Duration) -> Duration {
     backoff + (backoff / 2).mul_f64(rand::random::<f64>())
 }
 
