@@ -620,3 +620,25 @@ fn create_api_service(
 
     api_service
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The address `api_spec_generator` uses by default.
+    const SPEC_SERVER_ADDRESS: &str = "http://localhost:8000";
+
+    #[tokio::test]
+    async fn openapi_spec_matches_snapshot() {
+        let spec =
+            generate_spec_yaml(Some(&SPEC_SERVER_ADDRESS.to_string())).await;
+
+        assert!(
+            format!("{spec}\n") == include_str!("./server/openapi.yaml"),
+            "The OpenAPI spec changed. tx-sitter-client is generated from it, \
+             so check the change is intended, then run \
+             `cargo run --bin api_spec_generator > src/server/openapi.yaml` \
+             and regenerate the client"
+        );
+    }
+}

@@ -603,7 +603,6 @@ name = "base-api-types"
 version = "0.1.0"
 dependencies = [
  "ethers",
- "hex",
  "hex-literal",
  "poem",
  "poem-openapi",
