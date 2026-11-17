@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use crate::app::App;
 use crate::config::{
     Config, DatabaseConfig, KeysConfig, LocalKeysConfig, ServerConfig,
-    TxSitterConfig,
+    ServiceRole, TxSitterConfig,
 };
 
 pub const RPC_TIMEOUT: Duration = Duration::from_secs(1);
@@ -68,6 +68,7 @@ pub async fn setup_app(
 
     let config = Config {
         service: TxSitterConfig {
+            role: ServiceRole::All,
             escalation_interval: Duration::from_secs(60),
             max_escalations: 100,
             soft_reorg_interval: Duration::from_secs(60),

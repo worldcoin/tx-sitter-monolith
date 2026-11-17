@@ -48,6 +48,10 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TxSitterConfig {
+    /// Which parts of the service this process runs
+    #[serde(default)]
+    pub role: ServiceRole,
+
     #[serde(with = "humantime_serde")]
     pub escalation_interval: Duration,
 
@@ -88,6 +92,35 @@ pub struct TxSitterConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryConfig>,
+}
+
+/// The parts of the service a process runs.
+///
+/// Background tasks must run in exactly one process per database, so a
+/// deployment runs any number of [`ServiceRole::Api`] processes next to a
+/// single [`ServiceRole::Worker`] or [`ServiceRole::All`] process.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceRole {
+    /// Serves the HTTP API and runs the background tasks
+    #[default]
+    All,
+    /// Serves the HTTP API and runs no background tasks
+    Api,
+    /// Runs the background tasks and serves only the health endpoints
+    Worker,
+}
+
+impl ServiceRole {
+    pub fn serves_api(self) -> bool {
+        matches!(self, Self::All | Self::Api)
+    }
+
+    pub fn runs_tasks(self) -> bool {
+        matches!(self, Self::All | Self::Worker)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +334,7 @@ mod tests {
 
     const WITH_DB_CONNECTION_STRING: &str = indoc! {r#"
         [service]
+        role = "all"
         escalation_interval = "1h"
         max_escalations = 100
         soft_reorg_interval = "1m"
@@ -323,6 +357,7 @@ mod tests {
 
     const WITH_DB_PARTS: &str = indoc! {r#"
         [service]
+        role = "all"
         escalation_interval = "1h"
         max_escalations = 100
         soft_reorg_interval = "1m"
@@ -351,6 +386,7 @@ mod tests {
     fn with_db_connection_string() {
         let config = Config {
             service: TxSitterConfig {
+                role: ServiceRole::All,
                 escalation_interval: Duration::from_secs(60 * 60),
                 max_escalations: default::max_escalations(),
                 soft_reorg_interval: default::soft_reorg_interval(),
@@ -384,6 +420,7 @@ mod tests {
     fn with_db_parts() {
         let config = Config {
             service: TxSitterConfig {
+                role: ServiceRole::All,
                 escalation_interval: Duration::from_secs(60 * 60),
                 max_escalations: default::max_escalations(),
                 soft_reorg_interval: default::soft_reorg_interval(),
@@ -425,6 +462,7 @@ mod tests {
         std::env::set_var("TX_SITTER__DATABASE__USERNAME", "dbUsername");
         std::env::set_var("TX_SITTER__DATABASE__PASSWORD", "dbPassword");
         std::env::set_var("TX_SITTER__SERVICE__ESCALATION_INTERVAL", "1m");
+        std::env::set_var("TX_SITTER__SERVICE__ROLE", "worker");
         std::env::set_var(
             "TX_SITTER__SERVICE__TELEMETRY__SERVICE_NAME",
             "tx-sitter",
@@ -446,6 +484,7 @@ mod tests {
             panic!("Expected KMS keys config");
         };
         assert_eq!(kms_config.kms_timeout, default::kms_timeout());
+        assert_eq!(config.service.role, ServiceRole::Worker);
         assert_eq!(
             config.database.to_connection_string(),
             "postgres://dbUsername:dbPassword@dbHost:dbPort/dbName"

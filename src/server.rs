@@ -21,7 +21,6 @@ use url::Url;
 use crate::api_key::ApiKey;
 use crate::app::App;
 use crate::db::CreateResult;
-use crate::service::Service;
 use crate::task_runner::{TaskHealth, TaskRunner};
 use crate::types::{
     CreateApiKeyResponse, CreateNetworkRequest, CreateRelayerRequest,
@@ -207,7 +206,6 @@ impl AdminApi {
         &self,
         basic_auth: BasicAuth,
         Data(app): Data<&Arc<App>>,
-        Data(task_runner): Data<&Arc<TaskRunner<App>>>,
         Path(chain_id): Path<u64>,
         Json(network): Json<CreateNetworkRequest>,
     ) -> Result<()> {
@@ -231,8 +229,6 @@ impl AdminApi {
                 ws_url.as_str(),
             )
             .await?;
-
-        Service::spawn_chain_tasks(task_runner, chain_id);
 
         Ok(())
     }
@@ -660,7 +656,8 @@ pub async fn generate_spec_yaml(server_address: Option<&String>) -> String {
     api_service.spec_yaml()
 }
 
-/// Serves the HTTP API until `shutdown` is cancelled.
+/// Serves the HTTP endpoints of the configured role until `shutdown` is
+/// cancelled.
 ///
 /// After that the server stops accepting connections and gives in-flight
 /// requests `server.shutdown_timeout` to finish, logging a warning if they
@@ -671,16 +668,13 @@ pub async fn spawn_server(
     task_runner: Arc<TaskRunner<App>>,
     shutdown: CancellationToken,
 ) -> eyre::Result<ServerHandle> {
-    let api_service =
-        create_api_service(app.config.server.server_address.as_ref());
+    let routes = if app.config.service.role.serves_api() {
+        api_routes(app.config.server.server_address.as_ref())
+    } else {
+        health_routes()
+    };
 
-    let router = Route::new()
-        .nest("/rapidoc", api_service.rapidoc())
-        .nest("/swagger", api_service.swagger_ui())
-        .nest("/redoc", api_service.redoc())
-        .nest("/schema.json", api_service.spec_endpoint())
-        .nest("/schema.yml", api_service.spec_endpoint_yaml())
-        .nest("/", api_service)
+    let router = routes
         .with(trace_middleware::TraceMiddleware)
         .with(Cors::new())
         .data(app.clone())
@@ -724,6 +718,25 @@ pub async fn spawn_server(
         local_addrs,
         server_handle,
     })
+}
+
+fn api_routes(server_address: Option<&String>) -> Route {
+    let api_service = create_api_service(server_address);
+
+    Route::new()
+        .nest("/rapidoc", api_service.rapidoc())
+        .nest("/swagger", api_service.swagger_ui())
+        .nest("/redoc", api_service.redoc())
+        .nest("/schema.json", api_service.spec_endpoint())
+        .nest("/schema.yml", api_service.spec_endpoint_yaml())
+        .nest("/", api_service)
+}
+
+fn health_routes() -> Route {
+    let health_service =
+        OpenApiService::new(ServiceApi, "Tx Sitter", version::version!());
+
+    Route::new().nest("/", health_service)
 }
 
 fn create_api_service(

@@ -23,8 +23,16 @@ pub mod wrappers;
 use self::data::{BlockFees, NetworkStats, ReadTxData, RpcKind};
 pub use self::data::{TxForEscalation, UnsentTx};
 
-// Statically link in migration files
-static MIGRATOR: Migrator = sqlx::migrate!("db/migrations");
+// Statically link in migration files.
+//
+// Migrations are expand-only and the migrator ignores applied migrations it
+// doesn't know, so the previous image still starts after a newer one migrated
+// the database. The migrator holds a Postgres advisory lock while it runs, so
+// processes that start at the same time apply each migration once.
+static MIGRATOR: Migrator = Migrator {
+    ignore_missing: true,
+    ..sqlx::migrate!("db/migrations")
+};
 
 pub struct Database {
     pub pool: Pool<Postgres>,
@@ -1407,6 +1415,28 @@ mod tests {
     #[tokio::test]
     async fn migration() -> eyre::Result<()> {
         let (_db, _db_container) = setup_db().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn starts_after_a_newer_image_migrated() -> eyre::Result<()> {
+        let (db, db_container) = setup_db().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (99999, 'from a newer image', TRUE, '\x00', 0)
+            "#,
+        )
+        .execute(&db.pool)
+        .await?;
+
+        let url = format!(
+            "postgres://postgres:postgres@{}/database",
+            db_container.address()
+        );
+        Database::new(&DatabaseConfig::connection_string(&url)).await?;
 
         Ok(())
     }
