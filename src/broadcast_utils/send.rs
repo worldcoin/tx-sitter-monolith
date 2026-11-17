@@ -12,18 +12,28 @@ const INITIAL_SEND_RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
 const JSON_RPC_INTERNAL_ERROR: i64 = -32603;
 
-// Lowercase fragments of the messages that geth, reth, anvil and nethermind
-// reject transactions with
+// Lowercase fragments of the messages that geth, reth, anvil, besu and
+// nethermind reject transactions with
 const ALREADY_KNOWN_MESSAGES: [&str; 3] =
     ["already known", "alreadyknown", "already imported"];
 const NONCE_TOO_LOW_MESSAGES: [&str; 3] =
     ["nonce too low", "noncetoolow", "oldnonce"];
-const UNDERPRICED_MESSAGES: [&str; 4] = [
+const UNDERPRICED_MESSAGES: [&str; 7] = [
     "underpriced",
     "fee too low",
     "feetoolow",
     "less than block base fee",
+    "below minimum",
+    "gas price below",
+    "minimum needed",
 ];
+const INSUFFICIENT_FUNDS_MESSAGES: [&str; 3] = [
+    "insufficient funds",
+    "insufficientfunds",
+    "exceeds account balance",
+];
+const FEE_CAP_EXCEEDED_MESSAGES: [&str; 2] =
+    ["exceeds the configured cap", "fee cap exceeded"];
 
 /// What came of sending a signed transaction, see [`send_raw_tx`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,9 +51,13 @@ pub enum SendFailure {
     /// The nonce is used by a mined transaction, ours or one sent with the
     /// same key elsewhere.
     NonceTooLow,
-    /// The fees are below the base fee, or too close to those of the pending
-    /// transaction with the same nonce.
+    /// The fees are below the base fee or the node's minimum, or too close to
+    /// those of the pending transaction with the same nonce.
     Underpriced,
+    /// The relayer can't pay for the gas and value of the transaction.
+    InsufficientFunds,
+    /// The fees are above the most the node accepts for a transaction.
+    FeeCapExceeded,
     Timeout,
     Connection,
     RateLimited,
@@ -53,7 +67,7 @@ pub enum SendFailure {
     /// The node took the call but answered with the hash of another
     /// transaction
     UnexpectedHash,
-    /// Any other rejection, such as insufficient funds
+    /// Any other rejection, such as a full transaction pool
     Rejected,
 }
 
@@ -74,6 +88,8 @@ impl SendFailure {
         match self {
             Self::NonceTooLow => "nonce_too_low",
             Self::Underpriced => "underpriced",
+            Self::InsufficientFunds => "insufficient_funds",
+            Self::FeeCapExceeded => "fee_cap_exceeded",
             Self::Timeout => "timeout",
             Self::Connection => "connection",
             Self::RateLimited => "rate_limited",
@@ -233,6 +249,10 @@ fn classify_node_message(message: &str) -> Option<SendOutcome> {
         Some(SendOutcome::Failed(SendFailure::NonceTooLow))
     } else if contains_any(&UNDERPRICED_MESSAGES) {
         Some(SendOutcome::Failed(SendFailure::Underpriced))
+    } else if contains_any(&INSUFFICIENT_FUNDS_MESSAGES) {
+        Some(SendOutcome::Failed(SendFailure::InsufficientFunds))
+    } else if contains_any(&FEE_CAP_EXCEEDED_MESSAGES) {
+        Some(SendOutcome::Failed(SendFailure::FeeCapExceeded))
     } else {
         None
     }
@@ -271,7 +291,14 @@ mod tests {
     #[test_case(node_error(-32000, "transaction underpriced") => SendOutcome::Failed(SendFailure::Underpriced) ; "underpriced")]
     #[test_case(node_error(-32000, "max fee per gas less than block base fee: address 0x1, maxFeePerGas: 1, baseFee: 7") => SendOutcome::Failed(SendFailure::Underpriced) ; "below base fee")]
     #[test_case(node_error(-32010, "FeeTooLow") => SendOutcome::Failed(SendFailure::Underpriced) ; "nethermind fee too low")]
-    #[test_case(node_error(-32000, "insufficient funds for gas * price + value") => SendOutcome::Failed(SendFailure::Rejected) ; "insufficient funds")]
+    #[test_case(node_error(-32000, "transaction gas price below minimum: gas tip cap 1, minimum needed 2") => SendOutcome::Failed(SendFailure::Underpriced) ; "geth below minimum tip")]
+    #[test_case(node_error(-32009, "Gas price below configured minimum gas price") => SendOutcome::Failed(SendFailure::Underpriced) ; "besu below minimum gas price")]
+    #[test_case(node_error(-32000, "insufficient funds for gas * price + value") => SendOutcome::Failed(SendFailure::InsufficientFunds) ; "geth insufficient funds")]
+    #[test_case(node_error(-32004, "Upfront cost exceeds account balance") => SendOutcome::Failed(SendFailure::InsufficientFunds) ; "besu insufficient funds")]
+    #[test_case(node_error(-32010, "InsufficientFunds") => SendOutcome::Failed(SendFailure::InsufficientFunds) ; "nethermind insufficient funds")]
+    #[test_case(node_error(-32000, "tx fee (2.00 ether) exceeds the configured cap (1.00 ether)") => SendOutcome::Failed(SendFailure::FeeCapExceeded) ; "geth fee cap")]
+    #[test_case(node_error(-32000, "Transaction fee cap exceeded") => SendOutcome::Failed(SendFailure::FeeCapExceeded) ; "besu fee cap")]
+    #[test_case(node_error(-32000, "txpool is full") => SendOutcome::Failed(SendFailure::Rejected) ; "full pool")]
     #[test_case(node_error(-32005, "limit exceeded") => SendOutcome::Failed(SendFailure::RateLimited) ; "rate limited by error code")]
     #[test_case(node_error(-32603, "internal error") => SendOutcome::Failed(SendFailure::ServerError) ; "json rpc internal error")]
     #[test_case(TransportErrorKind::http_error(503, String::new()) => SendOutcome::Failed(SendFailure::ServerError) ; "http 503")]
@@ -376,7 +403,7 @@ mod tests {
     #[test_case(vec![Answer::ServerError, Answer::ServerError, Answer::TxHash] => (SendOutcome::Accepted, 3) ; "until accepted")]
     #[test_case(vec![Answer::ServerError] => (SendOutcome::Failed(SendFailure::ServerError), 4) ; "a bounded number of times")]
     #[test_case(vec![Answer::ServerError, Answer::NodeError("already known")] => (SendOutcome::AlreadyKnown, 2) ; "until already known")]
-    #[test_case(vec![Answer::NodeError("insufficient funds for gas * price + value")] => (SendOutcome::Failed(SendFailure::Rejected), 1) ; "not after a rejection")]
+    #[test_case(vec![Answer::NodeError("insufficient funds for gas * price + value")] => (SendOutcome::Failed(SendFailure::InsufficientFunds), 1) ; "not after a rejection")]
     #[test_case(vec![Answer::NodeError("nonce too low")] => (SendOutcome::Failed(SendFailure::NonceTooLow), 1) ; "not after nonce too low")]
     #[test_case(vec![Answer::OtherTxHash] => (SendOutcome::Failed(SendFailure::UnexpectedHash), 1) ; "not after the hash of another transaction")]
     #[tokio::test]

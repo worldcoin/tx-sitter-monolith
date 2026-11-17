@@ -274,21 +274,33 @@ async fn escalate_relayer_tx(
 /// A node that only now took the latest version, because it lost it or
 /// never got it, gets until the version is two escalation intervals old
 /// before the fees go up. That defers each bump at most once, also for nodes
-/// that answer every send as if it were new. Any failure but low fees leaves
-/// the fees alone, because the replacement would fail the same way.
+/// that answer every send as if it were new. A relayer that can't pay for the
+/// transaction, fees above the node's cap, an unavailable node or a used
+/// nonce leave the fees alone, because the replacement would fail the same
+/// way. Any other rejection bumps them, as far as `max_escalations` allows.
 fn should_bump_fees(
     resent: Option<SendOutcome>,
     latest_hash_age: Duration,
     escalation_interval: Duration,
 ) -> bool {
-    match resent {
-        None
-        | Some(SendOutcome::AlreadyKnown)
-        | Some(SendOutcome::Failed(SendFailure::Underpriced)) => true,
+    let failure = match resent {
+        None | Some(SendOutcome::AlreadyKnown) => return true,
         Some(SendOutcome::Accepted) => {
-            latest_hash_age >= 2 * escalation_interval
+            return latest_hash_age >= 2 * escalation_interval;
         }
-        Some(SendOutcome::Failed(_)) => false,
+        Some(SendOutcome::Failed(failure)) => failure,
+    };
+
+    match failure {
+        SendFailure::Underpriced | SendFailure::Rejected => true,
+        SendFailure::InsufficientFunds
+        | SendFailure::FeeCapExceeded
+        | SendFailure::NonceTooLow
+        | SendFailure::UnexpectedHash
+        | SendFailure::Timeout
+        | SendFailure::Connection
+        | SendFailure::RateLimited
+        | SendFailure::ServerError => false,
     }
 }
 
@@ -403,7 +415,10 @@ mod tests {
     #[test_case(Some(SendOutcome::Accepted), 1 => false ; "taken by the node only now")]
     #[test_case(Some(SendOutcome::Accepted), 2 => true ; "taken by the node only now two intervals after storing")]
     #[test_case(Some(SendOutcome::Failed(SendFailure::Underpriced)), 1 => true ; "underpriced")]
-    #[test_case(Some(SendOutcome::Failed(SendFailure::Rejected)), 9 => false ; "rejected")]
+    #[test_case(Some(SendOutcome::Failed(SendFailure::Rejected)), 1 => true ; "rejected for another reason")]
+    #[test_case(Some(SendOutcome::Failed(SendFailure::InsufficientFunds)), 9 => false ; "insufficient funds")]
+    #[test_case(Some(SendOutcome::Failed(SendFailure::FeeCapExceeded)), 9 => false ; "above the fee cap")]
+    #[test_case(Some(SendOutcome::Failed(SendFailure::UnexpectedHash)), 9 => false ; "unexpected hash")]
     #[test_case(Some(SendOutcome::Failed(SendFailure::Timeout)), 9 => false ; "node unavailable")]
     #[test_case(Some(SendOutcome::Failed(SendFailure::NonceTooLow)), 9 => false ; "nonce used")]
     fn bumps_fees(
