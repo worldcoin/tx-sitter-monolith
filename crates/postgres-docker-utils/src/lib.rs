@@ -73,13 +73,13 @@ fn run_cmd_to_output(cmd_str: &str) -> eyre::Result<String> {
     command.stdout(Stdio::piped());
     command.stderr(Stdio::inherit());
 
-    if !command.status()?.success() {
-        eyre::bail!("Running {cmd_str} failed");
-    }
+    let output = command
+        .output()
+        .with_context(|| format!("Running {cmd_str}"))?;
 
-    let Ok(output) = command.output() else {
-        return Ok(String::new());
-    };
+    if !output.status.success() {
+        eyre::bail!("Running {cmd_str} failed with {}", output.status);
+    }
 
     let utf = String::from_utf8(output.stdout)?;
 
@@ -119,5 +119,29 @@ mod tests {
     #[test_case("0.0.0.0:12345 \n [::]:54321" => 12345 ; "yields first of multiple ips")]
     fn test_parse_exposed_port(s: &str) -> u16 {
         parse_exposed_port(s).unwrap().port()
+    }
+
+    #[test]
+    fn run_cmd_to_output_runs_the_command_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "postgres-docker-utils-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let created =
+            run_cmd_to_output(&format!("mktemp -p {}", dir.display()))
+                .unwrap();
+
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert!(created.starts_with(&dir.display().to_string()));
+    }
+
+    #[test]
+    fn run_cmd_to_output_fails_on_non_zero_exit() {
+        assert!(run_cmd_to_output("false").is_err());
     }
 }
