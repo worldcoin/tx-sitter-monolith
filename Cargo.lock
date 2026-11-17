@@ -4472,6 +4472,7 @@ checksum = "b6445b50be2e26f142d4e554d15773fc1e7510b994083c9625a65eba0d3f4287"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "derive_more 0.99.17",
  "futures-util",
  "indexmap 2.14.2",
@@ -6797,7 +6798,6 @@ dependencies = [
  "poem-openapi",
  "postgres-docker-utils",
  "rand 0.8.5",
- "regex",
  "reqwest 0.13.5",
  "serde",
  "serde_json",

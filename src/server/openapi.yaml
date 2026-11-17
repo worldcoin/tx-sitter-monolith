@@ -30,6 +30,7 @@ servers:
 tags:
 - name: AdminV1
 - name: RelayerV1
+- name: RelayerV2
 - name: Service
 paths:
   /1/admin/relayer:
@@ -340,6 +341,188 @@ paths:
             application/json; charset=utf-8:
               schema: {}
       operationId: call_rpc
+  /2/tx:
+    post:
+      tags:
+      - RelayerV2
+      summary: Send Transaction
+      description: |-
+        Sending a `txId` again with an identical request returns the same
+        `txId` and changes nothing, even while the relayer is disabled or its
+        queue is full. Sending it with a different request returns 409.
+      requestBody:
+        content:
+          application/json; charset=utf-8:
+            schema:
+              $ref: '#/components/schemas/SendTxRequestV2'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/SendTxResponse'
+        '400':
+          description: '`invalid_request`: the request is invalid'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '401':
+          description: '`unauthorized`: the bearer API key is missing or unknown'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '403':
+          description: '`relayer_disabled`: the relayer is disabled'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '404':
+          description: '`not_found`: the relayer has no transaction with this id'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '409':
+          description: '`transaction_already_exists`: a different request already used this `txId`'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '413':
+          description: '`payload_too_large`: the request body is over 512 KiB'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '415':
+          description: '`unsupported_media_type`: the request body isn''t JSON'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '422':
+          description: '`insufficient_funds`: the relayer can''t pay for its queued transactions and this one'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '429':
+          description: '`queue_full`: the relayer''s queue is full'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '500':
+          description: '`internal_error`, or `relayer_nonce_taken` until the relayer is reset'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '503':
+          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+      security:
+      - BearerApiKey: []
+      operationId: create_transaction_v2
+  /2/tx/{tx_id}:
+    get:
+      tags:
+      - RelayerV2
+      summary: Get Transaction
+      description: Returns 404 for a transaction of another relayer.
+      parameters:
+      - name: tx_id
+        schema:
+          type: string
+          pattern: ^[^\x00]*$
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/GetTxResponseV2'
+        '400':
+          description: '`invalid_request`: the request is invalid'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '401':
+          description: '`unauthorized`: the bearer API key is missing or unknown'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '403':
+          description: '`relayer_disabled`: the relayer is disabled'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '404':
+          description: '`not_found`: the relayer has no transaction with this id'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '409':
+          description: '`transaction_already_exists`: a different request already used this `txId`'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '413':
+          description: '`payload_too_large`: the request body is over 512 KiB'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '415':
+          description: '`unsupported_media_type`: the request body isn''t JSON'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '422':
+          description: '`insufficient_funds`: the relayer can''t pay for its queued transactions and this one'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '429':
+          description: '`queue_full`: the relayer''s queue is full'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '500':
+          description: '`internal_error`, or `relayer_nonce_taken` until the relayer is reset'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '503':
+          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+      security:
+      - BearerApiKey: []
+      operationId: get_transaction_v2
   /health:
     get:
       tags:
@@ -442,6 +625,16 @@ components:
           title: Address
           description: Address of the created relayer
           example: '0x000000000000000000000000000000000000000f'
+    ErrorResponseBody:
+      type: object
+      required:
+      - errorId
+      - errorMessage
+      properties:
+        errorId:
+          type: string
+        errorMessage:
+          type: string
     GetTxResponse:
       type: object
       required:
@@ -490,6 +683,82 @@ components:
           allOf:
           - $ref: '#/components/schemas/TxStatus'
           - default: null
+    GetTxResponseV2:
+      type: object
+      required:
+      - txId
+      - relayerId
+      - chainId
+      - to
+      - data
+      - value
+      - gasLimit
+      - nonce
+      - priority
+      - createdAt
+      - status
+      properties:
+        txId:
+          type: string
+        relayerId:
+          type: string
+        chainId:
+          type: integer
+          format: uint64
+        to:
+          type: string
+          format: address
+          title: Address
+          description: Hex encoded ethereum address
+          example: '0x000000000000000000000000000000000000000f'
+        data:
+          type: string
+          format: bytes
+        value:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: A decimal 256-bit unsigned integer
+          default: '0'
+          example: '0'
+        gasLimit:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: A decimal 256-bit unsigned integer
+          default: '0'
+          example: '0'
+        nonce:
+          type: integer
+          format: uint64
+        priority:
+          $ref: '#/components/schemas/TransactionPriority'
+        metadata:
+          type: object
+          title: Transaction metadata
+          description: '`null` for transactions sent through the v1 API'
+          additionalProperties: {}
+          example:
+            transactionType: SafeDeployment
+        createdAt:
+          type: string
+          format: date-time
+          description: When tx-sitter stored the transaction
+        status:
+          $ref: '#/components/schemas/TxStatusV2'
+        txHash:
+          type: string
+          format: h256
+          title: H256
+          description: |-
+            Hash of the broadcast transaction that is mined, or else of the latest
+            one broadcast
+          default: '0x0000000000000000000000000000000000000000000000000000000000000000'
+          example: 0x46239dbfe5502b9f82c3dff992927d8d9b3168e732b4fd5771288569f5a1813d
+        minedAt:
+          type: string
+          format: date-time
+          description: Timestamp of the block the transaction was mined in
     JsonRpcVersion:
       type: string
       enum:
@@ -674,6 +943,69 @@ components:
             items:
               type: integer
               format: uint8
+    SendTxRequestV2:
+      type: object
+      required:
+      - to
+      - value
+      - gasLimit
+      properties:
+        to:
+          type: string
+          format: address
+          title: Address
+          description: Hex encoded ethereum address
+          example: '0x000000000000000000000000000000000000000f'
+        value:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: Transaction value
+          default: '0'
+          example: '0'
+        data:
+          type: string
+          format: bytes
+          default: null
+        gasLimit:
+          type: string
+          format: decimal-u256
+          title: Decimal U256
+          description: Transaction gas limit
+          default: '0'
+          example: '0'
+        priority:
+          allOf:
+          - $ref: '#/components/schemas/TransactionPriority'
+          - description: Transaction priority, as in the v1 API. Defaults to `regular`.
+            default: regular
+        txId:
+          type: string
+          description: |-
+            An optional transaction id. If not provided tx-sitter will generate a UUID.
+
+            Sending an id again with an identical request returns the existing
+            transaction and changes nothing. Requests are identical when their
+            fields are equal and their `metadata` is the same JSON text, byte for
+            byte, as a retry that re-sends the same body is. Sending the id with a
+            different request, or reusing an id sent through the v1 API, returns
+            409.
+
+            An id stays taken while its transaction is kept: tx-sitter deletes
+            finalized transactions `service.tx_retention` (30 days by default)
+            after they are mined. After that a repeat creates a new transaction.
+          default: null
+          maxLength: 255
+          minLength: 1
+          pattern: ^[^\x00]*$
+        metadata:
+          type: object
+          title: Transaction metadata
+          description: A JSON object stored with the transaction and returned exactly as sent, at most 64 KiB of JSON text.
+          default: null
+          additionalProperties: {}
+          example:
+            transactionType: SafeDeployment
     SendTxResponse:
       type: object
       required:
@@ -695,8 +1027,29 @@ components:
       - pending
       - mined
       - finalized
+    TxStatusV2:
+      type: string
+      description: |-
+        Transaction status
+
+        queued -> not broadcast yet
+
+        pending -> broadcast, not mined yet
+
+        mined -> included in a block
+
+        finalized -> included in a block old enough to count as final
+      enum:
+      - queued
+      - pending
+      - mined
+      - finalized
   securitySchemes:
     BasicAuth:
       type: http
       scheme: basic
+    BearerApiKey:
+      type: http
+      description: 'An API key sent in an `Authorization: Bearer <api key>` header'
+      scheme: bearer
 
