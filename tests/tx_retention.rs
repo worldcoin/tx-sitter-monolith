@@ -1,75 +1,72 @@
 mod common;
 
 use alloy::primitives::keccak256;
-use tx_sitter::db::{Database, TxIdMatch};
-use tx_sitter::types::{TransactionPriority, TxStatus};
+use tx_sitter::db::Database;
 
 use crate::common::prelude::*;
 
 const TX_RETENTION: Duration = Duration::from_secs(60 * 60);
 const MINUTE: Duration = Duration::from_secs(60);
-const REQUEST_HASH: [u8; 32] = [7; 32];
 
 #[tokio::test]
-async fn prune_keeps_finalized_txs_within_retention() -> eyre::Result<()> {
+async fn sends_stay_idempotent_while_their_tx_is_kept() -> eyre::Result<()> {
     setup_tracing();
 
-    let (db_url, _db_container) = setup_db().await?;
-    let anvil = AnvilBuilder::default().spawn().await?;
     // Stores the anvil relayer without running tasks
-    let (_api, _) = ServiceBuilder::default()
-        .role(ServiceRole::Api)
-        .build(&anvil, &db_url)
-        .await?;
-    let db = connect_db(&db_url).await?;
+    let service =
+        TestService::spawn(ServiceBuilder::default().role(ServiceRole::Api))
+            .await?;
+    let client = service.v2_client(&service.api_key);
+    let db = &service.db;
 
-    create_finalized_tx(&db, "expired", TX_RETENTION + MINUTE).await?;
-    create_finalized_tx(&db, "kept", TX_RETENTION - MINUTE).await?;
+    for (tx_id, mined_ago) in [
+        ("expired", TX_RETENTION + MINUTE),
+        ("kept", TX_RETENTION - MINUTE),
+    ] {
+        send_tx_v2(&client, send_tx_request(tx_id)).await?;
+        finalize(db, tx_id, mined_ago).await?;
+    }
+    assert_eq!(service.relayer_nonce().await?, 2);
 
     // A worker prunes as it starts
     let (_worker, _) = ServiceBuilder::default()
         .role(ServiceRole::Worker)
         .tx_retention(TX_RETENTION)
-        .build(&anvil, &db_url)
+        .build(&service.anvil, &service.db_url)
         .await?;
-    await_pruned(&db, "expired").await?;
+    await_pruned(db, "expired").await?;
 
-    let tx = db.read_tx("kept").await?;
-    assert_eq!(tx.and_then(|tx| tx.status), Some(TxStatus::Finalized));
-    for (tx_id, expected) in [
-        ("kept", TxIdMatch::SameRequest),
-        ("expired", TxIdMatch::Unused),
-    ] {
-        let tx_id_match = db
-            .compare_tx_request(tx_id, DEFAULT_RELAYER_ID, REQUEST_HASH)
-            .await?;
-        assert_eq!(tx_id_match, expected, "{tx_id}");
-    }
+    let kept = get_tx_v2(&client, "kept").await?;
+    assert_eq!(kept.status, TxStatusV2::Finalized);
+    send_tx_v2(&client, send_tx_request("kept")).await?;
+    assert_eq!(service.relayer_nonce().await?, 2, "A kept tx was repeated");
+
+    // Once its transaction is pruned, the id is free again
+    send_tx_v2(&client, send_tx_request("expired")).await?;
+    let expired = get_tx_v2(&client, "expired").await?;
+    assert_eq!(expired.status, TxStatusV2::Queued);
+    assert_eq!(expired.nonce, 2);
 
     Ok(())
 }
 
-/// Creates a transaction of the anvil relayer that was mined `mined_ago`
-/// and is finalized
-async fn create_finalized_tx(
+fn send_tx_request(tx_id: &str) -> SendTxRequestV2 {
+    SendTxRequestV2 {
+        tx_id: Some(tx_id.to_string()),
+        ..SendTxRequestV2::new(
+            ARBITRARY_ADDRESS.into(),
+            U256::ZERO.into(),
+            U256::from(21_000).into(),
+        )
+    }
+}
+
+/// Marks `tx_id` as broadcast and finalized, mined `mined_ago`
+async fn finalize(
     db: &Database,
     tx_id: &str,
     mined_ago: Duration,
 ) -> eyre::Result<()> {
-    db.create_transaction(
-        tx_id,
-        ARBITRARY_ADDRESS,
-        &[],
-        U256::ZERO,
-        U256::from(21_000),
-        TransactionPriority::Regular,
-        None,
-        DEFAULT_RELAYER_ID,
-        None,
-        Some(REQUEST_HASH),
-    )
-    .await?;
-
     let fee = U256::from(1);
     db.insert_tx_broadcast(tx_id, keccak256(tx_id), &[], fee, fee)
         .await?;

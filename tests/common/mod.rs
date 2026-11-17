@@ -25,6 +25,7 @@ use tx_sitter_client::models::{SendTxRequest, TxStatus};
 
 mod anvil_builder;
 mod service_builder;
+mod test_service;
 
 pub use self::anvil_builder::AnvilBuilder;
 pub use self::service_builder::ServiceBuilder;
@@ -45,6 +46,7 @@ pub mod prelude {
     pub use tx_sitter_client::models::*;
     pub use url::Url;
 
+    pub use super::test_service::*;
     pub use super::*;
 }
 
