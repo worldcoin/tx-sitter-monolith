@@ -1177,45 +1177,61 @@ impl Database {
         .await?)
     }
 
+    /// Deletes up to `batch_size` of the blocks older than `timestamp`, with
+    /// their transactions and fees, and returns how many it deleted.
     #[instrument(skip(self), level = "debug")]
     pub async fn prune_blocks(
         &self,
         timestamp: DateTime<Utc>,
-    ) -> eyre::Result<()> {
-        sqlx::query(
+        batch_size: u64,
+    ) -> eyre::Result<u64> {
+        let pruned = sqlx::query(
             r#"
             DELETE FROM blocks
-            WHERE  timestamp < $1
+            WHERE  (block_number, chain_id) IN (
+                       SELECT block_number, chain_id
+                       FROM   blocks
+                       WHERE  timestamp < $1
+                       LIMIT  $2
+                   )
             "#,
         )
         .bind(timestamp)
+        .bind(batch_size as i64)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(pruned.rows_affected())
     }
 
+    /// Deletes up to `batch_size` of the transactions finalized in a block
+    /// mined before `timestamp`, with their hashes, and returns how many it
+    /// deleted.
     #[instrument(skip(self), level = "debug")]
     pub async fn prune_txs(
         &self,
         timestamp: DateTime<Utc>,
-    ) -> eyre::Result<()> {
-        sqlx::query(
+        batch_size: u64,
+    ) -> eyre::Result<u64> {
+        let pruned = sqlx::query(
             r#"
-            DELETE
-            FROM  transactions t
-            USING sent_transactions s
-            WHERE t.id = s.tx_id
-            AND   s.mined_at < $1
-            AND   s.status = $2
+            DELETE FROM transactions
+            WHERE  id IN (
+                       SELECT tx_id
+                       FROM   sent_transactions
+                       WHERE  mined_at < $1
+                       AND    status = $2
+                       LIMIT  $3
+                   )
             "#,
         )
         .bind(timestamp)
         .bind(TxStatus::Finalized)
+        .bind(batch_size as i64)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(pruned.rows_affected())
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1784,7 +1800,7 @@ mod tests {
 
         assert!(db.has_blocks_for_chain(1).await?, "Should have blocks");
 
-        db.prune_blocks(prune_timestamp).await?;
+        assert_eq!(db.prune_blocks(prune_timestamp, 10).await?, 1);
 
         assert!(!db.has_blocks_for_chain(1).await?, "Should not have blocks");
 
