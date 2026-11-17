@@ -1,10 +1,12 @@
 #![allow(dead_code)] // Needed because this module is imported as module by many test crates
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use alloy::primitives::{address, Address, U256};
 use alloy::providers::{Provider, RootProvider};
 use postgres_docker_utils::DockerContainerGuard;
+use tokio::net::TcpListener;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -71,6 +73,22 @@ pub async fn setup_db() -> eyre::Result<(String, DockerContainerGuard)> {
     let url = format!("postgres://postgres:postgres@{db_socket_addr}/database");
 
     Ok((url, db_container))
+}
+
+/// Starts a TCP server that accepts connections and never answers.
+pub async fn spawn_unresponsive_rpc() -> eyre::Result<SocketAddr> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+
+    tokio::spawn(async move {
+        let mut connections = Vec::new();
+
+        while let Ok((stream, _)) = listener.accept().await {
+            connections.push(stream);
+        }
+    });
+
+    Ok(addr)
 }
 
 pub async fn setup_provider(

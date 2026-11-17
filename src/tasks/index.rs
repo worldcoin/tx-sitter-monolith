@@ -325,15 +325,42 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::Message;
 
+    use tokio::time::error::Elapsed;
+
     use super::*;
     use crate::test_utils::{
         setup_app, UnresponsiveServer, BLOCK_STREAM_TIMEOUT, CHAIN_ID,
+        RPC_TIMEOUT,
     };
+
+    #[tokio::test]
+    async fn subscribing_fails_within_rpc_timeout() -> eyre::Result<()> {
+        let ws_addr = spawn_ws_rpc(WsRpc::NeverAnswers).await?;
+        let (app, _db_container) = setup_app_with_ws_rpc(ws_addr).await?;
+
+        let started = Instant::now();
+        let result = timeout(RPC_TIMEOUT * 3, index_inner(app, CHAIN_ID))
+            .await
+            .context("Subscribing outlived rpc_timeout")?;
+        let elapsed = started.elapsed();
+
+        let Err(err) = result else {
+            eyre::bail!("Subscribed without an answer");
+        };
+        assert!(
+            err.chain().any(|cause| cause.is::<Elapsed>()),
+            "Unexpected error: {err:?}"
+        );
+        assert!(elapsed >= RPC_TIMEOUT, "Took {elapsed:?}");
+        assert!(elapsed <= RPC_TIMEOUT * 2, "Took {elapsed:?}");
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn waiting_for_a_block_ends_after_block_stream_timeout(
     ) -> eyre::Result<()> {
-        let ws_addr = spawn_ws_rpc_without_blocks().await?;
+        let ws_addr = spawn_ws_rpc(WsRpc::AnswersWithoutBlocks).await?;
         let (app, _db_container) = setup_app_with_ws_rpc(ws_addr).await?;
 
         let started = Instant::now();
@@ -348,9 +375,17 @@ mod tests {
         Ok(())
     }
 
-    /// Starts a WS server that answers every request with a subscription id
-    /// and never sends a block.
-    async fn spawn_ws_rpc_without_blocks() -> eyre::Result<SocketAddr> {
+    /// How a WS server from [`spawn_ws_rpc`] treats requests once it has
+    /// completed the upgrade.
+    #[derive(Clone, Copy)]
+    enum WsRpc {
+        NeverAnswers,
+        /// Answers every request with a subscription id and never sends a
+        /// block.
+        AnswersWithoutBlocks,
+    }
+
+    async fn spawn_ws_rpc(behaviour: WsRpc) -> eyre::Result<SocketAddr> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let addr = listener.local_addr()?;
 
@@ -365,6 +400,9 @@ mod tests {
                         let Message::Text(request) = message else {
                             continue;
                         };
+                        if let WsRpc::NeverAnswers = behaviour {
+                            continue;
+                        }
 
                         let request: serde_json::Value =
                             serde_json::from_str(&request)

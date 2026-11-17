@@ -19,6 +19,7 @@ pub struct ServiceBuilder {
     soft_reorg_interval: Duration,
     hard_reorg_interval: Duration,
     max_escalations: usize,
+    rpc_timeout: Duration,
 }
 
 impl Default for ServiceBuilder {
@@ -28,6 +29,7 @@ impl Default for ServiceBuilder {
             soft_reorg_interval: Duration::from_secs(10),
             hard_reorg_interval: Duration::from_secs(15),
             max_escalations: 100,
+            rpc_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -53,6 +55,11 @@ impl ServiceBuilder {
         self
     }
 
+    pub fn rpc_timeout(mut self, timeout: Duration) -> Self {
+        self.rpc_timeout = timeout;
+        self
+    }
+
     pub async fn build(
         self,
         anvil: &AnvilInstance,
@@ -67,7 +74,7 @@ impl ServiceBuilder {
                 soft_reorg_interval: self.soft_reorg_interval,
                 hard_reorg_interval: self.hard_reorg_interval,
                 block_stream_timeout: Duration::from_secs(60),
-                rpc_timeout: Duration::from_secs(10),
+                rpc_timeout: self.rpc_timeout,
                 telemetry: None,
                 predefined: Some(Predefined {
                     network: PredefinedNetwork {

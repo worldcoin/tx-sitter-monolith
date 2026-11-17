@@ -141,6 +141,9 @@ mod tests {
     use std::time::Instant;
 
     use alloy::providers::Provider;
+    use alloy::transports::{RpcError, TransportErrorKind};
+    use eyre::ContextCompat;
+    use tokio::time::error::Elapsed;
 
     use super::*;
     use crate::test_utils::{
@@ -161,9 +164,18 @@ mod tests {
         let result = timeout(RPC_TIMEOUT * 3, provider.get_block_number())
             .await
             .context("RPC call outlived rpc_timeout")?;
+        let elapsed = started.elapsed();
 
-        assert!(result.is_err(), "Unexpected response: {result:?}");
-        assert!(started.elapsed() >= RPC_TIMEOUT);
+        let Err(RpcError::Transport(TransportErrorKind::Custom(err))) = result
+        else {
+            eyre::bail!("Expected a transport error, got {result:?}");
+        };
+        let err = err
+            .downcast_ref::<reqwest::Error>()
+            .context("Expected a reqwest error")?;
+        assert!(err.is_timeout(), "Unexpected error: {err:?}");
+        assert!(elapsed >= RPC_TIMEOUT, "Took {elapsed:?}");
+        assert!(elapsed <= RPC_TIMEOUT * 2, "Took {elapsed:?}");
 
         Ok(())
     }
@@ -181,9 +193,17 @@ mod tests {
         let result = timeout(RPC_TIMEOUT * 3, app.ws_provider(CHAIN_ID))
             .await
             .context("WS connect outlived rpc_timeout")?;
+        let elapsed = started.elapsed();
 
-        assert!(result.is_err(), "Unexpected WS connection");
-        assert!(started.elapsed() >= RPC_TIMEOUT);
+        let Err(err) = result else {
+            eyre::bail!("Unexpected WS connection");
+        };
+        assert!(
+            err.chain().any(|cause| cause.is::<Elapsed>()),
+            "Unexpected error: {err:?}"
+        );
+        assert!(elapsed >= RPC_TIMEOUT, "Took {elapsed:?}");
+        assert!(elapsed <= RPC_TIMEOUT * 2, "Took {elapsed:?}");
 
         Ok(())
     }
