@@ -559,9 +559,21 @@ impl Database {
         &self,
         chain_id: u64,
     ) -> eyre::Result<Option<u64>> {
-        let block_number: Option<(i64,)> = sqlx::query_as(
+        let block = self.get_latest_block(chain_id).await?;
+
+        Ok(block.map(|(block_number, _)| block_number))
+    }
+
+    /// Returns the number and timestamp of the latest indexed block of
+    /// `chain_id`.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_latest_block(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<(u64, DateTime<Utc>)>> {
+        let block: Option<(i64, DateTime<Utc>)> = sqlx::query_as(
             r#"
-            SELECT block_number
+            SELECT block_number, timestamp
             FROM   blocks
             WHERE  chain_id = $1
             ORDER BY block_number DESC
@@ -572,7 +584,8 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(block_number.map(|(n,)| n as u64))
+        Ok(block
+            .map(|(block_number, timestamp)| (block_number as u64, timestamp)))
     }
 
     #[instrument(skip(self), level = "debug")]

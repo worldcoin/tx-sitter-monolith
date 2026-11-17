@@ -24,6 +24,17 @@ pub async fn emit_metrics(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
             metrics::gauge!("total_indexed_blocks", &labels)
                 .set(stats.total_indexed_blocks as f64);
             metrics::gauge!("block_txs", &labels).set(stats.block_txs as f64);
+
+            if let Some((block_number, timestamp)) =
+                app.db.get_latest_block(chain_id).await?
+            {
+                let age = chrono::Utc::now() - timestamp;
+
+                metrics::gauge!("indexed_block_number", &labels)
+                    .set(block_number as f64);
+                metrics::gauge!("indexed_block_age_seconds", &labels)
+                    .set(age.num_milliseconds() as f64 / 1000.0);
+            }
         }
 
         ctx.idle(EMIT_METRICS_INTERVAL).await;
