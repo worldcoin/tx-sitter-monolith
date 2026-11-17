@@ -82,6 +82,11 @@ async fn rpc_access_fails_within_rpc_timeout() -> eyre::Result<()> {
         eyre::bail!("Expected an error response, got {response:?}");
     };
     assert_eq!(response.status, http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        !response.content.contains(&rpc_addr.to_string()),
+        "Upstream RPC URL leaked in {:?}",
+        response.content
+    );
     assert!(elapsed >= RPC_TIMEOUT, "Took {elapsed:?}");
     assert!(elapsed <= RPC_TIMEOUT * 2, "Took {elapsed:?}");
 
