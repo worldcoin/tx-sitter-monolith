@@ -1,4 +1,6 @@
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use alloy::primitives::keccak256;
 use alloy::providers::{Provider, RootProvider};
@@ -11,6 +13,8 @@ const MAX_SEND_RETRIES: u32 = 3;
 const INITIAL_SEND_RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
 const JSON_RPC_INTERNAL_ERROR: i64 = -32603;
+
+static UNEXPECTED_HASH_LOGS: RateLimitedLogs = RateLimitedLogs::new();
 
 // Lowercase fragments of the messages that geth, reth, anvil, besu and
 // nethermind reject transactions with
@@ -110,7 +114,9 @@ impl SendFailure {
 /// answers [`SendOutcome::AlreadyKnown`].
 ///
 /// Every failed attempt is logged with its reason and counted in the
-/// `tx_send_failures` metric, so callers only decide what to do next.
+/// `tx_send_failures` metric, so callers only decide what to do next. Only
+/// the logs of [`SendFailure::UnexpectedHash`] are limited, to one per
+/// transaction every ten minutes.
 pub async fn send_raw_tx(
     provider: &RootProvider,
     ctx: &TaskContext,
@@ -153,32 +159,43 @@ pub async fn send_raw_tx(
 
         let will_retry = failure.is_retryable() && attempt <= MAX_SEND_RETRIES;
 
-        tracing::warn!(
-            relayer_id = relayer.id,
-            chain_id = relayer.chain_id,
-            tx_id,
-            %tx_hash,
-            attempt,
-            reason = failure.reason(),
-            will_retry,
-            %error,
-            "Failed to send transaction"
-        );
+        // A node that keeps answering with another hash would otherwise log
+        // every escalation pass
+        let should_log = failure != SendFailure::UnexpectedHash
+            || UNEXPECTED_HASH_LOGS.should_log(tx_id, Instant::now());
+
+        if should_log {
+            tracing::warn!(
+                relayer_id = relayer.id,
+                chain_id = relayer.chain_id,
+                tx_id,
+                %tx_hash,
+                attempt,
+                reason = failure.reason(),
+                will_retry,
+                %error,
+                "Failed to send transaction"
+            );
+        }
 
         if will_retry {
             ctx.idle(with_jitter(backoff)).await;
             backoff *= 2;
 
-            if !ctx.is_shutting_down() {
-                continue;
+            if ctx.is_shutting_down() {
+                return SendOutcome::Failed(failure);
             }
+
+            continue;
         }
 
         // A used nonce or a low fee is for indexing and escalation to settle
-        if !matches!(
-            failure,
-            SendFailure::NonceTooLow | SendFailure::Underpriced
-        ) {
+        if should_log
+            && !matches!(
+                failure,
+                SendFailure::NonceTooLow | SendFailure::Underpriced
+            )
+        {
             tracing::error!(
                 relayer_id = relayer.id,
                 chain_id = relayer.chain_id,
@@ -191,6 +208,38 @@ pub async fn send_raw_tx(
         }
 
         return SendOutcome::Failed(failure);
+    }
+}
+
+/// Limits the logs of each transaction to one per [`Self::PERIOD`].
+struct RateLimitedLogs {
+    last_logged: Mutex<BTreeMap<String, Instant>>,
+}
+
+impl RateLimitedLogs {
+    const PERIOD: Duration = Duration::from_secs(10 * 60);
+
+    const fn new() -> Self {
+        Self {
+            last_logged: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Returns `true`, and records `now`, unless `tx_id` was logged less than
+    /// [`Self::PERIOD`] before `now`.
+    fn should_log(&self, tx_id: &str, now: Instant) -> bool {
+        let mut last_logged = self
+            .last_logged
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        last_logged.retain(|_, logged_at| now - *logged_at < Self::PERIOD);
+
+        if last_logged.contains_key(tx_id) {
+            return false;
+        }
+
+        last_logged.insert(tx_id.to_string(), now);
+        true
     }
 }
 
@@ -481,6 +530,19 @@ mod tests {
         assert_eq!(rpc.calls(), 1);
 
         Ok(())
+    }
+
+    #[test]
+    fn logs_each_tx_once_per_period() {
+        let logs = RateLimitedLogs::new();
+        let start = Instant::now();
+        let half_period = start + RateLimitedLogs::PERIOD / 2;
+
+        assert!(logs.should_log("tx_1", start));
+        assert!(!logs.should_log("tx_1", half_period));
+        assert!(logs.should_log("tx_2", half_period));
+        assert!(logs.should_log("tx_1", start + RateLimitedLogs::PERIOD));
+        assert!(!logs.should_log("tx_2", start + RateLimitedLogs::PERIOD));
     }
 
     fn node_error(code: i64, message: &str) -> TransportError {
