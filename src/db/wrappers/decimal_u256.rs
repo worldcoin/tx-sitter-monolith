@@ -1,7 +1,5 @@
-use std::borrow::Cow;
-
+use alloy::primitives::U256;
 use base_api_types::DecimalU256;
-use ethers::types::U256;
 use serde::{Deserialize, Serialize};
 use sqlx::database::{HasArguments, HasValueRef};
 use sqlx::Database;
@@ -24,11 +22,7 @@ impl<'de> Deserialize<'de> for DecimalU256Wrapper {
     where
         D: serde::Deserializer<'de>,
     {
-        let s: Cow<str> = serde::Deserialize::deserialize(deserializer)?;
-
-        let u256 = U256::from_dec_str(&s).map_err(serde::de::Error::custom)?;
-
-        Ok(Self(u256))
+        DecimalU256::deserialize(deserializer).map(Self::from)
     }
 }
 
@@ -42,7 +36,7 @@ where
     ) -> Result<Self, sqlx::error::BoxDynError> {
         let bytes = <[u8; 32] as sqlx::Decode<DB>>::decode(value)?;
 
-        let value = U256::from_big_endian(&bytes);
+        let value = U256::from_be_bytes(bytes);
 
         Ok(Self(value))
     }
@@ -70,8 +64,7 @@ where
         &self,
         buf: &mut <DB as HasArguments<'q>>::ArgumentBuffer,
     ) -> sqlx::encode::IsNull {
-        let mut bytes = [0u8; 32];
-        self.0.to_big_endian(&mut bytes);
+        let bytes: [u8; 32] = self.0.to_be_bytes();
 
         <[u8; 32] as sqlx::Encode<DB>>::encode_by_ref(&bytes, buf)
     }

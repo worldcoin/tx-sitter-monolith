@@ -1,6 +1,7 @@
 mod address;
 mod decimal_u256;
 mod h256;
+mod hex;
 mod hex_bytes;
 mod hex_u256;
 

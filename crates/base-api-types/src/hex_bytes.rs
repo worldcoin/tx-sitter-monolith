@@ -1,11 +1,31 @@
-use ethers::types::Bytes;
+use std::borrow::Cow;
+
+use alloy_primitives::Bytes;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
 use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+use crate::hex::hex_digits;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct HexBytes(pub Bytes);
+
+impl<'de> Deserialize<'de> for HexBytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s: Cow<str> = serde::Deserialize::deserialize(deserializer)?;
+
+        let bytes = hex_digits(&s)
+            .map_err(serde::de::Error::custom)?
+            .parse()
+            .map_err(serde::de::Error::custom)?;
+
+        Ok(Self(bytes))
+    }
+}
 
 impl From<Bytes> for HexBytes {
     fn from(value: Bytes) -> Self {
@@ -60,15 +80,15 @@ impl ParseFromJSON for HexBytes {
     ) -> poem_openapi::types::ParseResult<Self> {
         let value = value.ok_or_else(ParseError::expected_input)?;
 
-        let inner =
+        let value =
             serde_json::from_value(value).map_err(ParseError::custom)?;
 
-        Ok(Self(inner))
+        Ok(value)
     }
 }
 
 impl ToJSON for HexBytes {
     fn to_json(&self) -> Option<serde_json::Value> {
-        serde_json::to_value(&self.0).ok()
+        serde_json::to_value(self).ok()
     }
 }

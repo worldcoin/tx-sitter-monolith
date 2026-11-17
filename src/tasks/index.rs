@@ -1,9 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use alloy::eips::BlockNumberOrTag;
+use alloy::primitives::U256;
+use alloy::providers::{Provider, RootProvider};
+use alloy::rpc::types::Header;
 use chrono::{DateTime, Utc};
-use ethers::providers::{Http, Middleware, Provider};
-use ethers::types::{Block, BlockNumber, H256};
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -15,7 +17,7 @@ use crate::broadcast_utils::gas_estimation::{
 };
 use crate::db::data::RelayerInfo;
 
-const BLOCK_FEE_HISTORY_SIZE: usize = 10;
+const BLOCK_FEE_HISTORY_SIZE: u64 = 10;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];
 const TIME_BETWEEN_FEE_ESTIMATION_SECONDS: u64 = 30;
 
@@ -35,7 +37,7 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     let rpc = app.http_provider(chain_id).await?;
 
     tracing::info!("Subscribing to new blocks");
-    let mut blocks_stream = ws_rpc.subscribe_blocks().await?;
+    let mut blocks_stream = ws_rpc.subscribe_blocks().await?.into_stream();
 
     tracing::info!("Backfilling blocks");
     if let Some(latest_block) = blocks_stream.next().await {
@@ -69,34 +71,30 @@ async fn index_inner(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(skip(app, rpc, block))]
+#[tracing::instrument(skip(app, rpc, header))]
 pub async fn index_block(
     app: Arc<App>,
     chain_id: u64,
-    rpc: &Provider<Http>,
-    block: Block<H256>,
+    rpc: &RootProvider,
+    header: Header,
 ) -> eyre::Result<()> {
-    let block_number = block.number.context("Missing block number")?.as_u64();
+    let block_number = header.number;
 
     tracing::info!(chain_id, block_number, "Indexing block");
 
-    let block_timestamp_seconds = block.timestamp.as_u64();
     let block_timestamp =
-        DateTime::<Utc>::from_timestamp(block_timestamp_seconds as i64, 0)
+        DateTime::<Utc>::from_timestamp(header.timestamp as i64, 0)
             .context("Invalid timestamp")?;
 
     let block = rpc
-        .get_block(block_number)
+        .get_block_by_number(block_number.into())
         .await?
         .context("Missing block")?;
 
+    let tx_hashes: Vec<_> = block.transactions.hashes().collect();
+
     app.db
-        .save_block(
-            block.number.unwrap().as_u64(),
-            chain_id,
-            block_timestamp,
-            &block.transactions,
-        )
+        .save_block(block.header.number, chain_id, block_timestamp, &tx_hashes)
         .await?;
 
     let mined_txs = app.db.mine_txs(chain_id).await?;
@@ -125,14 +123,11 @@ pub async fn index_block(
 pub async fn backfill_to_block(
     app: Arc<App>,
     chain_id: u64,
-    rpc: &Provider<Http>,
-    latest_block: Block<H256>,
+    rpc: &RootProvider,
+    latest_block: Header,
 ) -> eyre::Result<()> {
     // Get the first block from the stream and backfill any missing blocks
-    let latest_block_number = latest_block
-        .number
-        .context("Missing block number")?
-        .as_u64();
+    let latest_block_number = latest_block.number;
 
     let next_block_number: u64 = if let Some(latest_db_block_number) =
         app.db.get_latest_block_number(chain_id).await?
@@ -160,13 +155,13 @@ pub async fn backfill_to_block(
         // Backfill blocks between the last synced block and the chain head, non inclusive
         for block_number in next_block_number..latest_block_number {
             let block = rpc
-                .get_block::<BlockNumber>(block_number.into())
+                .get_block_by_number(block_number.into())
                 .await?
                 .context(format!(
                     "Could not get block at height {block_number}"
                 ))?;
 
-            index_block(app.clone(), chain_id, rpc, block).await?;
+            index_block(app.clone(), chain_id, rpc, block.header).await?;
         }
     }
 
@@ -203,7 +198,7 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             .await
             .context("Failed to fetch fee estimates")?;
 
-        let gas_price = rpc.get_gas_price().await?;
+        let gas_price = U256::from(rpc.get_gas_price().await?);
 
         app.db
             .save_block_fees(
@@ -215,10 +210,12 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
             .await?;
 
         let labels = [("chain_id", chain_id.to_string())];
-        metrics::gauge!("gas_price", &labels)
-            .set(gas_price.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR);
+        metrics::gauge!("gas_price", &labels).set(
+            gas_price.saturating_to::<u64>() as f64
+                * GAS_PRICE_FOR_METRICS_FACTOR,
+        );
         metrics::gauge!("base_fee_per_gas", &labels).set(
-            fee_estimates.base_fee_per_gas.as_u64() as f64
+            fee_estimates.base_fee_per_gas.saturating_to::<u64>() as f64
                 * GAS_PRICE_FOR_METRICS_FACTOR,
         );
 
@@ -232,7 +229,10 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
                     ("percentile", percentile.to_string()),
                 ]
             )
-            .set(percentile_fee.as_u64() as f64 * GAS_PRICE_FOR_METRICS_FACTOR);
+            .set(
+                percentile_fee.saturating_to::<u64>() as f64
+                    * GAS_PRICE_FOR_METRICS_FACTOR,
+            );
         }
 
         tokio::time::sleep(Duration::from_secs(
@@ -245,7 +245,7 @@ pub async fn estimate_gas(app: Arc<App>, chain_id: u64) -> eyre::Result<()> {
 async fn update_relayer_nonces(
     relayers: &[RelayerInfo],
     app: &App,
-    rpc: &Provider<Http>,
+    rpc: &RootProvider,
     chain_id: u64,
 ) -> Result<(), eyre::Error> {
     let mut futures = FuturesUnordered::new();
@@ -264,13 +264,13 @@ async fn update_relayer_nonces(
 #[tracing::instrument(skip(app, rpc, relayer), fields(relayer_id = relayer.id))]
 async fn update_relayer_nonce(
     app: &App,
-    rpc: &Provider<Http>,
+    rpc: &RootProvider,
     relayer: &RelayerInfo,
     chain_id: u64,
 ) -> eyre::Result<()> {
-    let tx_count = rpc.get_transaction_count(relayer.address.0, None).await?;
+    let tx_count = rpc.get_transaction_count(relayer.address.0).await?;
 
-    if tx_count.as_u64() == relayer.current_nonce {
+    if tx_count == relayer.current_nonce {
         return Ok(());
     }
 
@@ -278,26 +278,26 @@ async fn update_relayer_nonce(
         relayer_id = relayer.id,
         current_nonce = %relayer.current_nonce,
         nonce = %relayer.nonce,
-        new_current_nonce = %tx_count.as_u64(),
+        new_current_nonce = %tx_count,
         relayer_address = %relayer.address,
         "Updating relayer nonce"
     );
 
     app.db
-        .update_relayer_nonce(chain_id, relayer.address.0, tx_count.as_u64())
+        .update_relayer_nonce(chain_id, relayer.address.0, tx_count)
         .await?;
 
     Ok(())
 }
 
 pub async fn get_block_fee_estimates(
-    rpc: &Provider<Http>,
-    block_id: impl Into<BlockNumber>,
+    rpc: &RootProvider,
+    block_id: impl Into<BlockNumberOrTag>,
 ) -> eyre::Result<FeesEstimate> {
     let block_id = block_id.into();
 
     let fee_history = rpc
-        .fee_history(BLOCK_FEE_HISTORY_SIZE, block_id, &FEE_PERCENTILES)
+        .get_fee_history(BLOCK_FEE_HISTORY_SIZE, block_id, &FEE_PERCENTILES)
         .await?;
 
     let fee_estimates = estimate_percentile_fees(&fee_history)?;

@@ -1,17 +1,12 @@
-use ethers::middleware::SignerMiddleware;
-use ethers::providers::{Http, Provider, Ws};
-use ethers::signers::Signer;
+use alloy::providers::{ProviderBuilder, RootProvider, WsConnect};
 use eyre::Context;
+use url::Url;
 
 use crate::api_key::ApiKey;
 use crate::config::{Config, KeysConfig};
 use crate::db::data::RpcKind;
 use crate::db::Database;
 use crate::keys::{KeysSource, KmsKeys, LocalKeys, UniversalSigner};
-
-pub type AppGenericMiddleware<T> =
-    SignerMiddleware<Provider<T>, UniversalSigner>;
-pub type AppMiddleware = AppGenericMiddleware<Http>;
 
 pub struct App {
     pub config: Config,
@@ -36,49 +31,43 @@ impl App {
         })
     }
 
+    pub async fn http_rpc_url(&self, chain_id: u64) -> eyre::Result<Url> {
+        let url = self.db.get_network_rpc(chain_id, RpcKind::Http).await?;
+
+        url.parse().context("Invalid HTTP RPC URL")
+    }
+
     pub async fn http_provider(
         &self,
         chain_id: u64,
-    ) -> eyre::Result<Provider<Http>> {
-        let url = self.db.get_network_rpc(chain_id, RpcKind::Http).await?;
+    ) -> eyre::Result<RootProvider> {
+        let url = self.http_rpc_url(chain_id).await?;
 
-        let provider = Provider::<Http>::try_from(url.as_str())?;
-
-        Ok(provider)
+        Ok(RootProvider::new_http(url))
     }
 
     pub async fn ws_provider(
         &self,
         chain_id: u64,
-    ) -> eyre::Result<Provider<Ws>> {
+    ) -> eyre::Result<RootProvider> {
         let url = self.db.get_network_rpc(chain_id, RpcKind::Ws).await?;
 
-        let ws = Ws::connect(url.as_str())
+        let provider = ProviderBuilder::default()
+            .connect_ws(WsConnect::new(url))
             .await
             .context("Connecting to WS provider")?;
-        let provider = Provider::new(ws);
 
         Ok(provider)
     }
 
-    pub async fn signer_middleware(
+    pub async fn load_signer(
         &self,
-        chain_id: u64,
         key_id: String,
-    ) -> eyre::Result<AppMiddleware> {
-        let rpc = self.http_provider(chain_id).await?;
-
-        let wallet = self
-            .keys_source
-            .load_signer(key_id.clone())
+    ) -> eyre::Result<UniversalSigner> {
+        self.keys_source
+            .load_signer(key_id)
             .await
-            .context("Missing signer")?;
-
-        let wallet = wallet.with_chain_id(chain_id);
-
-        let middlware = SignerMiddleware::new(rpc, wallet);
-
-        Ok(middlware)
+            .context("Missing signer")
     }
 
     pub async fn is_authorized(

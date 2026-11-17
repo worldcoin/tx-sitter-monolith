@@ -11,13 +11,8 @@ members = ["crates/*"]
 [dependencies]
 ## AWS
 aws-config = { version = "1.4.0", features = ["behavior-version-latest"] }
-aws-credential-types = { version = "1.2.0", features = [
-    "hardcoded-credentials",
-] }
 aws-sdk-kms = "1.26.0"
 aws-smithy-runtime-api = "1.6.0"
-aws-smithy-types = "1.1.9"
-aws-types = "1.2.1"
 
 # Internal
 postgres-docker-utils = { path = "crates/postgres-docker-utils" }
@@ -28,6 +23,19 @@ tx-sitter-client = { path = "crates/tx-sitter-client" }
 telemetry-batteries = { git = "https://github.com/worldcoin/telemetry-batteries", rev = "1b11fa889e9fea6513f474aa968948fb0b386b4e" }
 
 ## External
+alloy = { version = "1.8.3", default-features = false, features = [
+    "std",
+    "consensus",
+    "eips",
+    "network",
+    "provider-http",
+    "provider-ws",
+    "reqwest-rustls-tls",
+    "rpc-types",
+    "serde",
+    "signer-aws",
+    "signer-local",
+] }
 async-trait = "0.1.74"
 base64 = "0.21.5"
 bigdecimal = "0.4.2"
@@ -35,7 +43,6 @@ chrono = "0.4"
 clap = { version = "4.3.0", features = ["env", "derive"] }
 config = "0.13.3"
 dotenv = "0.15.0"
-ethers = { version = "2.0.11", features = ["ws"] }
 eyre = "0.6.3"
 color-eyre = "0.6.3"
 futures = "0.3"
@@ -61,7 +68,6 @@ reqwest = { version = "0.12.8", default-features = false, features = [
 serde = "1.0.136"
 serde_json = "1.0.91"
 sha3 = "0.10.8"
-spki = "0.7.2"
 sqlx = { version = "0.7.2", features = [
     "time",
     "chrono",
@@ -72,7 +78,6 @@ sqlx = { version = "0.7.2", features = [
     "bigdecimal",
 ] }
 strum = { version = "0.25.0", features = ["derive"] }
-thiserror = "1.0.50"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 toml = "0.8.8"
 tracing = { version = "0.1", features = ["log"] }
@@ -90,6 +95,9 @@ version = "3.0.0"
 regex = "1.10.4"
 
 [dev-dependencies]
+alloy = { version = "1.8.3", default-features = false, features = [
+    "node-bindings",
+] }
 indoc = "2.0.3"
 test-case = "3.1.0"
 

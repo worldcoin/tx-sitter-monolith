@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use ethers::types::U256;
+use alloy_primitives::U256;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
 use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,15 @@ impl<'de> Deserialize<'de> for DecimalU256 {
     {
         let s: Cow<str> = serde::Deserialize::deserialize(deserializer)?;
 
-        let u256 = U256::from_dec_str(&s).map_err(serde::de::Error::custom)?;
+        if !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&s),
+                &"a decimal number",
+            ));
+        }
+
+        let u256 =
+            U256::from_str_radix(&s, 10).map_err(serde::de::Error::custom)?;
 
         Ok(Self(u256))
     }

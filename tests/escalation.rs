@@ -66,11 +66,11 @@ async fn escalation() -> eyre::Result<()> {
 }
 
 async fn await_balance(
-    provider: &Provider<Http>,
+    provider: &RootProvider,
     value: U256,
 ) -> eyre::Result<()> {
     for _ in 0..24 {
-        let balance = provider.get_balance(ARBITRARY_ADDRESS, None).await?;
+        let balance = provider.get_balance(ARBITRARY_ADDRESS).await?;
 
         if balance == value {
             return Ok(());
@@ -86,7 +86,7 @@ async fn get_tx_hash(
     client: &Configuration,
     api_key: &str,
     tx_id: &str,
-) -> eyre::Result<H256> {
+) -> eyre::Result<B256> {
     loop {
         let tx = tx_sitter_client::apis::relayer_v1_api::get_transaction(
             client,

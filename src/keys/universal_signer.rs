@@ -1,102 +1,39 @@
-use ethers::core::k256::ecdsa::SigningKey;
-use ethers::core::types::transaction::eip2718::TypedTransaction;
-use ethers::core::types::transaction::eip712::Eip712;
-use ethers::core::types::{Address, Signature as EthSig};
-use ethers::signers::{Signer, Wallet, WalletError};
-use ethers::types::Bytes;
-use thiserror::Error;
-
-use crate::aws::ethers_signer::AwsSigner;
+use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy::eips::eip2718::Encodable2718;
+use alloy::network::TxSigner;
+use alloy::primitives::{Address, Bytes};
+use alloy::signers::aws::AwsSigner;
+use alloy::signers::local::PrivateKeySigner;
 
 #[derive(Debug)]
 pub enum UniversalSigner {
     Aws(AwsSigner),
-    Local(Wallet<SigningKey>),
+    Local(PrivateKeySigner),
 }
 
 impl UniversalSigner {
-    pub async fn raw_signed_tx(
-        &self,
-        tx: &TypedTransaction,
-    ) -> eyre::Result<Bytes> {
-        let signature = match self {
-            Self::Aws(signer) => signer.sign_transaction(tx).await?,
-            Self::Local(signer) => signer.sign_transaction(tx).await?,
-        };
-
-        Ok(tx.rlp_signed(&signature))
-    }
-}
-
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Error)]
-pub enum UniversalError {
-    #[error("AWS Signer Error: {0}")]
-    Aws(<AwsSigner as Signer>::Error),
-    #[error("Local Signer Error: {0}")]
-    Local(#[from] WalletError),
-}
-
-impl From<<AwsSigner as Signer>::Error> for UniversalError {
-    fn from(e: <AwsSigner as Signer>::Error) -> Self {
-        Self::Aws(e)
-    }
-}
-
-#[async_trait::async_trait]
-impl Signer for UniversalSigner {
-    type Error = UniversalError;
-
-    async fn sign_message<S: Send + Sync + AsRef<[u8]>>(
-        &self,
-        message: S,
-    ) -> Result<EthSig, Self::Error> {
-        Ok(match self {
-            Self::Aws(signer) => signer.sign_message(message).await?,
-            Self::Local(signer) => signer.sign_message(message).await?,
-        })
-    }
-
-    async fn sign_transaction(
-        &self,
-        tx: &TypedTransaction,
-    ) -> Result<EthSig, Self::Error> {
-        Ok(match self {
-            Self::Aws(signer) => signer.sign_transaction(tx).await?,
-            Self::Local(signer) => signer.sign_transaction(tx).await?,
-        })
-    }
-
-    async fn sign_typed_data<T: Eip712 + Send + Sync>(
-        &self,
-        payload: &T,
-    ) -> Result<EthSig, Self::Error> {
-        Ok(match self {
-            Self::Aws(signer) => signer.sign_typed_data(payload).await?,
-            Self::Local(signer) => signer.sign_typed_data(payload).await?,
-        })
-    }
-
-    fn address(&self) -> Address {
+    pub fn address(&self) -> Address {
         match self {
             Self::Aws(signer) => signer.address(),
             Self::Local(signer) => signer.address(),
         }
     }
 
-    /// Returns the signer's chain id
-    fn chain_id(&self) -> u64 {
-        match self {
-            Self::Aws(signer) => signer.chain_id(),
-            Self::Local(signer) => signer.chain_id(),
-        }
-    }
+    /// Signs `tx` and returns its EIP-2718 encoding, the payload of
+    /// `eth_sendRawTransaction`.
+    ///
+    /// The signature commits to the chain id set on `tx`.
+    pub async fn raw_signed_tx(
+        &self,
+        mut tx: TxEip1559,
+    ) -> eyre::Result<Bytes> {
+        let signature = match self {
+            Self::Aws(signer) => signer.sign_transaction(&mut tx).await?,
+            Self::Local(signer) => signer.sign_transaction(&mut tx).await?,
+        };
 
-    /// Sets the signer's chain id
-    fn with_chain_id<T: Into<u64>>(self, chain_id: T) -> Self {
-        match self {
-            Self::Aws(signer) => Self::Aws(signer.with_chain_id(chain_id)),
-            Self::Local(signer) => Self::Local(signer.with_chain_id(chain_id)),
-        }
+        let signed_tx = TxEnvelope::from(tx.into_signed(signature));
+
+        Ok(signed_tx.encoded_2718().into())
     }
 }

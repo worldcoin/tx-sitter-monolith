@@ -1,9 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use ethers::middleware::Middleware;
-use ethers::providers::{Http, Provider};
-use ethers::signers::Signer;
+use alloy::providers::Provider;
 use eyre::ContextCompat;
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
@@ -316,19 +314,18 @@ impl RelayerApi {
             .get_latest_block_fees_by_chain_id(relayer.chain_id)
             .await?;
         if let Some(block_fees) = block_fees {
-            let gas_limit = relayer_queued_tx_gas_limit_sum + req.gas_limit.0;
-            let estimated_transactions_cost = block_fees.gas_price * gas_limit;
+            let gas_limit =
+                relayer_queued_tx_gas_limit_sum.saturating_add(req.gas_limit.0);
+            let estimated_transactions_cost =
+                block_fees.gas_price.saturating_mul(gas_limit);
 
             // TODO: Cache?
-            let http_provider: Provider<Http> =
-                app.http_provider(relayer.chain_id).await?;
+            let http_provider = app.http_provider(relayer.chain_id).await?;
 
-            let balance = http_provider
-                .get_balance(relayer.address.0, None)
-                .await
-                .map_err(|err| {
-                    eyre::eyre!("Error checking balance: {}", err)
-                })?;
+            let balance =
+                http_provider.get_balance(relayer.address.0).await.map_err(
+                    |err| eyre::eyre!("Error checking balance: {}", err),
+                )?;
 
             if balance < estimated_transactions_cost {
                 tracing::warn!(
@@ -503,8 +500,7 @@ impl RelayerApi {
             .context("Missing relayer")?;
 
         // TODO: Cache?
-        let http_provider = app.http_provider(relayer_info.chain_id).await?;
-        let url = http_provider.url();
+        let url = app.http_rpc_url(relayer_info.chain_id).await?;
 
         let response = reqwest::Client::new()
             .post(url.clone())

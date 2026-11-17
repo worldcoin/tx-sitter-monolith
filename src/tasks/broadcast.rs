@@ -2,11 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ethers::providers::Middleware;
-use ethers::types::transaction::eip2718::TypedTransaction;
-use ethers::types::transaction::eip2930::AccessList;
-use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress, H256};
-use eyre::ContextCompat;
+use alloy::consensus::TxEip1559;
+use alloy::primitives::{keccak256, TxKind};
+use alloy::providers::Provider;
+use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use itertools::Itertools;
@@ -106,9 +105,8 @@ async fn broadcast_relayer_tx(
         "Sending transaction"
     );
 
-    let middleware = app
-        .signer_middleware(tx.chain_id, tx.key_id.clone())
-        .await?;
+    let provider = app.http_provider(tx.chain_id).await?;
+    let signer = app.load_signer(tx.key_id.clone()).await?;
 
     let fees = app
         .db
@@ -125,31 +123,25 @@ async fn broadcast_relayer_tx(
             max_base_fee_per_gas,
         );
 
-    let mut typed_transaction =
-        TypedTransaction::Eip1559(Eip1559TransactionRequest {
-            from: None,
-            to: Some(NameOrAddress::from(Address::from(tx.tx_to.0))),
-            gas: Some(tx.gas_limit.0),
-            value: Some(tx.value.0),
-            data: Some(tx.data.into()),
-            nonce: Some(tx.nonce.into()),
-            access_list: AccessList::default(),
-            max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
-            max_fee_per_gas: Some(max_fee_per_gas),
-            chain_id: Some(tx.chain_id.into()),
-        });
-
-    // Fill and simulate the transaction
-    middleware
-        .fill_transaction(&mut typed_transaction, None)
-        .await?;
+    let eip1559_tx = TxEip1559 {
+        chain_id: tx.chain_id,
+        nonce: tx.nonce,
+        gas_limit: tx.gas_limit.0.try_into().context("Gas limit too high")?,
+        max_fee_per_gas: max_fee_per_gas
+            .try_into()
+            .context("Max fee per gas too high")?,
+        max_priority_fee_per_gas: max_priority_fee_per_gas
+            .try_into()
+            .context("Max priority fee per gas too high")?,
+        to: TxKind::Call(tx.tx_to.0),
+        value: tx.value.0,
+        access_list: Default::default(),
+        input: tx.data.into(),
+    };
 
     // Get the raw signed tx and derive the tx hash
-    let raw_signed_tx = middleware
-        .signer()
-        .raw_signed_tx(&typed_transaction)
-        .await?;
-    let tx_hash = H256::from(ethers::utils::keccak256(&raw_signed_tx));
+    let raw_signed_tx = signer.raw_signed_tx(eip1559_tx).await?;
+    let tx_hash = keccak256(&raw_signed_tx);
 
     tracing::debug!(
         relayer_id = relayer.id,
@@ -173,21 +165,16 @@ async fn broadcast_relayer_tx(
         "Sending transaction"
     );
 
-    let pending_tx = middleware.send_raw_transaction(raw_signed_tx).await;
-
-    let pending_tx = match pending_tx {
-        Ok(pending_tx) => pending_tx,
-        Err(err) => {
-            tracing::error!(
-                relayer_id = relayer.id,
-                relayer_address = %relayer.address,
-                tx_id = tx.id,
-                error = ?err,
-                "Failed to send transaction"
-            );
-            return Ok(());
-        }
-    };
+    if let Err(err) = provider.send_raw_transaction(&raw_signed_tx).await {
+        tracing::error!(
+            relayer_id = relayer.id,
+            relayer_address = %relayer.address,
+            tx_id = tx.id,
+            error = ?err,
+            "Failed to send transaction"
+        );
+        return Ok(());
+    }
 
     tracing::info!(
         relayer_id = relayer.id,
@@ -195,7 +182,6 @@ async fn broadcast_relayer_tx(
         tx_id = tx.id,
         tx_nonce = tx.nonce,
         tx_hash = ?tx_hash,
-        ?pending_tx,
         "Transaction broadcast"
     );
 

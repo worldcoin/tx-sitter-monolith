@@ -1,10 +1,10 @@
+use alloy::network::TxSigner;
+use alloy::signers::aws::AwsSigner;
 use aws_config::BehaviorVersion;
 use aws_sdk_kms::types::{KeySpec, KeyUsageType, Tag};
-use ethers::signers::Signer;
 use eyre::{Context, ContextCompat};
 
 use super::{KeysSource, UniversalSigner};
-use crate::aws::ethers_signer::AwsSigner;
 use crate::config::KmsKeysConfig;
 
 pub struct KmsKeys {
@@ -51,12 +51,9 @@ impl KeysSource for KmsKeys {
         let key_id =
             kms_key.key_metadata.context("Missing key metadata")?.key_id;
 
-        let signer = AwsSigner::new(
-            self.kms_client.clone(),
-            key_id.clone(),
-            1, // TODO: get chain id from provider
-        )
-        .await?;
+        let signer =
+            AwsSigner::new(self.kms_client.clone(), key_id.clone(), None)
+                .await?;
 
         let address = signer.address();
 
@@ -87,12 +84,7 @@ impl KeysSource for KmsKeys {
     }
 
     async fn load_signer(&self, id: String) -> eyre::Result<UniversalSigner> {
-        let signer = AwsSigner::new(
-            self.kms_client.clone(),
-            id.clone(),
-            1, // TODO: get chain id from provider
-        )
-        .await?;
+        let signer = AwsSigner::new(self.kms_client.clone(), id, None).await?;
 
         Ok(UniversalSigner::Aws(signer))
     }

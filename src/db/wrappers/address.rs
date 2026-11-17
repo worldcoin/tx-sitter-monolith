@@ -1,6 +1,6 @@
 use std::fmt;
 
-use ethers::types::Address;
+use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 use sqlx::database::HasValueRef;
 use sqlx::Database;
@@ -25,7 +25,7 @@ where
     ) -> Result<Self, sqlx::error::BoxDynError> {
         let bytes = <Vec<u8> as sqlx::Decode<DB>>::decode(value)?;
 
-        let address = Address::from_slice(&bytes);
+        let address = Address::try_from(bytes.as_slice())?;
 
         Ok(Self(address))
     }

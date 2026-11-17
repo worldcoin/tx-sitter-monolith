@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
-use ethers::utils::AnvilInstance;
+use alloy::node_bindings::AnvilInstance;
 use tx_sitter::api_key::ApiKey;
 use tx_sitter::config::{
     Config, DatabaseConfig, KeysConfig, LocalKeysConfig, Predefined,

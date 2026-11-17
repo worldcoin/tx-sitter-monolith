@@ -1,5 +1,5 @@
+use alloy::primitives::Bytes;
 use base_api_types::HexBytes;
-use ethers::types::Bytes;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
