@@ -2455,14 +2455,17 @@ mod tests {
             db.save_block(1, chain_id, timestamp, &txs),
             db.save_block(1, chain_id, timestamp, &txs),
         )?;
-        db.save_block_fees(1, chain_id, &fee_estimates, U256::from(8))
-            .await?;
 
         let block_fees = db
             .get_latest_block_fees_by_chain_id(chain_id)
             .await?
             .context("Missing fees")?;
-        assert_eq!(block_fees.gas_price, U256::from(8));
+        assert_eq!(block_fees.gas_price, U256::from(7));
+        assert_eq!(
+            db.get_latest_block_number_without_fee_estimates(chain_id)
+                .await?,
+            None
+        );
 
         let block_txs: Vec<(H256Wrapper,)> = sqlx::query_as(
             "SELECT tx_hash FROM block_txs WHERE block_number = 1 AND chain_id = $1",
