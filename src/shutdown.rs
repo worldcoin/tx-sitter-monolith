@@ -1,28 +1,24 @@
-use core::panic;
-
 use tokio::signal::unix::{signal, SignalKind};
+use tokio_util::sync::CancellationToken;
 
-pub fn spawn_await_shutdown_task() {
-    tokio::spawn(async {
-        let result = await_shutdown_signal().await;
-        if let Err(err) = result {
-            tracing::error!("Error while waiting for shutdown signal: {}", err);
-            panic!("Error while waiting for shutdown signal: {}", err);
-        }
-
-        tracing::info!("Shutdown complete");
-        std::process::exit(0);
-    });
-}
-
-pub async fn await_shutdown_signal() -> eyre::Result<()> {
+/// Cancels `shutdown` once the process receives SIGINT or SIGTERM.
+///
+/// The signal handlers are installed before this returns, so a signal that
+/// arrives afterwards is never missed.
+pub fn spawn_await_shutdown_task(
+    shutdown: CancellationToken,
+) -> eyre::Result<()> {
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
 
-    tokio::select! {
-        _ = sigint.recv() => { tracing::info!("SIGINT received, shutting down"); }
-        _ = sigterm.recv() => { tracing::info!("SIGTERM received, shutting down"); }
-    };
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = sigint.recv() => { tracing::info!("SIGINT received, shutting down"); }
+            _ = sigterm.recv() => { tracing::info!("SIGTERM received, shutting down"); }
+        };
+
+        shutdown.cancel();
+    });
 
     Ok(())
 }

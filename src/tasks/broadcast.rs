@@ -16,11 +16,15 @@ use crate::broadcast_utils::{
 };
 use crate::db::data::RelayerInfo;
 use crate::db::UnsentTx;
+use crate::task_runner::TaskContext;
 
 const NO_TXS_SLEEP_DURATION: Duration = Duration::from_secs(2);
 
-pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
-    loop {
+pub async fn broadcast_txs(
+    app: Arc<App>,
+    ctx: TaskContext,
+) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
         let txs = app.db.get_unsent_txs().await?;
         let num_txs = txs.len();
 
@@ -29,7 +33,7 @@ pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
         let mut futures = FuturesUnordered::new();
 
         for (relayer_id, txs) in txs_by_relayer {
-            futures.push(broadcast_relayer_txs(&app, relayer_id, txs));
+            futures.push(broadcast_relayer_txs(&app, &ctx, relayer_id, txs));
         }
 
         while let Some(result) = futures.next().await {
@@ -38,15 +42,20 @@ pub async fn broadcast_txs(app: Arc<App>) -> eyre::Result<()> {
             }
         }
 
+        ctx.report_progress();
+
         if num_txs == 0 {
-            tokio::time::sleep(NO_TXS_SLEEP_DURATION).await;
+            ctx.idle(NO_TXS_SLEEP_DURATION).await;
         }
     }
+
+    Ok(())
 }
 
-#[tracing::instrument(skip(app, txs))]
+#[tracing::instrument(skip(app, ctx, txs))]
 async fn broadcast_relayer_txs(
     app: &App,
+    ctx: &TaskContext,
     relayer_id: String,
     txs: Vec<UnsentTx>,
 ) -> eyre::Result<()> {
@@ -78,7 +87,12 @@ async fn broadcast_relayer_txs(
     );
 
     for tx in txs {
+        if ctx.is_shutting_down() {
+            break;
+        }
+
         broadcast_relayer_tx(app, &relayer, tx).await?;
+        ctx.report_progress();
     }
 
     Ok(())

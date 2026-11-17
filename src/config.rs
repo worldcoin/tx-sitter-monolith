@@ -78,6 +78,11 @@ pub struct TxSitterConfig {
     #[serde(with = "humantime_serde", default = "default::rpc_timeout")]
     pub rpc_timeout: Duration,
 
+    /// Max amount of time a background task may go without reporting
+    /// progress before it is considered stalled and fails the liveness probe
+    #[serde(with = "humantime_serde", default = "default::task_stall_timeout")]
+    pub task_stall_timeout: Duration,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predefined: Option<Predefined>,
 
@@ -115,6 +120,11 @@ pub struct PredefinedRelayer {
 #[serde(rename_all = "snake_case")]
 pub struct ServerConfig {
     pub host: SocketAddr,
+
+    /// Max amount of time to wait for in-flight requests and background
+    /// tasks to finish after shutdown is requested
+    #[serde(with = "humantime_serde", default = "default::shutdown_timeout")]
+    pub shutdown_timeout: Duration,
 
     pub username: Option<SecretString>,
     pub password: Option<SecretString>,
@@ -252,6 +262,14 @@ mod default {
         Duration::from_secs(5)
     }
 
+    pub fn task_stall_timeout() -> Duration {
+        Duration::from_secs(5 * 60)
+    }
+
+    pub fn shutdown_timeout() -> Duration {
+        Duration::from_secs(20)
+    }
+
     pub fn max_escalations() -> usize {
         100
     }
@@ -289,9 +307,11 @@ mod tests {
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
         rpc_timeout = "10s"
+        task_stall_timeout = "5m"
 
         [server]
         host = "127.0.0.1:3000"
+        shutdown_timeout = "20s"
 
         [database]
         kind = "connection_string"
@@ -309,9 +329,11 @@ mod tests {
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
         rpc_timeout = "10s"
+        task_stall_timeout = "5m"
 
         [server]
         host = "127.0.0.1:3000"
+        shutdown_timeout = "20s"
 
         [database]
         kind = "parts"
@@ -335,11 +357,13 @@ mod tests {
                 hard_reorg_interval: default::hard_reorg_interval(),
                 block_stream_timeout: default::block_stream_timeout(),
                 rpc_timeout: default::rpc_timeout(),
+                task_stall_timeout: default::task_stall_timeout(),
                 predefined: None,
                 telemetry: None,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
+                shutdown_timeout: default::shutdown_timeout(),
                 username: None,
                 password: None,
                 server_address: None,
@@ -366,11 +390,13 @@ mod tests {
                 hard_reorg_interval: default::hard_reorg_interval(),
                 block_stream_timeout: default::block_stream_timeout(),
                 rpc_timeout: default::rpc_timeout(),
+                task_stall_timeout: default::task_stall_timeout(),
                 predefined: None,
                 telemetry: None,
             },
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
+                shutdown_timeout: default::shutdown_timeout(),
                 username: None,
                 password: None,
                 server_address: None,

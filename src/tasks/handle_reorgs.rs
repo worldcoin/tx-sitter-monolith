@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
 use crate::app::App;
+use crate::task_runner::TaskContext;
 
-pub async fn handle_hard_reorgs(app: Arc<App>) -> eyre::Result<()> {
-    loop {
+pub async fn handle_hard_reorgs(
+    app: Arc<App>,
+    ctx: TaskContext,
+) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
         tracing::info!("Handling hard reorgs");
 
         let reorged_txs = app.db.handle_hard_reorgs().await?;
@@ -12,12 +16,17 @@ pub async fn handle_hard_reorgs(app: Arc<App>) -> eyre::Result<()> {
             tracing::info!(tx_id = tx, "Transaction hard reorged");
         }
 
-        tokio::time::sleep(app.config.service.hard_reorg_interval).await;
+        ctx.idle(app.config.service.hard_reorg_interval).await;
     }
+
+    Ok(())
 }
 
-pub async fn handle_soft_reorgs(app: Arc<App>) -> eyre::Result<()> {
-    loop {
+pub async fn handle_soft_reorgs(
+    app: Arc<App>,
+    ctx: TaskContext,
+) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
         tracing::info!("Handling soft reorgs");
 
         let txs = app.db.handle_soft_reorgs().await?;
@@ -26,6 +35,8 @@ pub async fn handle_soft_reorgs(app: Arc<App>) -> eyre::Result<()> {
             tracing::info!(tx_id = tx, "Transaction soft reorged");
         }
 
-        tokio::time::sleep(app.config.service.soft_reorg_interval).await;
+        ctx.idle(app.config.service.soft_reorg_interval).await;
     }
+
+    Ok(())
 }

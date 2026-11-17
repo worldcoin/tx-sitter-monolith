@@ -11,6 +11,9 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use tx_sitter::config::DatabaseConfig;
+use tx_sitter::db::Database;
+use tx_sitter::service::Service;
 use tx_sitter_client::apis::configuration::Configuration;
 use tx_sitter_client::apis::relayer_v1_api::GetTransactionParams;
 use tx_sitter_client::models::TxStatus;
@@ -30,6 +33,8 @@ pub mod prelude {
     pub use alloy::providers::{Provider, RootProvider};
     pub use futures::stream::FuturesUnordered;
     pub use futures::StreamExt;
+    pub use reqwest::StatusCode;
+    pub use tokio_util::sync::CancellationToken;
     pub use tx_sitter_client::apis::configuration::Configuration;
     pub use tx_sitter_client::models::*;
     pub use url::Url;
@@ -151,4 +156,66 @@ pub async fn await_mined_tx_hash(
     }
 
     eyre::bail!("Transaction {tx_id} was not mined in time");
+}
+
+/// Waits until `service` has fee estimates for `chain_id`.
+pub async fn await_estimates(
+    service: &Service,
+    chain_id: u64,
+    timeout: Duration,
+) -> eyre::Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    while tokio::time::Instant::now() < deadline {
+        if service.are_estimates_ready_for_chain(chain_id).await {
+            return Ok(());
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    eyre::bail!("Estimates were not ready!");
+}
+
+/// Connects to the database at `db_url`, so a test can read and write it
+/// without going through a service.
+pub async fn connect_db(db_url: &str) -> eyre::Result<Database> {
+    Database::new(&DatabaseConfig::connection_string(db_url)).await
+}
+
+/// Sends `GET path` to the service at `addr` and returns the response status
+/// and body.
+pub async fn http_get(
+    addr: SocketAddr,
+    path: &str,
+) -> eyre::Result<(reqwest::StatusCode, String)> {
+    let response = reqwest::get(format!("http://{addr}{path}")).await?;
+    let status = response.status();
+    let body = response.text().await?;
+
+    Ok((status, body))
+}
+
+/// Polls `GET path` on the service at `addr` until it returns `expected`, and
+/// returns the response body.
+pub async fn await_status(
+    addr: SocketAddr,
+    path: &str,
+    expected: reqwest::StatusCode,
+    timeout: Duration,
+) -> eyre::Result<String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let (status, body) = http_get(addr, path).await?;
+        if status == expected {
+            return Ok(body);
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            eyre::bail!("{path} returned {status} instead of {expected} within {timeout:?}: {body}");
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }

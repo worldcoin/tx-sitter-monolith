@@ -74,11 +74,13 @@ pub async fn setup_app(
             hard_reorg_interval: Duration::from_secs(60),
             block_stream_timeout: BLOCK_STREAM_TIMEOUT,
             rpc_timeout: RPC_TIMEOUT,
+            task_stall_timeout: Duration::from_secs(60),
             predefined: None,
             telemetry: None,
         },
         server: ServerConfig {
             host: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            shutdown_timeout: Duration::from_secs(20),
             username: None,
             password: None,
             server_address: None,

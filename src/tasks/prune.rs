@@ -4,6 +4,7 @@ use std::time::Duration;
 use chrono::Utc;
 
 use crate::app::App;
+use crate::task_runner::TaskContext;
 
 const BLOCK_PRUNING_INTERVAL: Duration = Duration::from_secs(60);
 const TX_PRUNING_INTERVAL: Duration = Duration::from_secs(60);
@@ -26,8 +27,8 @@ const BLOCK_PRUNE_AGE_SECONDS: i64 = days(7);
 //       as a missing block tx indicates a hard reorg
 const TX_PRUNE_AGE_SECONDS: i64 = days(5);
 
-pub async fn prune_blocks(app: Arc<App>) -> eyre::Result<()> {
-    loop {
+pub async fn prune_blocks(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
         let prune_age = chrono::Duration::seconds(BLOCK_PRUNE_AGE_SECONDS);
         let block_prune_timestamp = Utc::now() - prune_age;
 
@@ -35,12 +36,14 @@ pub async fn prune_blocks(app: Arc<App>) -> eyre::Result<()> {
 
         app.db.prune_blocks(block_prune_timestamp).await?;
 
-        tokio::time::sleep(BLOCK_PRUNING_INTERVAL).await;
+        ctx.idle(BLOCK_PRUNING_INTERVAL).await;
     }
+
+    Ok(())
 }
 
-pub async fn prune_txs(app: Arc<App>) -> eyre::Result<()> {
-    loop {
+pub async fn prune_txs(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
+    while !ctx.is_shutting_down() {
         let prune_age = chrono::Duration::seconds(TX_PRUNE_AGE_SECONDS);
         let tx_prune_timestamp = Utc::now() - prune_age;
 
@@ -48,6 +51,8 @@ pub async fn prune_txs(app: Arc<App>) -> eyre::Result<()> {
 
         app.db.prune_txs(tx_prune_timestamp).await?;
 
-        tokio::time::sleep(TX_PRUNING_INTERVAL).await;
+        ctx.idle(TX_PRUNING_INTERVAL).await;
     }
+
+    Ok(())
 }

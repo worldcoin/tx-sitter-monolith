@@ -5,6 +5,7 @@ use std::time::Duration;
 use alloy::primitives::{Address, B256, U256};
 use chrono::{DateTime, Utc};
 use sqlx::migrate::{MigrateDatabase, Migrator};
+use sqlx::postgres::PgPoolOptions;
 use sqlx::types::{BigDecimal, Json};
 use sqlx::{Pool, Postgres, Row};
 use tracing::instrument;
@@ -27,6 +28,8 @@ static MIGRATOR: Migrator = sqlx::migrate!("db/migrations");
 
 pub struct Database {
     pub pool: Pool<Postgres>,
+    /// Reserved for [`Database::ping`]
+    probe_pool: Pool<Postgres>,
 }
 
 pub enum CreateResult {
@@ -49,8 +52,27 @@ impl Database {
         tracing::info!("Running migrations");
         MIGRATOR.run(&pool).await?;
 
+        let probe_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy(&connection_string)?;
+
         tracing::info!("Database initialized");
-        Ok(Self { pool })
+        Ok(Self { pool, probe_pool })
+    }
+
+    /// Checks that the database answers a trivial query within `timeout`.
+    ///
+    /// The query runs on a connection reserved for this check, so it still
+    /// answers while every other connection is busy.
+    pub async fn ping(&self, timeout: Duration) -> eyre::Result<()> {
+        tokio::time::timeout(
+            timeout,
+            sqlx::query("SELECT 1").execute(&self.probe_pool),
+        )
+        .await
+        .map_err(|_| eyre::eyre!("No answer within {timeout:?}"))??;
+
+        Ok(())
     }
 
     #[instrument(skip(self), level = "debug")]
