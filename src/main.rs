@@ -65,16 +65,22 @@ enum Command {
 #[derive(Subcommand)]
 enum ConfigCommand {
     /// Prints the networks, relayers and API key hashes in the database as
-    /// config
+    /// config, to move a database of the admin API to the static config once
     ///
-    /// RPC URLs and local private keys are printed as `${NAME}` environment
-    /// variable references, and their values are listed on stderr.
+    /// It only reads the database. RPC URLs and local private keys are
+    /// printed as `${NAME}` environment variable references, and their values
+    /// are listed on stderr. The database holds one HTTP RPC and the WS RPC
+    /// of each network, so only those are exported.
+    ///
+    /// The output holds only `[[networks]]` and `[[relayers]]`: load it after
+    /// the service's config, with `--config config.toml --config dump.toml`.
     Dump,
 }
 
 #[derive(Subcommand)]
 enum ApiKeyCommand {
-    /// Prints a new API key for a relayer, and the hash its config lists
+    /// Prints a new API key for a relayer of the config, and the hash to add
+    /// to its `api_key_hashes`
     New {
         #[clap(long)]
         relayer_id: uuid::Uuid,
@@ -117,7 +123,7 @@ async fn main() -> eyre::Result<()> {
             dump_config(load_config()?).await
         }
         Command::ApiKey(ApiKeyCommand::New { relayer_id }) => {
-            print_new_api_key(relayer_id)
+            print_new_api_key(load_config()?, relayer_id)
         }
         Command::Relayer(RelayerCommand::Reset { relayer_id }) => {
             init_cli_tracing();
@@ -190,8 +196,20 @@ async fn run(config: Config) -> eyre::Result<()> {
     Ok(())
 }
 
-fn print_new_api_key(relayer_id: uuid::Uuid) -> eyre::Result<()> {
-    let api_key = ApiKey::random(relayer_id.to_hyphenated().to_string());
+fn print_new_api_key(
+    config: Config,
+    relayer_id: uuid::Uuid,
+) -> eyre::Result<()> {
+    let relayer_id = relayer_id.to_hyphenated().to_string();
+    if !config
+        .relayers
+        .iter()
+        .any(|relayer| relayer.id == relayer_id)
+    {
+        eyre::bail!("Relayer {relayer_id} is not in the config");
+    }
+
+    let api_key = ApiKey::random(relayer_id);
 
     println!("api_key = \"{}\"", api_key.reveal()?);
     println!(
@@ -207,11 +225,17 @@ fn print_new_api_key(relayer_id: uuid::Uuid) -> eyre::Result<()> {
 }
 
 async fn dump_config(config: Config) -> eyre::Result<()> {
-    let db = Database::new(&config.database).await?;
+    let db = Database::connect_read_only(&config.database).await?;
 
     let dump = config_dump::dump(&db, &config.keys).await?;
 
     print!("{}", dump.toml);
+    eprintln!(
+        "WARNING: this is a one-time export of a database that the admin API \
+         managed. It has one HTTP RPC and the WS RPC of each network, add \
+         fallback RPCs to http_rpcs by hand. Load it after the service's \
+         config: --config config.toml --config dump.toml"
+    );
     if !dump.secrets.is_empty() {
         eprintln!(
             "WARNING: these environment variables hold secrets, store them \

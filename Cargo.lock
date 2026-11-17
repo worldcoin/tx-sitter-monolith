@@ -6824,7 +6824,6 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "toml 0.8.8",
- "toml_edit 0.21.0",
  "tower",
  "tracing",
  "tracing-error",

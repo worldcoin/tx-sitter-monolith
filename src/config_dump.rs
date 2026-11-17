@@ -13,7 +13,8 @@ use crate::types::secret_string::SecretString;
 
 /// The networks, relayers and API keys of a database in the static config
 /// format, see [`dump`].
-#[derive(Debug)]
+///
+/// It has no `Debug`, because `secrets` holds RPC URLs and private keys.
 pub struct ConfigDump {
     /// The `[[networks]]` and `[[relayers]]` sections, which reference every
     /// secret as a `${NAME}` environment variable
@@ -153,25 +154,9 @@ fn to_static_config(
         })
         .collect::<eyre::Result<_>>()?;
 
-    let toml = to_toml(&DumpedConfig { networks, relayers })?;
+    let toml = toml::to_string(&DumpedConfig { networks, relayers })?;
 
     Ok(ConfigDump { toml, secrets })
-}
-
-/// Writes `config` as TOML whose top-level arrays are arrays of tables, and
-/// whose nested values, such as `key = { kms = "…" }`, are inline.
-fn to_toml(config: &DumpedConfig) -> eyre::Result<String> {
-    let mut document = toml_edit::ser::to_document(config)?;
-
-    for (_, item) in document.iter_mut() {
-        let value = std::mem::take(&mut *item);
-        *item = value
-            .into_array_of_tables()
-            .map(toml_edit::Item::ArrayOfTables)
-            .unwrap_or_else(|value| value);
-    }
-
-    Ok(document.to_string())
 }
 
 #[cfg(test)]
@@ -265,7 +250,6 @@ mod tests {
                 id = "1b908a34-5dc1-4d2d-a146-5eb46e975830"
                 name = "a"
                 chain_id = 480
-                key = { kms = "key-a" }
                 address = "0x1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
                 max_inflight_txs = 5
                 max_queued_txs = 20
@@ -273,17 +257,25 @@ mod tests {
                 enabled = true
                 api_key_hashes = []
 
+                [relayers.key]
+                kms = "key-a"
+
                 [[relayers]]
                 id = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29"
                 name = "b"
                 chain_id = 480
-                key = { kms = "key-b" }
                 address = "0x1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
                 max_inflight_txs = 5
                 max_queued_txs = 20
-                gas_price_limits = [{ chain_id = 480, value = "100000000000" }]
                 enabled = false
                 api_key_hashes = ["0x0000000000000000000000000000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000000000000000000000000000002"]
+
+                [relayers.key]
+                kms = "key-b"
+
+                [[relayers.gas_price_limits]]
+                chain_id = 480
+                value = "100000000000"
             "#}
         );
         assert_eq!(
@@ -319,7 +311,7 @@ mod tests {
 
         assert!(
             dump.toml.contains(
-                "key = { local = \"${RELAYER_KEY_6B0B6D1C_7B0E_4C2A_9D3E_2F1A5C4B3A29}\" }"
+                "[relayers.key]\nlocal = \"${RELAYER_KEY_6B0B6D1C_7B0E_4C2A_9D3E_2F1A5C4B3A29}\""
             ),
             "{}",
             dump.toml
@@ -362,6 +354,15 @@ mod tests {
         Ok(())
     }
 
+    fn temp_config_file(toml: &str) -> eyre::Result<std::path::PathBuf> {
+        let path = std::env::temp_dir()
+            .join(format!("tx-sitter-dump-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml)?;
+
+        Ok(path)
+    }
+
+    /// Loads the dump after a base config, as the README tells operators to
     #[tokio::test]
     async fn applying_a_dump_leaves_the_database_as_it_is() -> eyre::Result<()>
     {
@@ -373,35 +374,31 @@ mod tests {
         let networks_before = db.get_networks().await?;
         let api_key_hashes_before = db.get_api_key_hashes().await?;
 
-        let dump = dump(db, &kms_keys()).await?;
+        let read_only_db =
+            Database::connect_read_only(&app.config.database).await?;
+        let dump = dump(&read_only_db, &kms_keys()).await?;
         for (name, value) in &dump.secrets {
             std::env::set_var(name, value);
         }
-        let path = std::env::temp_dir()
-            .join(format!("tx-sitter-dump-{}.toml", uuid::Uuid::new_v4()));
-        std::fs::write(
-            &path,
-            format!(
-                "{}\n{}",
-                indoc! {r#"
-                    [service]
-                    escalation_interval = "1m"
+        let base_path = temp_config_file(indoc! {r#"
+            [service]
+            escalation_interval = "1m"
 
-                    [server]
-                    host = "127.0.0.1:3000"
+            [server]
+            host = "127.0.0.1:3000"
 
-                    [database]
-                    kind = "connection_string"
-                    connection_string = "postgres://unused"
+            [database]
+            kind = "connection_string"
+            connection_string = "postgres://unused"
 
-                    [keys]
-                    kind = "kms"
-                "#},
-                dump.toml
-            ),
-        )?;
-        let config = load_config(std::iter::once(path.as_path()));
-        std::fs::remove_file(&path)?;
+            [keys]
+            kind = "kms"
+        "#})?;
+        let dump_path = temp_config_file(&dump.toml)?;
+        let config =
+            load_config([base_path.as_path(), dump_path.as_path()].into_iter());
+        std::fs::remove_file(&base_path)?;
+        std::fs::remove_file(&dump_path)?;
         let config = config?;
         config.validate()?;
 
