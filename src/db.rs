@@ -5,9 +5,9 @@ use std::time::Duration;
 use alloy::primitives::{Address, B256, U256};
 use chrono::{DateTime, Utc};
 use sqlx::migrate::{MigrateDatabase, Migrator};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::types::{BigDecimal, Json};
-use sqlx::{PgExecutor, Pool, Postgres, Row};
+use sqlx::{Connection, PgConnection, PgExecutor, Pool, Postgres, Row};
 use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
@@ -37,7 +37,12 @@ static MIGRATOR: Migrator = Migrator {
     ..sqlx::migrate!("db/migrations")
 };
 
+/// How long a statement on [`Database::pool`] may run, including the time it
+/// waits for locks
+const STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct Database {
+    /// Connections whose statements fail after [`STATEMENT_TIMEOUT`]
     pub pool: Pool<Postgres>,
     /// Reserved for [`Database::ping`]
     probe_pool: Pool<Postgres>,
@@ -68,15 +73,28 @@ impl Database {
             Postgres::create_database(&connection_string).await?;
         }
 
-        tracing::info!("Connecting to the database");
-        let pool = Pool::connect(&connection_string).await?;
+        let connect_options: PgConnectOptions = connection_string.parse()?;
 
+        // Migrations may take longer than the statement timeout, so they run
+        // on a connection of their own
         tracing::info!("Running migrations");
-        MIGRATOR.run(&pool).await?;
+        let mut connection =
+            PgConnection::connect_with(&connect_options).await?;
+        MIGRATOR.run(&mut connection).await?;
+        connection.close().await?;
+
+        tracing::info!("Connecting to the database");
+        let pool = PgPoolOptions::new()
+            .connect_with(connect_options.clone().options([(
+                "statement_timeout",
+                format!("{}ms", STATEMENT_TIMEOUT.as_millis()),
+            )]))
+            .await?;
+        check_statement_timeout(&pool, STATEMENT_TIMEOUT).await?;
 
         let probe_pool = PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy(&connection_string)?;
+            .connect_lazy_with(connect_options);
 
         tracing::info!("Database initialized");
         Ok(Self { pool, probe_pool })
@@ -542,9 +560,21 @@ impl Database {
         &self,
         chain_id: u64,
     ) -> eyre::Result<Option<u64>> {
-        let block_number: Option<(i64,)> = sqlx::query_as(
+        let block = self.get_latest_block(chain_id).await?;
+
+        Ok(block.map(|(block_number, _)| block_number))
+    }
+
+    /// Returns the number and timestamp of the latest indexed block of
+    /// `chain_id`.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_latest_block(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<(u64, DateTime<Utc>)>> {
+        let block: Option<(i64, DateTime<Utc>)> = sqlx::query_as(
             r#"
-            SELECT block_number
+            SELECT block_number, timestamp
             FROM   blocks
             WHERE  chain_id = $1
             ORDER BY block_number DESC
@@ -555,7 +585,8 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(block_number.map(|(n,)| n as u64))
+        Ok(block
+            .map(|(block_number, timestamp)| (block_number as u64, timestamp)))
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1548,6 +1579,32 @@ impl Database {
     }
 }
 
+/// Fails unless the connections of `pool` time out statements after
+/// `statement_timeout`.
+///
+/// A connection pooler such as PgBouncer with `ignore_startup_parameters`
+/// drops the timeout a connection asks for without an error.
+async fn check_statement_timeout(
+    pool: &Pool<Postgres>,
+    statement_timeout: Duration,
+) -> eyre::Result<()> {
+    let (timeout_ms,): (String,) = sqlx::query_as(
+        "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let expected_ms = statement_timeout.as_millis().to_string();
+
+    eyre::ensure!(
+        timeout_ms == expected_ms,
+        "The database connections have a statement_timeout of {timeout_ms}ms \
+         instead of {expected_ms}ms, is a connection pooler dropping the \
+         options startup parameter?"
+    );
+
+    Ok(())
+}
+
 async fn count_queued_txs(
     executor: impl PgExecutor<'_>,
     relayer_id: &str,
@@ -1628,6 +1685,41 @@ mod tests {
     #[tokio::test]
     async fn migration() -> eyre::Result<()> {
         let (_db, _db_container) = setup_db().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pool_statements_time_out() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+
+        let (statement_timeout,): (String,) =
+            sqlx::query_as("SHOW statement_timeout")
+                .fetch_one(&db.pool)
+                .await?;
+
+        assert_eq!(statement_timeout, "30s");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejects_connections_without_the_statement_timeout(
+    ) -> eyre::Result<()> {
+        let (db, db_container) = setup_db().await?;
+        let url = format!(
+            "postgres://postgres:postgres@{}/database",
+            db_container.address()
+        );
+        let pool_without_timeout = PgPoolOptions::new().connect(&url).await?;
+
+        check_statement_timeout(&db.pool, STATEMENT_TIMEOUT).await?;
+        assert!(check_statement_timeout(
+            &pool_without_timeout,
+            STATEMENT_TIMEOUT
+        )
+        .await
+        .is_err());
 
         Ok(())
     }

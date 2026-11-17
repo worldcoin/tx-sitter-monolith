@@ -74,6 +74,8 @@ Probes:
 - `GET /health/ready`: 503 while the database doesn't answer within 2s.
 - `GET /health/live` (alias `GET /health`): 503 once a background task has stopped, or has made no progress for `service.task_stall_timeout` (default `5m`).
 
+Every database statement times out after 30s, including the time it waits for locks, so a background task blocked on the database fails and restarts with a backoff rather than stalling. Migrations run without that timeout. The service sets it with the `options` startup parameter and refuses to start if a connection doesn't have it, as behind a PgBouncer that lists `options` in `ignore_startup_parameters`.
+
 On SIGTERM or SIGINT the service stops accepting connections and gives in-flight requests and background tasks `server.shutdown_timeout` (default `20s`) to finish.
 
 ### Relayer keys used elsewhere

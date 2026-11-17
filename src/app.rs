@@ -3,7 +3,6 @@ use std::time::Duration;
 use alloy::providers::{ProviderBuilder, RootProvider, WsConnect};
 use alloy::rpc::client::RpcClient;
 use eyre::Context;
-use tokio::time::timeout;
 use url::Url;
 
 use crate::api_key::ApiKey;
@@ -62,21 +61,20 @@ impl App {
         Ok(RootProvider::new(client))
     }
 
+    /// Connects to the WS RPC of `chain_id`.
+    ///
+    /// Connecting isn't bounded, so callers bound it, for example by
+    /// `service.rpc_timeout`.
     pub async fn ws_provider(
         &self,
         chain_id: u64,
     ) -> eyre::Result<RootProvider> {
         let url = self.db.get_network_rpc(chain_id, RpcKind::Ws).await?;
 
-        let provider = timeout(
-            self.config.service.rpc_timeout,
-            ProviderBuilder::default().connect_ws(WsConnect::new(url)),
-        )
-        .await
-        .context("Timed out connecting to WS provider")?
-        .context("Connecting to WS provider")?;
-
-        Ok(provider)
+        ProviderBuilder::default()
+            .connect_ws(WsConnect::new(url))
+            .await
+            .context("Connecting to WS provider")
     }
 
     pub async fn load_signer(
@@ -143,7 +141,7 @@ mod tests {
     use alloy::providers::Provider;
     use alloy::transports::{RpcError, TransportErrorKind};
     use eyre::ContextCompat;
-    use tokio::time::error::Elapsed;
+    use tokio::time::timeout;
 
     use super::*;
     use crate::test_utils::{
@@ -174,34 +172,6 @@ mod tests {
             .downcast_ref::<reqwest::Error>()
             .context("Expected a reqwest error")?;
         assert!(err.is_timeout(), "Unexpected error: {err:?}");
-        assert!(elapsed >= RPC_TIMEOUT, "Took {elapsed:?}");
-        assert!(elapsed <= RPC_TIMEOUT * 2, "Took {elapsed:?}");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn ws_connect_fails_within_rpc_timeout() -> eyre::Result<()> {
-        let rpc = UnresponsiveServer::spawn().await?;
-        let (app, _db_container) = setup_app(
-            &format!("http://{}", rpc.addr),
-            &format!("ws://{}", rpc.addr),
-        )
-        .await?;
-
-        let started = Instant::now();
-        let result = timeout(RPC_TIMEOUT * 3, app.ws_provider(CHAIN_ID))
-            .await
-            .context("WS connect outlived rpc_timeout")?;
-        let elapsed = started.elapsed();
-
-        let Err(err) = result else {
-            eyre::bail!("Unexpected WS connection");
-        };
-        assert!(
-            err.chain().any(|cause| cause.is::<Elapsed>()),
-            "Unexpected error: {err:?}"
-        );
         assert!(elapsed >= RPC_TIMEOUT, "Took {elapsed:?}");
         assert!(elapsed <= RPC_TIMEOUT * 2, "Took {elapsed:?}");
 
