@@ -1,4 +1,4 @@
-use ethers::types::U256;
+use alloy::primitives::U256;
 use eyre::ContextCompat;
 
 use self::gas_estimation::FeesEstimate;

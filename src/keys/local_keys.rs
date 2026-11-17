@@ -1,5 +1,5 @@
-use ethers::core::k256::ecdsa::SigningKey;
-use ethers::signers::Wallet;
+use alloy::signers::k256::ecdsa::SigningKey;
+use alloy::signers::local::PrivateKeySigner;
 
 use super::universal_signer::UniversalSigner;
 use super::KeysSource;
@@ -30,7 +30,7 @@ impl KeysSource for LocalKeys {
         let key_id = signing_key.to_bytes().to_vec();
         let key_id = hex::encode(key_id);
 
-        let signer = Wallet::from(signing_key);
+        let signer = PrivateKeySigner::from(signing_key);
 
         Ok((key_id, UniversalSigner::Local(signer)))
     }
@@ -38,7 +38,7 @@ impl KeysSource for LocalKeys {
     async fn load_signer(&self, id: String) -> eyre::Result<UniversalSigner> {
         let signing_key = signing_key_from_hex(&id)?;
 
-        let signer = Wallet::from(signing_key);
+        let signer = PrivateKeySigner::from(signing_key);
 
         Ok(UniversalSigner::Local(signer))
     }
@@ -53,12 +53,8 @@ pub fn signing_key_from_hex(s: &str) -> eyre::Result<SigningKey> {
 
 #[cfg(test)]
 mod tests {
-    use ethers::signers::Signer;
-    use ethers::types::transaction::eip2718::TypedTransaction;
-    use ethers::types::transaction::eip2930::AccessList;
-    use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress};
-    use ethers::utils::keccak256;
-    use hex_literal::hex;
+    use alloy::consensus::TxEip1559;
+    use alloy::primitives::{address, bytes, keccak256, TxKind, U256};
 
     use super::*;
 
@@ -97,22 +93,21 @@ mod tests {
         let keys_source = LocalKeys::new(&LocalKeysConfig::default());
         let signer = keys_source.load_signer(PRIVATE_KEY_HEX.into()).await?;
 
-        let tx = TypedTransaction::Eip1559(Eip1559TransactionRequest {
-            from: None,
-            to: Some(NameOrAddress::from(Address::from(hex!(
+        let tx = TxEip1559 {
+            chain_id: 480,
+            nonce: 7,
+            gas_limit: 100_000,
+            max_fee_per_gas: 30_000_000_000,
+            max_priority_fee_per_gas: 1_500_000_000,
+            to: TxKind::Call(address!(
                 "1ed53d680b8890dae2a63f673a85ffde1fd5c7a2"
-            )))),
-            gas: Some(100_000.into()),
-            value: Some(1_000_000_000_000_000_000u64.into()),
-            data: Some(hex!("deadbeef").into()),
-            nonce: Some(7.into()),
-            access_list: AccessList::default(),
-            max_priority_fee_per_gas: Some(1_500_000_000u64.into()),
-            max_fee_per_gas: Some(30_000_000_000u64.into()),
-            chain_id: Some(480.into()),
-        });
+            )),
+            value: U256::from(1_000_000_000_000_000_000u64),
+            access_list: Default::default(),
+            input: bytes!("deadbeef"),
+        };
 
-        let raw_signed_tx = signer.raw_signed_tx(&tx).await?;
+        let raw_signed_tx = signer.raw_signed_tx(tx).await?;
 
         assert_eq!(hex::encode(&raw_signed_tx), SIGNED_TX_HEX);
         assert_eq!(hex::encode(keccak256(&raw_signed_tx)), TX_HASH_HEX);

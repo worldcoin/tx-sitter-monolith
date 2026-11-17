@@ -58,7 +58,7 @@ async fn send_many_txs() -> eyre::Result<()> {
         result?;
     }
 
-    let expected_balance = value * num_transfers;
+    let expected_balance = value * U256::from(num_transfers);
     await_balance(&provider, expected_balance, ARBITRARY_ADDRESS).await?;
 
     Ok(())

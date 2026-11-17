@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use ethers::signers::{Signer, Wallet};
+use alloy::signers::local::PrivateKeySigner;
 use tokio::task::JoinHandle;
 
 use crate::app::App;
@@ -131,7 +131,7 @@ async fn initialize_predefined_values(
 
     let secret_key = signing_key_from_hex(&predefined.relayer.key_id)?;
 
-    let signer = Wallet::from(secret_key);
+    let signer = PrivateKeySigner::from(secret_key);
     let address = signer.address();
 
     if app.db.get_relayer(&predefined.relayer.id).await?.is_none() {

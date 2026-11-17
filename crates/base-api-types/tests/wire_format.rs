@@ -6,8 +6,8 @@
 
 use std::fmt::Debug;
 
+use alloy_primitives::U256;
 use base_api_types::{Address, DecimalU256, HexBytes, HexU256, H256};
-use ethers::types::U256;
 use hex_literal::hex;
 use poem_openapi::types::{ParseFromJSON, ToJSON};
 use serde::de::DeserializeOwned;

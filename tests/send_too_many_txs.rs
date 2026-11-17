@@ -142,8 +142,8 @@ async fn send_too_many_txs() -> eyre::Result<()> {
     }
 
     // Accumulate total value + gas budget
-    let send_value = value * (MAX_QUEUED_TXS + 1);
-    let total_required_value = send_value + parse_units("1", "ether")?;
+    let send_value = value * U256::from(MAX_QUEUED_TXS + 1);
+    let total_required_value = send_value + parse_ether("1")?;
 
     tx_sitter_client::apis::relayer_v1_api::create_transaction(
         &client,

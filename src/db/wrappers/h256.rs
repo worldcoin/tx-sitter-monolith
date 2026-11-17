@@ -1,4 +1,4 @@
-use ethers::types::H256;
+use alloy::primitives::B256;
 use serde::{Deserialize, Serialize};
 use sqlx::database::{HasArguments, HasValueRef};
 use sqlx::postgres::{PgHasArrayType, PgTypeInfo};
@@ -6,7 +6,7 @@ use sqlx::Database;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct H256Wrapper(pub H256);
+pub struct H256Wrapper(pub B256);
 
 impl<'r, DB> sqlx::Decode<'r, DB> for H256Wrapper
 where
@@ -18,7 +18,7 @@ where
     ) -> Result<Self, sqlx::error::BoxDynError> {
         let bytes = <[u8; 32] as sqlx::Decode<DB>>::decode(value)?;
 
-        let value = H256::from_slice(&bytes);
+        let value = B256::from(bytes);
 
         Ok(Self(value))
     }

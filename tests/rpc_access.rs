@@ -26,12 +26,15 @@ async fn rpc_access() -> eyre::Result<()> {
     let rpc_url =
         format!("http://{}/1/api/{}/rpc", service.local_addr(), api_key);
 
-    let provider = Provider::new(Http::new(rpc_url.parse::<Url>()?));
+    let provider: RootProvider =
+        RootProvider::new_http(rpc_url.parse::<Url>()?);
 
     let latest_block_number = provider.get_block_number().await?;
 
     let very_future_block = latest_block_number + 1000;
-    let very_future_block = provider.get_block(very_future_block).await?;
+    let very_future_block = provider
+        .get_block_by_number(very_future_block.into())
+        .await?;
 
     assert!(very_future_block.is_none());
 

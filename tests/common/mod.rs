@@ -1,20 +1,17 @@
 #![allow(dead_code)] // Needed because this module is imported as module by many test crates
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use ethers::core::k256::ecdsa::SigningKey;
-use ethers::middleware::SignerMiddleware;
-use ethers::providers::{Http, Middleware, Provider};
-use ethers::signers::{LocalWallet, Signer};
-use ethers::types::{Address, H160, U256};
+use alloy::primitives::{address, Address, U256};
+use alloy::providers::{Provider, RootProvider};
 use postgres_docker_utils::DockerContainerGuard;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
-
-pub type AppMiddleware = SignerMiddleware<Arc<Provider<Http>>, LocalWallet>;
+use tx_sitter_client::apis::configuration::Configuration;
+use tx_sitter_client::apis::relayer_v1_api::GetTransactionParams;
+use tx_sitter_client::models::TxStatus;
 
 mod anvil_builder;
 mod service_builder;
@@ -26,10 +23,9 @@ pub use self::service_builder::ServiceBuilder;
 pub mod prelude {
     pub use std::time::Duration;
 
-    pub use ethers::prelude::{Http, Provider};
-    pub use ethers::providers::Middleware;
-    pub use ethers::types::{Eip1559TransactionRequest, H256, U256};
-    pub use ethers::utils::parse_units;
+    pub use alloy::primitives::utils::{parse_ether, parse_units};
+    pub use alloy::primitives::{B256, U256};
+    pub use alloy::providers::{Provider, RootProvider};
     pub use futures::stream::FuturesUnordered;
     pub use futures::StreamExt;
     pub use tx_sitter_client::apis::configuration::Configuration;
@@ -39,9 +35,8 @@ pub mod prelude {
     pub use super::*;
 }
 
-pub const DEFAULT_ANVIL_ACCOUNT: Address = H160(hex_literal::hex!(
-    "f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-));
+pub const DEFAULT_ANVIL_ACCOUNT: Address =
+    address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 
 pub const DEFAULT_ANVIL_PRIVATE_KEY: &[u8] = &hex_literal::hex!(
     "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -51,9 +46,8 @@ pub const SECONDARY_ANVIL_PRIVATE_KEY: &[u8] = &hex_literal::hex!(
     "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 );
 
-pub const ARBITRARY_ADDRESS: Address = H160(hex_literal::hex!(
-    "1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
-));
+pub const ARBITRARY_ADDRESS: Address =
+    address!("1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2");
 
 pub const DEFAULT_ANVIL_CHAIN_ID: u64 = 31337;
 pub const DEFAULT_ANVIL_BLOCK_TIME: u64 = 2;
@@ -79,35 +73,21 @@ pub async fn setup_db() -> eyre::Result<(String, DockerContainerGuard)> {
     Ok((url, db_container))
 }
 
-pub async fn setup_middleware(
-    rpc_url: impl AsRef<str>,
-    private_key: &[u8],
-) -> eyre::Result<AppMiddleware> {
-    let provider = setup_provider(rpc_url).await?;
-
-    let wallet = LocalWallet::from(SigningKey::from_slice(private_key)?)
-        .with_chain_id(provider.get_chainid().await?.as_u64());
-
-    let middleware = SignerMiddleware::new(Arc::new(provider), wallet);
-
-    Ok(middleware)
-}
-
 pub async fn setup_provider(
     rpc_url: impl AsRef<str>,
-) -> eyre::Result<Provider<Http>> {
-    let provider = Provider::<Http>::new(rpc_url.as_ref().parse()?);
+) -> eyre::Result<RootProvider> {
+    let provider = RootProvider::new_http(rpc_url.as_ref().parse()?);
 
     Ok(provider)
 }
 
 pub async fn await_balance(
-    provider: &Provider<Http>,
+    provider: &RootProvider,
     expected_balance: U256,
     address: Address,
 ) -> eyre::Result<()> {
     for _ in 0..50 {
-        let balance = provider.get_balance(address, None).await?;
+        let balance = provider.get_balance(address).await?;
 
         tracing::info!(
             ?address,
@@ -124,4 +104,33 @@ pub async fn await_balance(
     }
 
     eyre::bail!("Balance did not reach expected value");
+}
+
+/// Waits until tx-sitter reports the transaction as mined and returns the
+/// hash it stored when broadcasting.
+pub async fn await_mined_tx_hash(
+    client: &Configuration,
+    api_key: &str,
+    tx_id: &str,
+) -> eyre::Result<base_api_types::H256> {
+    for _ in 0..30 {
+        let tx = tx_sitter_client::apis::relayer_v1_api::get_transaction(
+            client,
+            GetTransactionParams {
+                api_token: api_key.to_owned(),
+                tx_id: tx_id.to_owned(),
+            },
+        )
+        .await?;
+
+        if let (Some(TxStatus::Mined | TxStatus::Finalized), Some(tx_hash)) =
+            (tx.status, tx.tx_hash)
+        {
+            return Ok(tx_hash);
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    eyre::bail!("Transaction {tx_id} was not mined in time");
 }

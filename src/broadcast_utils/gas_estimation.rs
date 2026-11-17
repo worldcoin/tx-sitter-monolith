@@ -1,4 +1,5 @@
-use ethers::types::{FeeHistory, U256};
+use alloy::primitives::U256;
+use alloy::rpc::types::FeeHistory;
 use eyre::ContextCompat;
 use serde::{Deserialize, Serialize};
 
@@ -17,42 +18,41 @@ pub fn estimate_percentile_fees(
         .last()
         .context("Missing base fees")?;
 
-    let num_percentiles =
-        fee_history.reward.first().context("Missing rewards")?.len();
+    let rewards = fee_history.reward.as_deref().unwrap_or_default();
+
+    let num_percentiles = rewards.first().context("Missing rewards")?.len();
     let percentile_fees = (0..num_percentiles)
-        .map(|percentile_idx| estimate_percentile(fee_history, percentile_idx))
+        .map(|percentile_idx| estimate_percentile(rewards, percentile_idx))
         .collect::<eyre::Result<Vec<_>>>()?;
 
     Ok(FeesEstimate {
-        base_fee_per_gas: *base_fee_per_gas,
+        base_fee_per_gas: U256::from(*base_fee_per_gas),
         percentile_fees,
     })
 }
 
 // Just takes the average of the percentile fees
 fn estimate_percentile(
-    fee_history: &FeeHistory,
+    rewards: &[Vec<u128>],
     percentile_idx: usize,
 ) -> eyre::Result<U256> {
-    let mut sum = U256::zero();
+    let mut sum = U256::ZERO;
 
-    for rewards in &fee_history.reward {
-        let percentile_fee = rewards
+    for block_rewards in rewards {
+        let percentile_fee = block_rewards
             .get(percentile_idx)
             .context("Missing percentile fee")?;
 
-        sum += *percentile_fee;
+        sum += U256::from(*percentile_fee);
     }
 
-    let percentile_fee = sum / fee_history.reward.len();
+    let percentile_fee = sum / U256::from(rewards.len());
 
     Ok(percentile_fee)
 }
 
 #[cfg(test)]
 mod tests {
-    use ethers::types::{FeeHistory, U256};
-
     use super::*;
 
     // Below are really just sample calculations

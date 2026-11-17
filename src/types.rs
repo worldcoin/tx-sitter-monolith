@@ -334,8 +334,8 @@ impl IntoResponse for ErrorResponse {
 
 #[cfg(test)]
 mod tests {
-    use ethers::types::{Address, U256};
-    use ethers::utils::parse_units;
+    use alloy::primitives::utils::parse_ether;
+    use alloy::primitives::U256;
     use hex_literal::hex;
     use poem_openapi::types::{ParseFromJSON, ToJSON};
 
@@ -468,13 +468,13 @@ mod tests {
             name: "name".to_string(),
             chain_id: 1,
             key_id: "key_id".to_string(),
-            address: Address::zero().into(),
+            address: Address::default(),
             nonce: 0,
             current_nonce: 0,
             max_inflight_txs: 0,
             max_queued_txs: 0,
             gas_price_limits: vec![RelayerGasPriceLimitResponse {
-                value: U256::zero().into(),
+                value: U256::ZERO.into(),
                 chain_id: 1,
             }],
             enabled: true,
@@ -508,13 +508,13 @@ mod tests {
 
     #[test]
     fn send_tx_request() {
-        let value: U256 = parse_units("1", "ether").unwrap().into();
+        let value = parse_ether("1").unwrap();
 
         let request = SendTxRequest {
-            to: Address(Address::zero()),
+            to: Address::default(),
             value: value.into(),
             data: Some(HexBytes::from(vec![0])),
-            gas_limit: U256::zero().into(),
+            gas_limit: U256::ZERO.into(),
             priority: TransactionPriority::Regular,
             tx_id: Some("tx_id".to_string()),
             blobs: Some(vec![vec![0]]),

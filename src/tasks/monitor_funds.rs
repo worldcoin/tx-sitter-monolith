@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ethers::providers::Middleware;
-use ethers::types::{NameOrAddress, U256};
+use alloy::primitives::U256;
+use alloy::providers::Provider;
 use tokio::time::{self, MissedTickBehavior};
 
 use crate::app::App;
@@ -40,9 +40,7 @@ pub async fn monitor_funds(app: Arc<App>) -> eyre::Result<()> {
 
             let provider = app.http_provider(relayer.chain_id).await?;
 
-            let balance = provider
-                .get_balance(NameOrAddress::Address(relayer.address.0), None)
-                .await?;
+            let balance = provider.get_balance(relayer.address.0).await?;
 
             let address = relayer.address.to_string();
             let labels = [

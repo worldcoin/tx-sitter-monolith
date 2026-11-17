@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ethers::providers::Middleware;
-use ethers::types::transaction::eip2718::TypedTransaction;
-use ethers::types::transaction::eip2930::AccessList;
-use ethers::types::{Address, Eip1559TransactionRequest, NameOrAddress, U256};
-use eyre::ContextCompat;
+use alloy::consensus::TxEip1559;
+use alloy::primitives::{TxKind, B256, U256};
+use alloy::providers::{Provider, RootProvider};
+use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
@@ -13,6 +12,7 @@ use crate::app::App;
 use crate::broadcast_utils::should_send_relayer_transactions;
 use crate::db::data::RelayerInfo;
 use crate::db::TxForEscalation;
+use crate::keys::UniversalSigner;
 
 pub async fn escalate_txs_task(app: Arc<App>) -> eyre::Result<()> {
     loop {
@@ -109,9 +109,8 @@ async fn escalate_relayer_tx(
 
     let escalation = tx.escalation_count + 1;
 
-    let middleware = app
-        .signer_middleware(tx.chain_id, tx.key_id.clone())
-        .await?;
+    let provider = app.http_provider(tx.chain_id).await?;
+    let signer = app.load_signer(tx.key_id.clone()).await?;
 
     let fees = app
         .db
@@ -136,25 +135,24 @@ async fn escalate_relayer_tx(
     let max_fee_per_gas =
         max_priority_fee_per_gas + fees.fee_estimates.base_fee_per_gas;
 
-    let eip1559_tx = Eip1559TransactionRequest {
-        from: None,
-        to: Some(NameOrAddress::from(Address::from(tx.tx_to.0))),
-        gas: Some(tx.gas_limit.0),
-        value: Some(tx.value.0),
-        data: Some(tx.data.into()),
-        nonce: Some(tx.nonce.into()),
-        access_list: AccessList::default(),
-        max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
-        max_fee_per_gas: Some(max_fee_per_gas),
-        chain_id: Some(tx.chain_id.into()),
+    let eip1559_tx = TxEip1559 {
+        chain_id: tx.chain_id,
+        nonce: tx.nonce,
+        gas_limit: tx.gas_limit.0.try_into().context("Gas limit too high")?,
+        max_fee_per_gas: max_fee_per_gas
+            .try_into()
+            .context("Max fee per gas too high")?,
+        max_priority_fee_per_gas: max_priority_fee_per_gas
+            .try_into()
+            .context("Max priority fee per gas too high")?,
+        to: TxKind::Call(tx.tx_to.0),
+        value: tx.value.0,
+        access_list: Default::default(),
+        input: tx.data.into(),
     };
 
-    let pending_tx = middleware
-        .send_transaction(TypedTransaction::Eip1559(eip1559_tx), None)
-        .await;
-
-    let pending_tx = match pending_tx {
-        Ok(pending_tx) => pending_tx,
+    let tx_hash = match sign_and_send(&provider, &signer, eip1559_tx).await {
+        Ok(tx_hash) => tx_hash,
         Err(err) => {
             tracing::error!(
                 relayer_id = relayer.id,
@@ -167,8 +165,6 @@ async fn escalate_relayer_tx(
         }
     };
 
-    let tx_hash = pending_tx.tx_hash();
-
     tracing::info!(
         relayer_id = relayer.id,
         relayer_address = %relayer.address,
@@ -178,7 +174,6 @@ async fn escalate_relayer_tx(
         ?initial_max_fee_per_gas,
         ?max_priority_fee_per_gas,
         ?max_fee_per_gas,
-        ?pending_tx,
         "Escalated transaction"
     );
 
@@ -204,6 +199,19 @@ async fn escalate_relayer_tx(
     );
 
     Ok(())
+}
+
+/// Signs `tx` and sends it, returning the hash reported by the node.
+async fn sign_and_send(
+    provider: &RootProvider,
+    signer: &UniversalSigner,
+    tx: TxEip1559,
+) -> eyre::Result<B256> {
+    let raw_signed_tx = signer.raw_signed_tx(tx).await?;
+
+    let pending_tx = provider.send_raw_transaction(&raw_signed_tx).await?;
+
+    Ok(*pending_tx.tx_hash())
 }
 
 fn split_txs_per_relayer(

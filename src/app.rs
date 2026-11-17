@@ -1,7 +1,7 @@
-use ethers::middleware::SignerMiddleware;
-use ethers::providers::{Http, Provider, Ws};
-use ethers::signers::Signer;
+use alloy::providers::{ProviderBuilder, RootProvider, WsConnect};
+use alloy::rpc::client::RpcClient;
 use eyre::Context;
+use url::Url;
 
 use crate::api_key::ApiKey;
 use crate::config::{Config, KeysConfig};
@@ -9,16 +9,16 @@ use crate::db::data::RpcKind;
 use crate::db::Database;
 use crate::keys::{KeysSource, KmsKeys, LocalKeys, UniversalSigner};
 
-pub type AppGenericMiddleware<T> =
-    SignerMiddleware<Provider<T>, UniversalSigner>;
-pub type AppMiddleware = AppGenericMiddleware<Http>;
-
 pub struct App {
     pub config: Config,
 
     pub keys_source: Box<dyn KeysSource>,
 
     pub db: Database,
+
+    /// Client for HTTP RPC requests, shared by the providers and the RPC
+    /// proxy
+    pub rpc_client: reqwest::Client,
 }
 
 impl App {
@@ -29,56 +29,56 @@ impl App {
         tracing::info!("Initializing db");
         let db = Database::new(&config.database).await?;
 
+        let rpc_client = rpc_http_client()?;
+
         Ok(Self {
             config,
             keys_source,
             db,
+            rpc_client,
         })
+    }
+
+    pub async fn http_rpc_url(&self, chain_id: u64) -> eyre::Result<Url> {
+        let url = self.db.get_network_rpc(chain_id, RpcKind::Http).await?;
+
+        url.parse().context("Invalid HTTP RPC URL")
     }
 
     pub async fn http_provider(
         &self,
         chain_id: u64,
-    ) -> eyre::Result<Provider<Http>> {
-        let url = self.db.get_network_rpc(chain_id, RpcKind::Http).await?;
+    ) -> eyre::Result<RootProvider> {
+        let url = self.http_rpc_url(chain_id).await?;
 
-        let provider = Provider::<Http>::try_from(url.as_str())?;
+        let client =
+            RpcClient::new_http_with_client(self.rpc_client.clone(), url);
 
-        Ok(provider)
+        Ok(RootProvider::new(client))
     }
 
     pub async fn ws_provider(
         &self,
         chain_id: u64,
-    ) -> eyre::Result<Provider<Ws>> {
+    ) -> eyre::Result<RootProvider> {
         let url = self.db.get_network_rpc(chain_id, RpcKind::Ws).await?;
 
-        let ws = Ws::connect(url.as_str())
+        let provider = ProviderBuilder::default()
+            .connect_ws(WsConnect::new(url))
             .await
             .context("Connecting to WS provider")?;
-        let provider = Provider::new(ws);
 
         Ok(provider)
     }
 
-    pub async fn signer_middleware(
+    pub async fn load_signer(
         &self,
-        chain_id: u64,
         key_id: String,
-    ) -> eyre::Result<AppMiddleware> {
-        let rpc = self.http_provider(chain_id).await?;
-
-        let wallet = self
-            .keys_source
-            .load_signer(key_id.clone())
+    ) -> eyre::Result<UniversalSigner> {
+        self.keys_source
+            .load_signer(key_id)
             .await
-            .context("Missing signer")?;
-
-        let wallet = wallet.with_chain_id(chain_id);
-
-        let middlware = SignerMiddleware::new(rpc, wallet);
-
-        Ok(middlware)
+            .context("Missing signer")
     }
 
     pub async fn is_authorized(
@@ -107,4 +107,21 @@ async fn init_keys_source(
     };
 
     Ok(keys_source)
+}
+
+/// Builds the client for HTTP RPC requests.
+///
+/// It trusts only the Mozilla root certificates bundled into the binary, the
+/// same roots as alloy's WS transport, which always uses its bundled copy.
+fn rpc_http_client() -> eyre::Result<reqwest::Client> {
+    let root_certs = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+        .iter()
+        .map(|cert| reqwest::Certificate::from_der(cert))
+        .collect::<Result<Vec<_>, _>>()
+        .context("Parsing bundled root certificates")?;
+
+    reqwest::Client::builder()
+        .tls_certs_only(root_certs)
+        .build()
+        .context("Building RPC HTTP client")
 }

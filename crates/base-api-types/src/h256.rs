@@ -1,10 +1,31 @@
+use std::borrow::Cow;
+
+use alloy_primitives::B256;
 use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
 use poem_openapi::types::{ParseError, ParseFromJSON, ToJSON};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+use crate::hex::hex_digits;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-pub struct H256(pub ethers::types::H256);
+pub struct H256(pub B256);
+
+impl<'de> Deserialize<'de> for H256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s: Cow<str> = serde::Deserialize::deserialize(deserializer)?;
+
+        let hash = hex_digits(&s)
+            .map_err(serde::de::Error::custom)?
+            .parse()
+            .map_err(serde::de::Error::custom)?;
+
+        Ok(Self(hash))
+    }
+}
 
 impl poem_openapi::types::Type for H256 {
     const IS_REQUIRED: bool = true;
@@ -47,18 +68,17 @@ impl ParseFromJSON for H256 {
     fn parse_from_json(
         value: Option<serde_json::Value>,
     ) -> poem_openapi::types::ParseResult<Self> {
-        // TODO: Better error handling
         let value = value.ok_or_else(ParseError::expected_input)?;
 
-        let inner =
+        let value =
             serde_json::from_value(value).map_err(ParseError::custom)?;
 
-        Ok(Self(inner))
+        Ok(value)
     }
 }
 
 impl ToJSON for H256 {
     fn to_json(&self) -> Option<serde_json::Value> {
-        serde_json::to_value(self.0).ok()
+        serde_json::to_value(self).ok()
     }
 }

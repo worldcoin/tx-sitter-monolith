@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
+use alloy::primitives::{Address, B256, U256};
 use chrono::{DateTime, Utc};
-use ethers::types::{Address, H256, U256};
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::types::{BigDecimal, Json};
 use sqlx::{Pool, Postgres, Row};
@@ -73,7 +73,7 @@ impl Database {
         .bind(name)
         .bind(chain_id as i64)
         .bind(key_id)
-        .bind(address.as_bytes())
+        .bind(address.as_slice())
         .execute(&self.pool)
         .await?;
 
@@ -293,7 +293,7 @@ impl Database {
 
         Ok(gas_limits
             .into_iter()
-            .fold(U256::zero(), |acc, (v,)| acc + v.0))
+            .fold(U256::ZERO, |acc, (v,)| acc.saturating_add(v.0)))
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -310,11 +310,8 @@ impl Database {
     ) -> eyre::Result<CreateResult> {
         let mut tx = self.pool.begin().await?;
 
-        let mut value_bytes = [0u8; 32];
-        value.to_big_endian(&mut value_bytes);
-
-        let mut gas_limit_bytes = [0u8; 32];
-        gas_limit.to_big_endian(&mut gas_limit_bytes);
+        let value_bytes: [u8; 32] = value.to_be_bytes();
+        let gas_limit_bytes: [u8; 32] = gas_limit.to_be_bytes();
 
         let (nonce,): (i64,) = sqlx::query_as(
             r#"
@@ -336,7 +333,7 @@ impl Database {
         "#,
         )
         .bind(tx_id)
-        .bind(to.as_bytes())
+        .bind(to.as_slice())
         .bind(data)
         .bind(value_bytes)
         .bind(gas_limit_bytes)
@@ -381,17 +378,14 @@ impl Database {
     pub async fn insert_tx_broadcast(
         &self,
         tx_id: &str,
-        tx_hash: H256,
+        tx_hash: B256,
         initial_max_fee_per_gas: U256,
         initial_max_priority_fee_per_gas: U256,
     ) -> eyre::Result<()> {
-        let mut initial_max_fee_per_gas_bytes = [0u8; 32];
-        initial_max_fee_per_gas
-            .to_big_endian(&mut initial_max_fee_per_gas_bytes);
-
-        let mut initial_max_priority_fee_per_gas_bytes = [0u8; 32];
-        initial_max_priority_fee_per_gas
-            .to_big_endian(&mut initial_max_priority_fee_per_gas_bytes);
+        let initial_max_fee_per_gas_bytes: [u8; 32] =
+            initial_max_fee_per_gas.to_be_bytes();
+        let initial_max_priority_fee_per_gas_bytes: [u8; 32] =
+            initial_max_priority_fee_per_gas.to_be_bytes();
 
         let mut tx = self.pool.begin().await?;
 
@@ -402,7 +396,7 @@ impl Database {
             "#,
         )
         .bind(tx_id)
-        .bind(tx_hash.as_bytes())
+        .bind(tx_hash.as_slice())
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
         .execute(tx.as_mut())
@@ -417,7 +411,7 @@ impl Database {
         .bind(tx_id)
         .bind(initial_max_fee_per_gas_bytes)
         .bind(initial_max_priority_fee_per_gas_bytes)
-        .bind(tx_hash.as_bytes())
+        .bind(tx_hash.as_slice())
         .execute(tx.as_mut()).await?;
 
         tx.commit().await?;
@@ -498,7 +492,7 @@ impl Database {
         let fee_estimates = fees.0;
 
         let gas_price_str = gas_price.to_string();
-        let gas_price = U256::from_dec_str(&gas_price_str)?;
+        let gas_price = U256::from_str_radix(&gas_price_str, 10)?;
 
         Ok(Some(BlockFees {
             fee_estimates,
@@ -533,7 +527,7 @@ impl Database {
         block_number: u64,
         chain_id: u64,
         timestamp: DateTime<Utc>,
-        txs: &[H256],
+        txs: &[B256],
     ) -> eyre::Result<()> {
         let mut db_tx = self.pool.begin().await?;
 
@@ -724,7 +718,7 @@ impl Database {
     pub async fn mine_txs(
         &self,
         chain_id: u64,
-    ) -> eyre::Result<Vec<(String, H256)>> {
+    ) -> eyre::Result<Vec<(String, B256)>> {
         let updated_txs: Vec<(String, H256Wrapper)> = sqlx::query_as(
             r#"
             WITH cte AS (
@@ -839,7 +833,7 @@ impl Database {
     pub async fn escalate_tx(
         &self,
         tx_id: &str,
-        tx_hash: H256,
+        tx_hash: B256,
         max_fee_per_gas: U256,
         max_priority_fee_per_gas: U256,
     ) -> eyre::Result<()> {
@@ -856,12 +850,9 @@ impl Database {
         .execute(tx.as_mut())
         .await?;
 
-        let mut max_fee_per_gas_bytes = [0u8; 32];
-        max_fee_per_gas.to_big_endian(&mut max_fee_per_gas_bytes);
-
-        let mut max_priority_fee_per_gas_bytes = [0u8; 32];
-        max_priority_fee_per_gas
-            .to_big_endian(&mut max_priority_fee_per_gas_bytes);
+        let max_fee_per_gas_bytes: [u8; 32] = max_fee_per_gas.to_be_bytes();
+        let max_priority_fee_per_gas_bytes: [u8; 32] =
+            max_priority_fee_per_gas.to_be_bytes();
 
         sqlx::query(
             r#"
@@ -870,7 +861,7 @@ impl Database {
             "#
         )
         .bind(tx_id)
-        .bind(tx_hash.as_bytes())
+        .bind(tx_hash.as_slice())
         .bind(max_fee_per_gas_bytes)
         .bind(max_priority_fee_per_gas_bytes)
         .execute(tx.as_mut())
@@ -885,7 +876,7 @@ impl Database {
             "#,
         )
         .bind(tx_id)
-        .bind(tx_hash.as_bytes())
+        .bind(tx_hash.as_slice())
         .execute(tx.as_mut())
         .await?;
 
@@ -1009,7 +1000,7 @@ impl Database {
             "#,
         )
         .bind(chain_id as i64)
-        .bind(relayer_address.as_bytes())
+        .bind(relayer_address.as_slice())
         .bind(nonce as i64)
         .execute(&self.pool)
         .await?;
@@ -1414,7 +1405,7 @@ mod tests {
         let relayer_id = relayer_id.as_str();
         let relayer_name = "relayer_name";
         let key_id = "key_id";
-        let address = Address::from_low_u64_be(1);
+        let address = Address::with_last_byte(1);
 
         db.create_relayer(relayer_id, relayer_name, chain_id, key_id, address)
             .await?;
@@ -1441,9 +1432,9 @@ mod tests {
             .and_utc();
 
         let tx_hashes = vec![
-            H256::from_low_u64_be(1),
-            H256::from_low_u64_be(2),
-            H256::from_low_u64_be(3),
+            B256::with_last_byte(1),
+            B256::with_last_byte(2),
+            B256::with_last_byte(3),
         ];
 
         db.save_block(1, 1, block_timestamp, &tx_hashes).await?;
@@ -1474,7 +1465,7 @@ mod tests {
 
         let relayer_name = "relayer_name";
         let key_id = "key_id";
-        let relayer_address = Address::from_low_u64_be(1);
+        let relayer_address = Address::with_last_byte(1);
 
         db.create_relayer(
             relayer_id,
@@ -1557,7 +1548,7 @@ mod tests {
 
         let relayer_name = "relayer_name";
         let key_id = "key_id";
-        let relayer_address = Address::from_low_u64_be(1);
+        let relayer_address = Address::with_last_byte(1);
 
         db.create_relayer(
             relayer_id,
@@ -1569,7 +1560,7 @@ mod tests {
         .await?;
 
         let tx_id = "tx_id";
-        let to = Address::from_low_u64_be(1);
+        let to = Address::with_last_byte(1);
         let data: &[u8] = &[];
         let value = U256::from(0);
         let gas_limit = U256::from(0);
@@ -1598,8 +1589,8 @@ mod tests {
         let unsent_txs = db.read_relayer_txs(relayer_id, None).await?;
         assert_eq!(unsent_txs.len(), 1, "1 unsent tx");
 
-        let tx_hash_1 = H256::from_low_u64_be(1);
-        let tx_hash_2 = H256::from_low_u64_be(2);
+        let tx_hash_1 = B256::with_last_byte(1);
+        let tx_hash_2 = B256::with_last_byte(2);
         let initial_max_fee_per_gas = U256::from(1);
         let initial_max_priority_fee_per_gas = U256::from(1);
 
@@ -1731,7 +1722,7 @@ mod tests {
         let relayer_2_name = "relayer_2";
 
         let key_id = "key_id";
-        let relayer_address = Address::from_low_u64_be(1);
+        let relayer_address = Address::with_last_byte(1);
 
         db.create_relayer(
             relayer_1_id,
@@ -1752,7 +1743,7 @@ mod tests {
         .await?;
 
         let tx_id = "tx_id";
-        let to = Address::from_low_u64_be(1);
+        let to = Address::with_last_byte(1);
         let data: &[u8] = &[];
         let value = U256::from(0);
         let gas_limit = U256::from(0);
@@ -1794,9 +1785,9 @@ mod tests {
         let chain_id = 1;
         let timestamp = ymd_hms(2023, 11, 23, 12, 32, 2);
         let txs = &[
-            H256::from_low_u64_be(1),
-            H256::from_low_u64_be(2),
-            H256::from_low_u64_be(3),
+            B256::with_last_byte(1),
+            B256::with_last_byte(2),
+            B256::with_last_byte(3),
         ];
 
         db.save_block(block_numbers[0], chain_id, timestamp, txs)
@@ -1934,7 +1925,7 @@ mod tests {
         )
         .await?;
 
-        let tx_hash = H256::from(HASH);
+        let tx_hash = B256::from(HASH);
         db.insert_tx_broadcast(
             tx_id,
             tx_hash,
