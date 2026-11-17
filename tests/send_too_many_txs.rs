@@ -1,15 +1,13 @@
 mod common;
 
-use poem::http;
-use tx_sitter_client::apis::admin_v1_api::{
-    CreateRelayerParams, RelayerCreateApiKeyParams, UpdateRelayerParams,
-};
-use tx_sitter_client::apis::relayer_v1_api::CreateTransactionParams;
+use tx_sitter_client::apis::admin_v1_api::UpdateRelayerParams;
+use tx_sitter_client::apis::relayer_v1_api::CreateTransactionError;
 use tx_sitter_client::apis::Error;
 
 use crate::common::prelude::*;
 
-const MAX_QUEUED_TXS: usize = 20;
+const MAX_QUEUED_TXS: usize = 10;
+const SENDS_PER_API: usize = 15;
 
 #[tokio::test]
 async fn send_too_many_txs() -> eyre::Result<()> {
@@ -18,73 +16,21 @@ async fn send_too_many_txs() -> eyre::Result<()> {
     let (db_url, _db_container) = setup_db().await?;
     let anvil = AnvilBuilder::default().spawn().await?;
 
-    let (_service, client) =
-        ServiceBuilder::default().build(&anvil, &db_url).await?;
-
-    let CreateApiKeyResponse { api_key } =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            &client,
-            RelayerCreateApiKeyParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
+    // Without a worker nothing leaves the queue
+    let (_api_1, client_1) = ServiceBuilder::default()
+        .role(ServiceRole::Api)
+        .build(&anvil, &db_url)
         .await?;
-
-    let CreateRelayerResponse {
-        relayer_id: secondary_relayer_id,
-        address: secondary_relayer_address,
-    } = tx_sitter_client::apis::admin_v1_api::create_relayer(
-        &client,
-        CreateRelayerParams {
-            create_relayer_request: CreateRelayerRequest {
-                name: "Secondary Relayer".to_string(),
-                chain_id: DEFAULT_ANVIL_CHAIN_ID as i32,
-            },
-        },
-    )
-    .await?;
-
-    let provider = setup_provider(anvil.endpoint()).await?;
-    let init_value: U256 = parse_units("1", "ether")?.into();
-
-    // Send some funds to created relayer
-    tx_sitter_client::apis::relayer_v1_api::create_transaction(
-        &client,
-        CreateTransactionParams {
-            api_token: api_key.clone(),
-            send_tx_request: SendTxRequest {
-                to: secondary_relayer_address.clone(),
-                value: init_value.into(),
-                data: None,
-                gas_limit: U256::from(21_000).into(),
-                priority: Some(TransactionPriority::Regular),
-                tx_id: None,
-                blobs: None,
-            },
-        },
-    )
-    .await?;
-
-    tracing::info!("Waiting for secondary relayer initial balance");
-    await_balance(&provider, init_value, secondary_relayer_address.clone().0)
+    let (_api_2, client_2) = ServiceBuilder::default()
+        .role(ServiceRole::Api)
+        .build(&anvil, &db_url)
         .await?;
+    let api_key = create_api_key(&client_1).await?;
 
-    let CreateApiKeyResponse {
-        api_key: secondary_api_key,
-    } = tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-        &client,
-        RelayerCreateApiKeyParams {
-            relayer_id: secondary_relayer_id.clone(),
-        },
-    )
-    .await?;
-
-    tracing::info!("Updating relayer");
-    // Set max queued txs
     tx_sitter_client::apis::admin_v1_api::update_relayer(
-        &client,
+        &client_1,
         UpdateRelayerParams {
-            relayer_id: secondary_relayer_id.clone(),
+            relayer_id: DEFAULT_RELAYER_ID.to_string(),
             relayer_update_request: RelayerUpdateRequest {
                 max_queued_txs: Some(MAX_QUEUED_TXS as i32),
                 ..Default::default()
@@ -93,85 +39,32 @@ async fn send_too_many_txs() -> eyre::Result<()> {
     )
     .await?;
 
-    // Send a transaction
-    let value: U256 = parse_units("0.01", "ether")?.into();
+    let sends: FuturesUnordered<_> = [&client_1, &client_2]
+        .into_iter()
+        .flat_map(|client| {
+            (0..SENDS_PER_API)
+                .map(|_| send_transfer(client, &api_key, U256::from(1)))
+        })
+        .collect();
+    let results: Vec<_> = sends.collect().await;
 
-    tracing::info!("Sending txs");
-    for _ in 0..=MAX_QUEUED_TXS {
-        tx_sitter_client::apis::relayer_v1_api::create_transaction(
-            &client,
-            CreateTransactionParams {
-                api_token: secondary_api_key.clone(),
-                send_tx_request: SendTxRequest {
-                    to: ARBITRARY_ADDRESS.into(),
-                    value: value.into(),
-                    data: None,
-                    gas_limit: U256::from(21_000).into(),
-                    priority: Some(TransactionPriority::Regular),
-                    tx_id: None,
-                    blobs: None,
-                },
-            },
-        )
-        .await?;
+    let mut admitted = 0;
+    for result in results {
+        let Err(err) = result else {
+            admitted += 1;
+            continue;
+        };
+
+        match err.downcast_ref::<Error<CreateTransactionError>>() {
+            Some(Error::ResponseError(response)) => {
+                assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS);
+                assert_eq!(response.content, "Relayer queue is full");
+            }
+            _ => return Err(err),
+        }
     }
 
-    // Sending one more tx should fail
-    let res = tx_sitter_client::apis::relayer_v1_api::create_transaction(
-        &client,
-        CreateTransactionParams {
-            api_token: secondary_api_key.clone(),
-            send_tx_request: SendTxRequest {
-                to: ARBITRARY_ADDRESS.into(),
-                value: value.into(),
-                data: None,
-                gas_limit: U256::from(21_000).into(),
-                priority: Some(TransactionPriority::Regular),
-                tx_id: None,
-                blobs: None,
-            },
-        },
-    )
-    .await;
-
-    if let Err(Error::ResponseError(e)) = res {
-        assert_eq!(e.status, http::StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(e.content, "Relayer queue is full");
-
-        return Ok(());
-    }
-
-    // Accumulate total value + gas budget
-    let send_value = value * U256::from(MAX_QUEUED_TXS + 1);
-    let total_required_value = send_value + parse_ether("1")?;
-
-    tx_sitter_client::apis::relayer_v1_api::create_transaction(
-        &client,
-        CreateTransactionParams {
-            api_token: api_key.clone(),
-            send_tx_request: SendTxRequest {
-                to: secondary_relayer_address.clone(),
-                value: total_required_value.into(),
-                data: None,
-                gas_limit: U256::from(21_000).into(),
-                priority: Some(TransactionPriority::Regular),
-                tx_id: None,
-                blobs: None,
-            },
-        },
-    )
-    .await?;
-
-    tracing::info!("Waiting for secondary relayer balance");
-    await_balance(
-        &provider,
-        total_required_value,
-        secondary_relayer_address.clone().0,
-    )
-    .await?;
-
-    tracing::info!("Waiting for queued up txs to be processed");
-    await_balance(&provider, send_value, ARBITRARY_ADDRESS).await?;
+    assert_eq!(admitted, MAX_QUEUED_TXS);
 
     Ok(())
 }

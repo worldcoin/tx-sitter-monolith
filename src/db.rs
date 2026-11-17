@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::{BigDecimal, Json};
-use sqlx::{Pool, Postgres, Row};
+use sqlx::{PgExecutor, Pool, Postgres, Row};
 use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
@@ -42,9 +42,15 @@ pub struct Database {
     probe_pool: Pool<Postgres>,
 }
 
+/// The outcome of [`Database::create_transaction`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateResult {
-    SUCCESS,
-    CONFLICT,
+    Created,
+    /// A transaction with the same id exists
+    Conflict,
+    /// The relayer already has `max_queued_txs` unsent or pending
+    /// transactions
+    QueueFull,
 }
 
 impl Database {
@@ -282,26 +288,13 @@ impl Database {
         .await?)
     }
 
+    /// Counts the unsent and pending transactions of `relayer_id`.
     #[instrument(skip(self), level = "debug")]
     pub async fn get_relayer_pending_txs(
         &self,
         relayer_id: &str,
     ) -> eyre::Result<usize> {
-        let (tx_count,): (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(1)
-            FROM transactions t
-            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
-            WHERE t.relayer_id = $1
-            AND (s.tx_id IS NULL OR s.status = $2)
-            "#,
-        )
-        .bind(relayer_id)
-        .bind(TxStatus::Pending)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(tx_count as usize)
+        count_queued_txs(&self.pool, relayer_id).await
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -328,6 +321,8 @@ impl Database {
             .fold(U256::ZERO, |acc, (v,)| acc.saturating_add(v.0)))
     }
 
+    /// Creates a transaction of `relayer_id` with the relayer's next nonce,
+    /// unless the relayer's queue is full or `tx_id` exists.
     #[instrument(skip(self), level = "debug")]
     pub async fn create_transaction(
         &self,
@@ -344,6 +339,27 @@ impl Database {
 
         let value_bytes: [u8; 32] = value.to_be_bytes();
         let gas_limit_bytes: [u8; 32] = gas_limit.to_be_bytes();
+
+        // Locks the relayer, so that concurrent creates count each other's
+        // transactions
+        let (max_queued_txs,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT max_queued_txs
+            FROM   relayers
+            WHERE  id = $1
+            FOR NO KEY UPDATE
+            "#,
+        )
+        .bind(relayer_id)
+        .fetch_one(tx.as_mut())
+        .await?;
+
+        let queued_txs = count_queued_txs(tx.as_mut(), relayer_id).await?;
+
+        if queued_txs >= max_queued_txs as usize {
+            tx.rollback().await?;
+            return Ok(CreateResult::QueueFull);
+        }
 
         let (nonce,): (i64,) = sqlx::query_as(
             r#"
@@ -378,7 +394,7 @@ impl Database {
 
         if let Err(sqlx::Error::Database(ref err)) = res {
             if err.constraint() == Some("transactions_pkey") {
-                return Ok(CreateResult::CONFLICT);
+                return Ok(CreateResult::Conflict);
             }
         }
 
@@ -386,7 +402,7 @@ impl Database {
 
         tx.commit().await?;
 
-        Ok(CreateResult::SUCCESS)
+        Ok(CreateResult::Created)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1448,6 +1464,27 @@ impl Database {
 
         Ok(())
     }
+}
+
+async fn count_queued_txs(
+    executor: impl PgExecutor<'_>,
+    relayer_id: &str,
+) -> eyre::Result<usize> {
+    let (tx_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(1)
+        FROM transactions t
+        LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+        WHERE t.relayer_id = $1
+        AND (s.tx_id IS NULL OR s.status = $2)
+        "#,
+    )
+    .bind(relayer_id)
+    .bind(TxStatus::Pending)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(tx_count as usize)
 }
 
 #[cfg(test)]
