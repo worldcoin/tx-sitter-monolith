@@ -17,7 +17,7 @@ Copy `.env.example` to `.env` or set `RUST_LOG=info,service=debug` to enable log
 
 API schema can be downloaded from <http://localhost:3000/schema.json> or <http://localhost:3000/schema.yml>
 
-This will use the `config.toml` configuration.
+This will use the `config.toml` configuration, which defines a relayer on the anvil chain with the API key `G5CKNF3BTS2hRl60bpdYMNPqXvXsP-QZd2lrtmgctsk=`.
 
 ### Error reporting & debugging
 
@@ -30,7 +30,7 @@ But that by default doesn't include the backtrace or code snippets. In order to 
 The Tx Sitter can be configured in 2 ways:
 
 1. Using the config file, refer to `config.rs` and `config.toml` for more info
-2. Using env vars. Every field in the config can also be set via an env var.
+2. Using env vars. Every field in the config, except the `[[networks]]` and `[[relayers]]` lists, can also be set via an env var.
    For example the following config
 
    ```toml
@@ -39,7 +39,6 @@ The Tx Sitter can be configured in 2 ways:
 
     [server]
     host = "127.0.0.1:3000"
-    disable_auth = true
 
     [database]
     connection_string = "postgres://postgres:postgres@127.0.0.1:5432/database"
@@ -54,10 +53,74 @@ The Tx Sitter can be configured in 2 ways:
     TX_SITTER__SERVICE__ESCALATION_INTERVAL="1m"
     TX_SITTER__SERVICE__MAX_ESCALATIONS="100"
     TX_SITTER__SERVER__HOST="127.0.0.1:3000"
-    TX_SITTER__SERVER__DISABLE_AUTH="true"
     TX_SITTER__DATABASE__CONNECTION_STRING="postgres://postgres:postgres@127.0.0.1:5432/database"
     TX_SITTER__KEYS__KIND="local"
     ```
+
+A string value in a config file can reference environment variables as `${NAME}`. Use this for secrets such as RPC URLs, which usually embed a provider API key. A reference to an unset variable fails startup.
+
+### Networks, relayers and API keys
+
+Networks, relayers and API keys are defined in the config, not through an API. Every process applies them to the database when it starts, so the database only holds runtime state such as nonces and transactions.
+
+```toml
+[[networks]]
+chain_id = 480
+name = "worldchain"
+# In order of preference: a request moves on to the next RPC when one fails or times out
+http_rpcs = ["${WORLDCHAIN_RPC_URL}", "${WORLDCHAIN_RPC_URL_FALLBACK}"]
+ws_rpc = "${WORLDCHAIN_WS_URL}"
+
+[[relayers]]
+# A lowercase UUID. API keys embed it, so it never changes.
+id = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29"
+name = "wc_enableSafe4337Module_1"
+chain_id = 480
+# A KMS key id, ARN or alias with keys.kind = "kms", or { local = "<hex private key>" } with keys.kind = "local"
+key = { kms = "arn:aws:kms:eu-central-1:123456789012:key/0b3e2a5c-..." }
+# The address the key must derive, checked at startup
+address = "0x1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
+max_inflight_txs = 5 # default 5
+max_queued_txs = 20 # default 20, must be greater than max_inflight_txs
+# Broadcasting pauses while the chain's gas price is above a limit
+gas_price_limits = [{ chain_id = 480, value = "100000000000" }] # default []
+enabled = true # default true
+# Hashes of the API keys the relayer accepts
+api_key_hashes = ["0x235704acd89680dcf5be2b7ddbead1f01e93c200f8a769afad104fde70d9ec7d"] # default []
+```
+
+At startup every process:
+
+1. Validates the config: distinct chain and relayer ids, every relayer on a configured network, at least one HTTP RPC per network, keys of the kind `keys.kind` selects. Every problem is reported at once.
+2. Loads the key of every enabled relayer, with KMS `GetPublicKey` for KMS keys, and fails if it derives another address than `address`.
+3. Writes the config into the database in one transaction:
+   - networks and relayers are upserted, and relayers keep their nonces;
+   - a relayer's `chain_id` and `address` can't change, add a new relayer instead;
+   - a relayer that is in the database but not in the config is disabled, not deleted, and keeps its API keys, so its callers can still read its transactions;
+   - every configured relayer accepts exactly the API keys in its `api_key_hashes`;
+   - a config without relayers fails while the database has enabled relayers, which protects a database whose relayers were never moved to the config.
+
+The service no longer creates KMS keys, so it needs only `kms:GetPublicKey` and `kms:Sign` on the relayer keys.
+
+### Operating guide
+
+Every change below is a config change followed by a deploy. Processes that start while a deploy is rolling out apply their own config, so the last process to start wins until the rollout finishes.
+
+- **Add a network.** Add a `[[networks]]` entry, and put its RPC URLs in the secrets manager as the environment variables it references.
+- **Add a relayer.** Create a secp256k1 signing key in KMS (`ECC_SECG_P256K1`, `SIGN_VERIFY`), derive its address, and add a `[[relayers]]` entry with a new UUID (`uuidgen | tr A-Z a-z`), the key and the address. Fund the address.
+- **Add or rotate an API key.** Run `tx-sitter api-key new --relayer-id <id>`, add the printed hash to the relayer's `api_key_hashes` and give the printed key to the caller. The key can't be recovered later. To revoke a key, remove its hash.
+- **Disable a relayer.** Set `enabled = false`. It rejects new transactions with 403 and broadcasts nothing. Removing the relayer from the config has the same effect.
+- **Reset a stuck relayer.** Run `tx-sitter relayer reset --relayer-id <id>` with the service's config. It deletes the relayer's unsent transactions and rewinds its nonce.
+
+### Migrating from the admin API
+
+Earlier versions managed networks, relayers and API keys through `/1/admin/*`. Before deploying a version without it, write the database's state into the config:
+
+```
+tx-sitter --config <the service's config> config dump > static.toml
+```
+
+The command prints the `[[networks]]` and `[[relayers]]` sections. RPC URLs, and local private keys, are printed as `${NAME}` references, and their values are listed on stderr: store those in the secrets manager, never in the config. Deploying the dumped config leaves the database as it is.
 
 ### Roles, probes and shutdown
 
