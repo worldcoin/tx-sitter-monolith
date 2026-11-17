@@ -71,6 +71,7 @@ async fn shutdown_lets_in_flight_requests_finish() -> eyre::Result<()> {
 
     let shutdown = CancellationToken::new();
     let (service, client) = ServiceBuilder::default()
+        .role(ServiceRole::Api)
         .shutdown_timeout(SHUTDOWN_TIMEOUT)
         .shutdown(shutdown.clone())
         .build(&anvil, &db_url)

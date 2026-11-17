@@ -27,7 +27,7 @@ async fn rpc_access_fails_within_rpc_timeout() -> eyre::Result<()> {
         .build(&anvil, &db_url)
         .await?;
 
-    let rpc_addr = spawn_unresponsive_rpc().await?;
+    let rpc_addr = UnresponsiveRpc::spawn().await?.addr;
     tx_sitter_client::apis::admin_v1_api::create_network(
         &client,
         CreateNetworkParams {

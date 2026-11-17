@@ -49,7 +49,7 @@ async fn unresponsive_chain_does_not_delay_other_relayers() -> eyre::Result<()>
 async fn create_tx_on_unresponsive_chain(
     db: &Database,
 ) -> eyre::Result<String> {
-    let rpc = spawn_unresponsive_rpc().await?;
+    let rpc = UnresponsiveRpc::spawn().await?.addr;
     db.upsert_network(
         UNRESPONSIVE_CHAIN_ID,
         "unresponsive",

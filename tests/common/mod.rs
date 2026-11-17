@@ -1,6 +1,8 @@
 #![allow(dead_code)] // Needed because this module is imported as module by many test crates
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::primitives::{address, Address, U256};
@@ -86,20 +88,38 @@ pub async fn setup_db() -> eyre::Result<(String, DockerContainerGuard)> {
     Ok((url, db_container))
 }
 
-/// Starts a TCP server that accepts connections and never answers.
-pub async fn spawn_unresponsive_rpc() -> eyre::Result<SocketAddr> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let addr = listener.local_addr()?;
+/// A TCP server that accepts connections and never answers.
+pub struct UnresponsiveRpc {
+    pub addr: SocketAddr,
+    accepted_connections: Arc<AtomicUsize>,
+}
 
-    tokio::spawn(async move {
-        let mut connections = Vec::new();
+impl UnresponsiveRpc {
+    pub async fn spawn() -> eyre::Result<Self> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+        let accepted_connections = Arc::new(AtomicUsize::new(0));
 
-        while let Ok((stream, _)) = listener.accept().await {
-            connections.push(stream);
-        }
-    });
+        let counter = accepted_connections.clone();
+        tokio::spawn(async move {
+            let mut connections = Vec::new();
 
-    Ok(addr)
+            while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                connections.push(stream);
+            }
+        });
+
+        Ok(Self {
+            addr,
+            accepted_connections,
+        })
+    }
+
+    /// Returns how many connections the server has accepted so far.
+    pub fn accepted_connections(&self) -> usize {
+        self.accepted_connections.load(Ordering::SeqCst)
+    }
 }
 
 pub async fn setup_provider(
