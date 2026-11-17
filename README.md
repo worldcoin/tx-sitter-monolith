@@ -84,6 +84,14 @@ A relayer's key must only send transactions through tx-sitter. When the chain's 
 
 To recover, reset the relayer with `POST /1/admin/relayer/{relayer_id}/reset`. That deletes its unsent transactions, so their callers have to send them again. Sent ones stay pending.
 
+### Relayer API v2
+
+`POST /2/tx` and `GET /2/tx/{txId}` take the relayer's API key in an `Authorization: Bearer <api key>` header, never in the URL. The v1 API under `/1/api/<api key>/` is unchanged.
+
+A send may carry `metadata`, a JSON object of at most 64 KiB that tx-sitter stores and returns byte for byte. Sending a `txId` again with an identical request, metadata text included, returns the existing transaction without taking a nonce. A different request with the same `txId` returns 409. That holds while the transaction is kept: finalized transactions are deleted `service.tx_retention` (default `30d`) after they are mined.
+
+Every v2 error is a JSON `{ "errorId": ..., "errorMessage": ... }` whose `errorId` stays stable. The OpenAPI schema lists them per status.
+
 ## Running tests
 
 While you obviously can run tests with

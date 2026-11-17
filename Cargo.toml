@@ -39,7 +39,7 @@ alloy = { version = "1.8.3", default-features = false, features = [
 async-trait = "0.1.74"
 base64 = "0.21.5"
 bigdecimal = "0.4.2"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.3.0", features = ["env", "derive"] }
 config = "0.13.3"
 dotenv = "0.15.0"
@@ -56,6 +56,7 @@ metrics = "0.23.0"
 num-bigint = "0.4.4"
 poem = { version = "3", features = ["eyre06"] }
 poem-openapi = { version = "5", features = [
+    "chrono",
     "openapi-explorer",
     "rapidoc",
     "redoc",

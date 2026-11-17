@@ -1,3 +1,4 @@
+use poem::http::StatusCode;
 use poem::Result;
 use poem_openapi::{auth, SecurityScheme};
 
@@ -21,14 +22,31 @@ impl BasicAuth {
     ) -> Result<()> {
         if let Some((expected_user, expected_pass)) = expected {
             if expected_user != username || expected_pass != password {
-                return Err(poem::error::Error::from_string(
-                    "Unauthorized".to_string(),
-                    poem::http::StatusCode::UNAUTHORIZED,
-                ));
+                return Err(unauthorized());
             }
         }
 
         Ok(())
+    }
+}
+
+/// An API key sent in an `Authorization: Bearer <api key>` header
+#[derive(SecurityScheme)]
+#[oai(ty = "bearer")]
+pub struct BearerApiKey(auth::Bearer);
+
+impl BearerApiKey {
+    /// Returns the API key once the database confirms it.
+    ///
+    /// Like an API key in a v1 URL, a key that doesn't parse or isn't stored
+    /// fails with 401.
+    pub async fn authorize(&self, app: impl AsRef<App>) -> Result<ApiKey> {
+        let api_key: ApiKey =
+            self.0.token.parse().map_err(|_| unauthorized())?;
+
+        api_key.validate(app).await?;
+
+        Ok(api_key)
     }
 }
 
@@ -39,19 +57,23 @@ impl ApiKey {
         let is_authorized = app.is_authorized(self).await.map_err(|err| {
             poem::error::Error::from_string(
                 err.to_string(),
-                poem::http::StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::INTERNAL_SERVER_ERROR,
             )
         })?;
 
         if !is_authorized {
-            return Err(poem::error::Error::from_string(
-                "Unauthorized".to_string(),
-                poem::http::StatusCode::UNAUTHORIZED,
-            ));
+            return Err(unauthorized());
         }
 
         Ok(())
     }
+}
+
+fn unauthorized() -> poem::Error {
+    poem::error::Error::from_string(
+        "Unauthorized".to_string(),
+        StatusCode::UNAUTHORIZED,
+    )
 }
 
 #[cfg(test)]

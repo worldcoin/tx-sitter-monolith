@@ -19,6 +19,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+use self::v2::RelayerApiV2;
 use crate::api_key::ApiKey;
 use crate::app::App;
 use crate::db::data::RelayerInfo;
@@ -31,8 +32,10 @@ use crate::types::{
     SendTxResponse, TxStatus,
 };
 
+mod exact_json;
 mod security;
 mod trace_middleware;
+mod v2;
 
 const READINESS_DB_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -40,6 +43,7 @@ const READINESS_DB_TIMEOUT: Duration = Duration::from_secs(2);
 enum OpenAPITags {
     AdminV1,
     RelayerV1,
+    RelayerV2,
     Service,
 }
 
@@ -504,6 +508,10 @@ fn parse_gas_limit(gas_limit: &DecimalU256) -> Result<U256> {
 }
 
 /// Why a send didn't store its transaction.
+///
+/// The v1 API answers each with the body it always has, see
+/// `From<SendTxError> for poem::Error`, and the v2 API with an
+/// [`ApiError`](v2::ApiError).
 #[derive(Debug)]
 enum SendTxError {
     RelayerDisabled,
@@ -847,9 +855,9 @@ fn health_routes() -> Route {
 
 fn create_api_service(
     server_address: Option<&String>,
-) -> OpenApiService<(AdminApi, RelayerApi, ServiceApi), ()> {
+) -> OpenApiService<(AdminApi, RelayerApi, RelayerApiV2, ServiceApi), ()> {
     let mut api_service = OpenApiService::new(
-        (AdminApi, RelayerApi, ServiceApi),
+        (AdminApi, RelayerApi, RelayerApiV2, ServiceApi),
         "Tx Sitter",
         version::version!(),
     )
