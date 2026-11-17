@@ -189,7 +189,9 @@ pub enum KeysConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct KmsKeysConfig {
-    /// Max amount of time a KMS operation may take, retries included
+    /// Max amount of time a KMS operation may take, retries included. The
+    /// SDK retries attempts that take longer than 2s, except for CreateKey,
+    /// which gets a single attempt.
     #[serde(with = "humantime_serde", default = "default::kms_timeout")]
     pub kms_timeout: Duration,
 }

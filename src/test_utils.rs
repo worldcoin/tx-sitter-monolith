@@ -1,6 +1,8 @@
 //! Helpers for tests that run tx-sitter against misbehaving dependencies.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use postgres_docker_utils::DockerContainerGuard;
@@ -21,22 +23,34 @@ pub const CHAIN_ID: u64 = 1;
 /// A TCP server that accepts connections and never answers.
 pub struct UnresponsiveServer {
     pub addr: SocketAddr,
+    accepted_connections: Arc<AtomicUsize>,
 }
 
 impl UnresponsiveServer {
     pub async fn spawn() -> eyre::Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let addr = listener.local_addr()?;
+        let accepted_connections = Arc::new(AtomicUsize::new(0));
 
+        let counter = accepted_connections.clone();
         tokio::spawn(async move {
             let mut connections = Vec::new();
 
             while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
                 connections.push(stream);
             }
         });
 
-        Ok(Self { addr })
+        Ok(Self {
+            addr,
+            accepted_connections,
+        })
+    }
+
+    /// Returns how many connections the server has accepted so far.
+    pub fn accepted_connections(&self) -> usize {
+        self.accepted_connections.load(Ordering::SeqCst)
     }
 }
 
