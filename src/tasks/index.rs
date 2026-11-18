@@ -16,7 +16,7 @@ use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
-use crate::broadcast_utils::l1_fees::{read_l1_fees, L1Fees};
+use crate::broadcast_utils::l1_fees::read_l1_fees;
 use crate::db::data::{ChainNonces, RelayerNonces};
 use crate::rate_limited_logs::RateLimitedLogs;
 use crate::task_runner::{TaskContext, Wait};
@@ -24,7 +24,8 @@ use crate::task_runner::{TaskContext, Wait};
 const BLOCK_FEE_HISTORY_SIZE: u64 = 10;
 const FEE_PERCENTILES: [f64; 5] = [5.0, 25.0, 50.0, 75.0, 95.0];
 
-const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
+/// Converts the fees in wei to gwei for their gauges
+const GWEI_PER_WEI: f64 = 1e-9;
 
 const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
 
@@ -202,26 +203,11 @@ pub async fn backfill_to_block(
 
 /// Estimates the fees of `chain_id` from the latest block every
 /// `service.fee_estimation_interval`, and saves them with the block.
-///
-/// On an OP-stack network it also reads the L1 fees and saves them with the
-/// estimate. When reading them fails, it saves the L1 fees last read, so that
-/// the L1 fee gate holds transactions only once those are older than
-/// `op_stack.max_fee_age`.
 pub async fn estimate_gas(
     app: Arc<App>,
     ctx: TaskContext,
     chain_id: u64,
 ) -> eyre::Result<()> {
-    let reads_l1_fees = app.l1_fee_gate(chain_id).is_some();
-    let mut l1_fees = if reads_l1_fees {
-        app.db
-            .get_latest_block_fees_by_chain_id(chain_id)
-            .await?
-            .and_then(|fees| fees.l1_fees)
-    } else {
-        None
-    };
-
     while !ctx.is_shutting_down() {
         let latest_block_number = app
             .db
@@ -249,28 +235,21 @@ pub async fn estimate_gas(
 
         let gas_price = U256::from(rpc.get_gas_price().await?);
 
-        if reads_l1_fees {
-            l1_fees = refresh_l1_fees(&rpc, chain_id, l1_fees).await;
-        }
-
         app.db
             .save_block_fees(
                 latest_block_number,
                 chain_id,
                 &fee_estimates,
                 gas_price,
-                l1_fees.as_ref(),
             )
             .await?;
 
         let labels = [("chain_id", chain_id.to_string())];
-        metrics::gauge!("gas_price", &labels).set(
-            gas_price.saturating_to::<u64>() as f64
-                * GAS_PRICE_FOR_METRICS_FACTOR,
-        );
+        metrics::gauge!("gas_price", &labels)
+            .set(gas_price.saturating_to::<u64>() as f64 * GWEI_PER_WEI);
         metrics::gauge!("base_fee_per_gas", &labels).set(
             fee_estimates.base_fee_per_gas.saturating_to::<u64>() as f64
-                * GAS_PRICE_FOR_METRICS_FACTOR,
+                * GWEI_PER_WEI,
         );
 
         for (i, percentile) in FEE_PERCENTILES.iter().enumerate() {
@@ -283,10 +262,7 @@ pub async fn estimate_gas(
                     ("percentile", percentile.to_string()),
                 ]
             )
-            .set(
-                percentile_fee.saturating_to::<u64>() as f64
-                    * GAS_PRICE_FOR_METRICS_FACTOR,
-            );
+            .set(percentile_fee.saturating_to::<u64>() as f64 * GWEI_PER_WEI);
         }
 
         ctx.idle(app.config.service.fee_estimation_interval).await;
@@ -295,40 +271,59 @@ pub async fn estimate_gas(
     Ok(())
 }
 
-/// Reads the L1 fees of `chain_id`, and returns them, or `last_l1_fees` if
-/// reading fails.
-async fn refresh_l1_fees(
-    rpc: &RootProvider,
+/// Reads the L1 fees of the OP-stack network `chain_id` from its
+/// `GasPriceOracle` every `service.fee_estimation_interval`, independently of
+/// block indexing, and records them on the network's L1 fee gate and in the
+/// database.
+///
+/// A failed read is logged at warn and counted in `l1_fee_read_failures`.
+/// The gate keeps the fees read last, which hold back transactions once they
+/// are older than `op_stack.max_fee_age`. Every read is followed by a gate
+/// check, so the gate logs when it starts or stops holding even while no
+/// transactions are waiting.
+pub async fn read_l1_fees_task(
+    app: Arc<App>,
+    ctx: TaskContext,
     chain_id: u64,
-    last_l1_fees: Option<L1Fees>,
-) -> Option<L1Fees> {
+) -> eyre::Result<()> {
+    let gate = app.l1_fee_gate(chain_id).with_context(|| {
+        format!("Network {chain_id} is not an OP-stack network")
+    })?;
+    let rpc = app.http_provider(chain_id).await?;
     let labels = [("chain_id", chain_id.to_string())];
 
-    match read_l1_fees(rpc, Utc::now()).await {
-        Ok(l1_fees) => {
-            metrics::gauge!("l1_base_fee", &labels).set(
-                l1_fees.l1_base_fee.saturating_to::<u64>() as f64
-                    * GAS_PRICE_FOR_METRICS_FACTOR,
-            );
-            metrics::gauge!("blob_base_fee", &labels).set(
-                l1_fees.blob_base_fee.saturating_to::<u64>() as f64
-                    * GAS_PRICE_FOR_METRICS_FACTOR,
-            );
+    while !ctx.is_shutting_down() {
+        match read_l1_fees(&rpc).await {
+            Ok(fees) => {
+                gate.record(fees);
+                app.db.save_l1_fees(chain_id, &fees).await?;
 
-            Some(l1_fees)
+                metrics::gauge!("l1_base_fee", &labels).set(
+                    fees.l1_base_fee.saturating_to::<u64>() as f64
+                        * GWEI_PER_WEI,
+                );
+                metrics::gauge!("blob_base_fee", &labels).set(
+                    fees.blob_base_fee.saturating_to::<u64>() as f64
+                        * GWEI_PER_WEI,
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    chain_id,
+                    error = %format!("{err:#}"),
+                    last_read_at = ?gate.last_fees().map(|fees| fees.read_at),
+                    "Failed to read L1 fees"
+                );
+                metrics::counter!("l1_fee_read_failures", &labels).increment(1);
+            }
         }
-        Err(err) => {
-            tracing::warn!(
-                chain_id,
-                error = ?err,
-                last_read_at = ?last_l1_fees.map(|fees| fees.read_at),
-                "Failed to read L1 fees, keeping the last ones"
-            );
-            metrics::counter!("l1_fee_read_failures", &labels).increment(1);
 
-            last_l1_fees
-        }
+        gate.check();
+        ctx.report_progress();
+        ctx.idle(app.config.service.fee_estimation_interval).await;
     }
+
+    Ok(())
 }
 
 /// Syncs the nonce of every relayer on a configured chain from its chain, as

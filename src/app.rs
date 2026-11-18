@@ -27,7 +27,8 @@ pub struct App {
     /// bounded by `service.rpc_timeout`
     http_rpcs: HashMap<u64, FailoverTransport>,
 
-    /// The L1 fee gates of the OP-stack networks by chain id
+    /// The L1 fee gates of the OP-stack networks by chain id, which start
+    /// from the L1 fees the database holds
     l1_fee_gates: HashMap<u64, L1FeeGate>,
 }
 
@@ -54,15 +55,16 @@ impl App {
             })
             .collect();
 
-        let l1_fee_gates = config
-            .networks
-            .iter()
-            .filter_map(|network| {
-                let caps = network.op_stack.clone()?;
+        let mut l1_fee_gates = HashMap::new();
+        for network in &config.networks {
+            let Some(caps) = network.op_stack.clone() else {
+                continue;
+            };
+            let chain_id = network.chain_id;
+            let fees = db.get_l1_fees(chain_id).await?;
 
-                Some((network.chain_id, L1FeeGate::new(network.chain_id, caps)))
-            })
-            .collect();
+            l1_fee_gates.insert(chain_id, L1FeeGate::new(chain_id, caps, fees));
+        }
 
         Ok(Self {
             config,

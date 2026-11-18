@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
-use crate::broadcast_utils::l1_fees::L1Fees;
 use crate::db::wrappers::address::AddressWrapper;
 use crate::db::wrappers::decimal_u256::DecimalU256Wrapper;
 use crate::db::wrappers::h256::H256Wrapper;
@@ -149,9 +148,6 @@ pub struct NetworkStats {
 pub struct BlockFees {
     pub fee_estimates: FeesEstimate,
     pub gas_price: U256,
-    /// The latest L1 fees of an OP-stack chain, `None` on other chains and
-    /// until the L1 fees are first read
-    pub l1_fees: Option<L1Fees>,
 }
 
 #[derive(

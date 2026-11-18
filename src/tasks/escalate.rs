@@ -511,7 +511,6 @@ mod tests {
                         percentile_fees: vec![U256::from(GWEI); 5],
                     },
                     U256::from(GWEI),
-                    None,
                 )
                 .await?;
 

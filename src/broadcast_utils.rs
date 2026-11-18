@@ -1,5 +1,4 @@
 use alloy::primitives::U256;
-use chrono::Utc;
 use eyre::ContextCompat;
 
 use self::gas_estimation::FeesEstimate;
@@ -31,7 +30,7 @@ pub fn calculate_gas_fees_from_estimates(
 ///
 /// It may not while it is disabled, while the gas price of its chain is above
 /// one of its gas price limits, or while the L1 fee gate of its chain holds
-/// transactions back, see [`l1_fees::L1FeeGate`].
+/// transactions back, see [`l1_fees::L1FeeGate::check`].
 pub async fn should_send_relayer_transactions(
     app: &App,
     relayer: &RelayerInfo,
@@ -48,26 +47,16 @@ pub async fn should_send_relayer_transactions(
     }
 
     let l1_fee_gate = app.l1_fee_gate(relayer.chain_id);
-    if relayer.gas_price_limits.is_empty() && l1_fee_gate.is_none() {
-        return Ok(true);
-    }
-
-    let chain_fees = app
-        .db
-        .get_latest_block_fees_by_chain_id(relayer.chain_id)
-        .await?;
-
-    if let Some(l1_fee_gate) = l1_fee_gate {
-        let l1_fees =
-            chain_fees.as_ref().and_then(|fees| fees.l1_fees.as_ref());
-
-        if !l1_fee_gate.allows(l1_fees, Utc::now()) {
-            return Ok(false);
-        }
+    if l1_fee_gate.is_some_and(|gate| gate.check().is_some()) {
+        return Ok(false);
     }
 
     for gas_limit in &relayer.gas_price_limits {
-        let chain_fees = chain_fees.as_ref().context("Missing block")?;
+        let chain_fees = app
+            .db
+            .get_latest_block_fees_by_chain_id(relayer.chain_id)
+            .await?
+            .context("Missing block")?;
 
         if chain_fees.gas_price > gas_limit.value.0 {
             tracing::warn!(

@@ -158,5 +158,14 @@ fn add_background_tasks(task_runner: &Arc<TaskRunner<App>>, app: &App) {
             .add_task(format!("estimate_fees/{chain_id}"), move |app, ctx| {
                 tasks::index::estimate_gas(app, ctx, chain_id)
             });
+
+        if network.op_stack.is_some() {
+            task_runner.add_task(
+                format!("read_l1_fees/{chain_id}"),
+                move |app, ctx| {
+                    tasks::index::read_l1_fees_task(app, ctx, chain_id)
+                },
+            );
+        }
     }
 }

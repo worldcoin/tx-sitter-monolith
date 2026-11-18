@@ -645,9 +645,9 @@ impl Database {
         &self,
         chain_id: u64,
     ) -> eyre::Result<Option<BlockFees>> {
-        let row: Option<(Json<FeesEstimate>, BigDecimal, Option<Json<L1Fees>>)> = sqlx::query_as(
+        let row: Option<(Json<FeesEstimate>, BigDecimal)> = sqlx::query_as(
             r#"
-            SELECT   bf.fee_estimate, bf.gas_price, bf.l1_fees
+            SELECT   bf.fee_estimate, bf.gas_price
             FROM     blocks b
             JOIN     block_fees bf ON (b.block_number = bf.block_number AND b.chain_id = bf.chain_id)
             WHERE    b.chain_id = $1
@@ -659,7 +659,7 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        let Some((fees, gas_price, l1_fees)) = row else {
+        let Some((fees, gas_price)) = row else {
             return Ok(None);
         };
 
@@ -671,7 +671,6 @@ impl Database {
         Ok(Some(BlockFees {
             fee_estimates,
             gas_price,
-            l1_fees: l1_fees.map(|l1_fees| l1_fees.0),
         }))
     }
 
@@ -771,29 +770,83 @@ impl Database {
         chain_id: u64,
         fee_estimates: &FeesEstimate,
         gas_price: U256,
-        l1_fees: Option<&L1Fees>,
     ) -> eyre::Result<()> {
         // TODO: Figure out how to do this without parsing
         let gas_price: BigDecimal = gas_price.to_string().parse()?;
 
         sqlx::query(
             r#"
-            INSERT INTO block_fees (block_number, chain_id, fee_estimate, gas_price, l1_fees)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO block_fees (block_number, chain_id, fee_estimate, gas_price)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (block_number, chain_id) DO UPDATE
             SET fee_estimate = EXCLUDED.fee_estimate,
-                gas_price = EXCLUDED.gas_price,
-                l1_fees = EXCLUDED.l1_fees
+                gas_price = EXCLUDED.gas_price
             "#,
         )
         .bind(block_number as i64)
         .bind(chain_id as i64)
         .bind(Json(fee_estimates))
         .bind(gas_price)
-        .bind(l1_fees.map(Json))
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Saves `fees` as the L1 fees of the OP-stack chain `chain_id` read
+    /// last, unless the database holds fees read later, for example by a
+    /// newer worker during a deploy.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn save_l1_fees(
+        &self,
+        chain_id: u64,
+        fees: &L1Fees,
+    ) -> eyre::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO l1_fees (chain_id, l1_base_fee, blob_base_fee, read_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (chain_id) DO UPDATE
+            SET l1_base_fee = EXCLUDED.l1_base_fee,
+                blob_base_fee = EXCLUDED.blob_base_fee,
+                read_at = EXCLUDED.read_at
+            WHERE l1_fees.read_at < EXCLUDED.read_at
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(fees.l1_base_fee.to_be_bytes::<32>())
+        .bind(fees.blob_base_fee.to_be_bytes::<32>())
+        .bind(fees.read_at)
+        .execute(&self.pool)
+        .await
+        .context("Saving L1 fees")?;
+
+        Ok(())
+    }
+
+    /// Returns the L1 fees of the OP-stack chain `chain_id` read last, see
+    /// [`Database::save_l1_fees`].
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_l1_fees(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<L1Fees>> {
+        let row: Option<([u8; 32], [u8; 32], DateTime<Utc>)> = sqlx::query_as(
+            r#"
+            SELECT l1_base_fee, blob_base_fee, read_at
+            FROM   l1_fees
+            WHERE  chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Reading L1 fees")?;
+
+        Ok(row.map(|(l1_base_fee, blob_base_fee, read_at)| L1Fees {
+            l1_base_fee: U256::from_be_bytes(l1_base_fee),
+            blob_base_fee: U256::from_be_bytes(blob_base_fee),
+            read_at,
+        }))
     }
 
     /// Points every mined transaction whose valid hash isn't the one in a
@@ -4435,29 +4488,10 @@ mod tests {
         let gas_price = U256::from(1_000_000_007);
 
         db.save_block_fees(
-            block_numbers[0],
-            chain_id,
-            &fee_estimates,
-            gas_price,
-            None,
-        )
-        .await?;
-
-        let block_fees = db.get_latest_block_fees_by_chain_id(chain_id).await?;
-        assert_eq!(block_fees.context("Missing fees")?.l1_fees, None);
-
-        let l1_fees = L1Fees {
-            l1_base_fee: U256::from(168_039_652),
-            blob_base_fee: U256::from(10_274_004),
-            read_at: ymd_hms(2023, 11, 23, 12, 32, 1),
-        };
-
-        db.save_block_fees(
             block_numbers[1],
             chain_id,
             &fee_estimates,
             gas_price,
-            Some(&l1_fees),
         )
         .await?;
 
@@ -4478,7 +4512,34 @@ mod tests {
             fee_estimates.percentile_fees
         );
         assert_eq!(block_fees.gas_price, gas_price);
-        assert_eq!(block_fees.l1_fees, Some(l1_fees));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn keeps_the_l1_fees_read_last_per_chain() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let fees = L1Fees {
+            l1_base_fee: U256::from(168_039_652),
+            blob_base_fee: U256::MAX,
+            read_at: ymd_hms(2026, 11, 17, 12, 0, 0),
+        };
+        let later_fees = L1Fees {
+            l1_base_fee: U256::from(1),
+            read_at: ymd_hms(2026, 11, 17, 12, 0, 30),
+            ..fees
+        };
+
+        assert_eq!(db.get_l1_fees(480).await?, None);
+
+        db.save_l1_fees(480, &fees).await?;
+        db.save_l1_fees(10, &later_fees).await?;
+        assert_eq!(db.get_l1_fees(480).await?, Some(fees));
+
+        db.save_l1_fees(480, &later_fees).await?;
+        db.save_l1_fees(480, &fees).await?;
+        assert_eq!(db.get_l1_fees(480).await?, Some(later_fees));
+        assert_eq!(db.get_l1_fees(10).await?, Some(later_fees));
 
         Ok(())
     }
@@ -4550,7 +4611,7 @@ mod tests {
         };
 
         db.save_block(1, chain_id, timestamp, &[tx_hash]).await?;
-        db.save_block_fees(1, chain_id, &fee_estimates, U256::from(7), None)
+        db.save_block_fees(1, chain_id, &fee_estimates, U256::from(7))
             .await?;
 
         let txs = [tx_hash];
@@ -4639,7 +4700,6 @@ mod tests {
                 ],
             },
             U256::from(1_000_000_007u64),
-            None,
         )
         .await?;
 

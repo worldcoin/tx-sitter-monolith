@@ -637,7 +637,6 @@ async fn spawn_with_relayer_on_unresponsive_chain(
             percentile_fees: vec![gwei; 5],
         },
         gwei,
-        None,
     )
     .await?;
 

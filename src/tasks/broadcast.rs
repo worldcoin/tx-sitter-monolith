@@ -341,7 +341,6 @@ mod tests {
                     percentile_fees: vec![gwei; 5],
                 },
                 gwei,
-                None,
             )
             .await?;
         app.db

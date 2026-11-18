@@ -36,7 +36,7 @@ pub async fn emit_metrics(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
             }
 
             if let Some(l1_fee_gate) = app.l1_fee_gate(chain_id) {
-                let held_txs = if l1_fee_gate.is_holding() {
+                let held_txs = if l1_fee_gate.check().is_some() {
                     stats.pending_txs
                 } else {
                     0

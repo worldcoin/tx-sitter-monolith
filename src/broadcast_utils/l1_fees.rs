@@ -1,4 +1,4 @@
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{address, Address, U256};
@@ -8,9 +8,9 @@ use alloy::sol;
 use alloy::sol_types::SolCall;
 use chrono::{DateTime, Utc};
 use eyre::Context;
-use serde::{Deserialize, Serialize};
 
 use crate::config::OpStackConfig;
+use crate::failover_transport::describe_error;
 
 /// The address of the `GasPriceOracle` predeploy on every OP-stack chain
 pub const GAS_PRICE_ORACLE: Address =
@@ -27,24 +27,24 @@ sol! {
 
 /// The L1 fees an OP-stack chain charges for posting transaction data to L1,
 /// in wei
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct L1Fees {
     pub l1_base_fee: U256,
     pub blob_base_fee: U256,
-    /// When the fees were read from the oracle
+    /// When the read of the fees from the oracle started
     pub read_at: DateTime<Utc>,
 }
 
 /// Reads the L1 fees of the chain behind `rpc` from its `GasPriceOracle`
 /// predeploy, at the latest block.
 ///
-/// Fails if either call fails, or returns something other than a `uint256`,
-/// for example on a chain without the predeploy.
-pub async fn read_l1_fees(
-    rpc: &RootProvider,
-    now: DateTime<Utc>,
-) -> eyre::Result<L1Fees> {
+/// The fees are stamped with the time the read started. It fails if either
+/// call fails, or returns something other than a `uint256`, for example on a
+/// chain without the predeploy. Transport errors are described with
+/// [`describe_error`], so the error is safe to log.
+pub async fn read_l1_fees(rpc: &RootProvider) -> eyre::Result<L1Fees> {
+    let read_at = Utc::now();
+
     let (l1_base_fee, blob_base_fee) = tokio::try_join!(
         call_oracle(rpc, GasPriceOracle::l1BaseFeeCall {}),
         call_oracle(rpc, GasPriceOracle::blobBaseFeeCall {}),
@@ -53,7 +53,7 @@ pub async fn read_l1_fees(
     Ok(L1Fees {
         l1_base_fee,
         blob_base_fee,
-        read_at: now,
+        read_at,
     })
 }
 
@@ -69,7 +69,13 @@ where
         .call(request)
         .block(BlockNumberOrTag::Latest.into())
         .await
-        .with_context(|| format!("Calling GasPriceOracle.{}", C::SIGNATURE))?;
+        .map_err(|err| {
+            eyre::eyre!(
+                "Calling GasPriceOracle.{}: {}",
+                C::SIGNATURE,
+                describe_error(&err)
+            )
+        })?;
 
     C::abi_decode_returns(&output).with_context(|| {
         format!("Decoding the result of GasPriceOracle.{}", C::SIGNATURE)
@@ -116,34 +122,64 @@ pub fn l1_fee_hold(
 
 /// The L1 fee gate of an OP-stack chain, see [`OpStackConfig`].
 ///
-/// It remembers whether it holds back the chain's transactions, so that it
+/// It keeps the L1 fees read last, which the worker's L1 fee task records,
+/// and every [`L1FeeGate::check`] decides from them whether the chain's
+/// transactions are held back. It remembers the last decision, so that it
 /// logs at warn only when that changes rather than on every check.
 pub struct L1FeeGate {
     chain_id: u64,
     caps: OpStackConfig,
-    hold: Mutex<Option<L1FeeHold>>,
+    state: Mutex<GateState>,
+}
+
+struct GateState {
+    /// The L1 fees read last
+    fees: Option<L1Fees>,
+    /// Why the gate held back transactions at its last check
+    hold: Option<L1FeeHold>,
 }
 
 impl L1FeeGate {
-    /// Creates the gate of `chain_id`, which starts out letting transactions
-    /// go out.
-    pub fn new(chain_id: u64, caps: OpStackConfig) -> Self {
+    /// Creates the gate of `chain_id` with the L1 fees read last, for
+    /// example by an earlier process.
+    ///
+    /// Its first check logs if it holds back transactions.
+    pub fn new(
+        chain_id: u64,
+        caps: OpStackConfig,
+        fees: Option<L1Fees>,
+    ) -> Self {
         Self {
             chain_id,
             caps,
-            hold: Mutex::new(None),
+            state: Mutex::new(GateState { fees, hold: None }),
         }
     }
 
-    /// Returns whether the chain's transactions may go out given the L1 fees
-    /// last read, `fees`, at `now`, see [`l1_fee_hold`].
-    pub fn allows(&self, fees: Option<&L1Fees>, now: DateTime<Utc>) -> bool {
-        let hold = l1_fee_hold(&self.caps, fees, now);
+    /// Records `fees` as the L1 fees read last.
+    pub fn record(&self, fees: L1Fees) {
+        self.lock_state().fees = Some(fees);
+    }
 
-        let previous_hold = std::mem::replace(
-            &mut *self.hold.lock().unwrap_or_else(PoisonError::into_inner),
-            hold,
-        );
+    /// Returns the L1 fees read last.
+    pub fn last_fees(&self) -> Option<L1Fees> {
+        self.lock_state().fees
+    }
+
+    /// Returns why the chain's transactions are held back now, or `None` if
+    /// they may go out, see [`l1_fee_hold`].
+    ///
+    /// It logs at warn when it starts or stops holding, or holds for another
+    /// reason.
+    pub fn check(&self) -> Option<L1FeeHold> {
+        let now = Utc::now();
+        let (fees, hold, previous_hold) = {
+            let mut state = self.lock_state();
+            let hold = l1_fee_hold(&self.caps, state.fees.as_ref(), now);
+            let previous_hold = std::mem::replace(&mut state.hold, hold);
+
+            (state.fees, hold, previous_hold)
+        };
 
         if hold != previous_hold {
             let message = if hold.is_some() {
@@ -166,15 +202,11 @@ impl L1FeeGate {
             );
         }
 
-        hold.is_none()
+        hold
     }
 
-    /// Returns whether the gate held back transactions at its last check.
-    pub fn is_holding(&self) -> bool {
-        self.hold
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some()
+    fn lock_state(&self) -> MutexGuard<'_, GateState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -258,18 +290,34 @@ mod tests {
     }
 
     #[test]
-    fn gate_remembers_whether_it_holds() {
-        let gate = L1FeeGate::new(480, caps());
-        let high_fees = L1Fees {
+    fn gate_checks_the_fees_it_recorded_last() {
+        let fresh_fees = L1Fees {
+            read_at: Utc::now(),
+            ..fees(Duration::ZERO)
+        };
+        let gate = L1FeeGate::new(480, caps(), None);
+
+        assert_eq!(gate.check(), Some(L1FeeHold::Unknown));
+
+        gate.record(L1Fees {
             blob_base_fee: U256::from(MAX_BLOB_BASE_FEE + 1),
+            ..fresh_fees
+        });
+        assert_eq!(gate.check(), Some(L1FeeHold::BlobBaseFeeAboveCap));
+
+        gate.record(fresh_fees);
+        assert_eq!(gate.check(), None);
+        assert_eq!(gate.last_fees(), Some(fresh_fees));
+    }
+
+    #[test]
+    fn gate_starts_from_the_fees_it_is_given() {
+        let fresh_fees = L1Fees {
+            read_at: Utc::now(),
             ..fees(Duration::ZERO)
         };
 
-        assert!(!gate.is_holding());
-        assert!(!gate.allows(Some(&high_fees), now()));
-        assert!(gate.is_holding());
-        assert!(gate.allows(Some(&fees(Duration::ZERO)), now()));
-        assert!(!gate.is_holding());
+        assert_eq!(L1FeeGate::new(480, caps(), Some(fresh_fees)).check(), None);
     }
 
     #[test]

@@ -39,6 +39,7 @@ const MAX_BLOB_BASE_FEE: u64 = 20_000_000;
 
 const FEE_ESTIMATION_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_FEE_AGE: Duration = Duration::from_secs(10);
+const RPC_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long a transaction must stay unsent to count as held, several
 /// broadcast loops and fee estimations
@@ -119,11 +120,11 @@ async fn network_without_op_stack_ignores_the_oracle() -> eyre::Result<()> {
     let tx_id = send_tx(&client).await?;
     await_mined_tx_hash(&client, DEFAULT_API_KEY, &tx_id).await?;
 
-    let block_fees = connect_db(&db_url)
+    let l1_fees = connect_db(&db_url)
         .await?
-        .get_latest_block_fees_by_chain_id(DEFAULT_ANVIL_CHAIN_ID)
+        .get_l1_fees(DEFAULT_ANVIL_CHAIN_ID)
         .await?;
-    assert_eq!(block_fees.and_then(|fees| fees.l1_fees), None);
+    assert_eq!(l1_fees, None);
 
     Ok(())
 }
@@ -172,6 +173,7 @@ async fn spawn_service(
     let (service, client) = ServiceBuilder::default()
         .without_defaults()
         .fee_estimation_interval(FEE_ESTIMATION_INTERVAL)
+        .rpc_timeout(RPC_TIMEOUT)
         .network(NetworkConfig {
             op_stack,
             ..anvil_network(anvil)
