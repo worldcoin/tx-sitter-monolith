@@ -1,6 +1,6 @@
 use std::future::IntoFuture;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::U256;
@@ -17,6 +17,7 @@ use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
 use crate::db::data::{ChainNonces, RelayerNonces};
+use crate::rate_limited_logs::RateLimitedLogs;
 use crate::task_runner::{TaskContext, Wait};
 
 const BLOCK_FEE_HISTORY_SIZE: u64 = 10;
@@ -29,6 +30,8 @@ const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
 
 /// Max amount of time the nonce sync of one chain may take at worker startup
 const STARTUP_NONCE_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+
+static REFUSED_FIRST_SYNC_LOGS: RateLimitedLogs = RateLimitedLogs::new();
 
 /// Indexes the blocks of `chain_id` as they arrive on its block stream.
 ///
@@ -421,14 +424,18 @@ async fn update_relayer_nonce(
     }
 
     for relayer_id in sync.pending_elsewhere {
-        tracing::error!(
-            relayer_id,
-            chain_id,
-            relayer_address = %relayer.address,
-            chain_nonce = tx_count,
-            pending_nonce = pending_tx_count,
-            "Relayer not synced: the key has pending transactions tx-sitter did not send"
-        );
+        // Refused again on every block until the other signer's transactions
+        // are mined, so log it once per period and count every refusal
+        if REFUSED_FIRST_SYNC_LOGS.should_log(&relayer_id, Instant::now()) {
+            tracing::error!(
+                relayer_id,
+                chain_id,
+                relayer_address = %relayer.address,
+                chain_nonce = tx_count,
+                pending_nonce = pending_tx_count,
+                "Relayer not synced: the key has pending transactions tx-sitter did not send"
+            );
+        }
         metrics::counter!(
             "relayer_first_sync_refused",
             &[
