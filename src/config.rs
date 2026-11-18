@@ -16,6 +16,10 @@ use crate::types::secret_url::SecretUrl;
 
 mod env_substitution;
 
+/// The shortest `service.fee_estimation_interval`, which bounds how often
+/// the fee tasks call each network's RPCs
+const MIN_FEE_ESTIMATION_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Loads the config from `config_files`, later files overriding earlier ones,
 /// and from `TX_SITTER__*` environment variables, which override every file.
 ///
@@ -90,9 +94,11 @@ impl Config {
     /// Checks the invariants that deserialization can't express, and reports
     /// every violation in one error.
     ///
-    /// Events must not outlive the transactions they describe. The networks
-    /// must have distinct chain ids, at least one HTTP RPC, and HTTP and WS
-    /// URLs of the right schemes. The relayers must have distinct ids in the
+    /// Events must not outlive the transactions they describe, and fees are
+    /// estimated at most once a second. The networks must have distinct chain
+    /// ids, at least one HTTP RPC, and HTTP and WS URLs of the right schemes,
+    /// and an OP-stack network's L1 fees must stay valid for at least two
+    /// fee estimation intervals and an RPC timeout. The relayers must have distinct ids in the
     /// form the API uses, distinct addresses on each chain, belong to a
     /// configured network, queue more transactions than they keep in flight,
     /// and have keys of the kind `keys` selects.
@@ -103,6 +109,8 @@ impl Config {
             tx_retention,
             event_retention,
             config_revision,
+            fee_estimation_interval,
+            rpc_timeout,
             ..
         } = &self.service;
         if event_retention > tx_retention {
@@ -121,6 +129,15 @@ impl Config {
                 i64::MAX
             ));
         }
+
+        if *fee_estimation_interval < MIN_FEE_ESTIMATION_INTERVAL {
+            errors.push(format!(
+                "service.fee_estimation_interval ({}) must be at least {}",
+                humantime::format_duration(*fee_estimation_interval),
+                humantime::format_duration(MIN_FEE_ESTIMATION_INTERVAL),
+            ));
+        }
+        let min_l1_fee_age = 2 * *fee_estimation_interval + *rpc_timeout;
 
         let mut chain_ids = HashSet::new();
         for (index, network) in self.networks.iter().enumerate() {
@@ -148,13 +165,11 @@ impl Config {
                 error("ws_rpc is not a ws or wss URL");
             }
             if let Some(op_stack) = &network.op_stack {
-                let fee_estimation_interval =
-                    self.service.fee_estimation_interval;
-                if op_stack.max_fee_age <= fee_estimation_interval {
+                if op_stack.max_fee_age < min_l1_fee_age {
                     error(&format!(
-                        "op_stack.max_fee_age ({}) must be greater than service.fee_estimation_interval ({})",
+                        "op_stack.max_fee_age ({}) must be at least 2 × service.fee_estimation_interval + service.rpc_timeout ({})",
                         humantime::format_duration(op_stack.max_fee_age),
-                        humantime::format_duration(fee_estimation_interval)
+                        humantime::format_duration(min_l1_fee_age)
                     ));
                 }
             }
@@ -268,7 +283,7 @@ pub struct TxSitterConfig {
     pub rpc_timeout: Duration,
 
     /// How often the fees of each network are estimated, and the L1 fees of
-    /// OP-stack networks read
+    /// OP-stack networks read. At least 1s.
     #[serde(
         with = "humantime_serde",
         default = "default::fee_estimation_interval"
@@ -359,7 +374,8 @@ pub struct NetworkConfig {
 /// at the L1 base fee and blob base fee that the chain's `GasPriceOracle`
 /// predeploy reports. Broadcasting and escalation pause on the network while
 /// either fee is above its cap, and while the fees are unknown: until they
-/// are first read, and once the last read is older than `max_fee_age`.
+/// are first read, and once the last successful read is older than
+/// `max_fee_age`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct OpStackConfig {
@@ -368,9 +384,9 @@ pub struct OpStackConfig {
     /// In wei, as a decimal string
     pub max_blob_base_fee: DecimalU256,
 
-    /// How long the last L1 fees read stay valid while reading them fails.
-    /// Must be greater than `service.fee_estimation_interval`, and should
-    /// leave room for a few failed reads and the chain's block time.
+    /// How long the L1 fees of a successful read stay valid. Must be at least
+    /// `2 × service.fee_estimation_interval + service.rpc_timeout`, so that
+    /// one failed read alone doesn't hold transactions while reads are fast.
     #[serde(with = "humantime_serde", default = "default::max_l1_fee_age")]
     pub max_fee_age: Duration,
 }
@@ -1267,11 +1283,26 @@ mod tests {
     fn accepts_valid_networks_and_relayers() {
         static_config(
             local_keys(),
-            vec![network(1), op_stack_network(480, Duration::from_secs(31))],
+            vec![network(1), op_stack_network(480, Duration::from_secs(70))],
             vec![relayer(RELAYER_ID, 1), relayer(OTHER_RELAYER_ID, 480)],
         )
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn estimates_fees_at_most_once_a_second() {
+        let mut config = static_config(local_keys(), vec![], vec![]);
+        config.service.fee_estimation_interval = Duration::from_secs(1);
+        config.validate().unwrap();
+
+        config.service.fee_estimation_interval = Duration::from_millis(999);
+        let err = config.validate().unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Invalid config:\n- service.fee_estimation_interval (999ms) must be at least 1s"
+        );
     }
 
     #[test]
@@ -1312,10 +1343,10 @@ mod tests {
         "http url as ws rpc"
     )]
     #[test_case(
-        vec![op_stack_network(1, Duration::from_secs(30))],
+        vec![op_stack_network(1, Duration::from_secs(69))],
         vec![],
-        "networks[0] (chain id 1): op_stack.max_fee_age (30s) must be greater than service.fee_estimation_interval (30s)" ;
-        "l1 fees stale before the next read"
+        "networks[0] (chain id 1): op_stack.max_fee_age (1m 9s) must be at least 2 × service.fee_estimation_interval + service.rpc_timeout (1m 10s)" ;
+        "l1 fees stale before a second read"
     )]
     #[test_case(
         vec![network(1)],
