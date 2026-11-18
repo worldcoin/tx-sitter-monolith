@@ -21,6 +21,17 @@ pub struct CreateTransactionV2Params {
     pub send_tx_request_v2: models::SendTxRequestV2,
 }
 
+/// struct for passing parameters to the method [`get_events_v2`]
+#[derive(Clone, Debug)]
+pub struct GetEventsV2Params {
+    /// The `nextCursor` of an earlier response. Without it the feed starts at the oldest event kept.
+    pub after: Option<String>,
+    /// The most events to return
+    pub limit: Option<i32>,
+    /// How many seconds to wait for an event while there are none
+    pub wait: Option<i32>,
+}
+
 /// struct for passing parameters to the method [`get_transaction_v2`]
 #[derive(Clone, Debug)]
 pub struct GetTransactionV2Params {
@@ -36,6 +47,26 @@ pub enum CreateTransactionV2Error {
     Status403(models::ErrorResponseBody),
     Status404(models::ErrorResponseBody),
     Status409(models::ErrorResponseBody),
+    Status410(models::ErrorResponseBody),
+    Status413(models::ErrorResponseBody),
+    Status415(models::ErrorResponseBody),
+    Status422(models::ErrorResponseBody),
+    Status429(models::ErrorResponseBody),
+    Status500(models::ErrorResponseBody),
+    Status503(models::ErrorResponseBody),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`get_events_v2`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GetEventsV2Error {
+    Status400(models::ErrorResponseBody),
+    Status401(models::ErrorResponseBody),
+    Status403(models::ErrorResponseBody),
+    Status404(models::ErrorResponseBody),
+    Status409(models::ErrorResponseBody),
+    Status410(models::ErrorResponseBody),
     Status413(models::ErrorResponseBody),
     Status415(models::ErrorResponseBody),
     Status422(models::ErrorResponseBody),
@@ -54,6 +85,7 @@ pub enum GetTransactionV2Error {
     Status403(models::ErrorResponseBody),
     Status404(models::ErrorResponseBody),
     Status409(models::ErrorResponseBody),
+    Status410(models::ErrorResponseBody),
     Status413(models::ErrorResponseBody),
     Status415(models::ErrorResponseBody),
     Status422(models::ErrorResponseBody),
@@ -104,6 +136,70 @@ pub async fn create_transaction_v2(
         serde_json::from_str(&local_var_content).map_err(Error::from)
     } else {
         let local_var_entity: Option<CreateTransactionV2Error> =
+            serde_json::from_str(&local_var_content).ok();
+        let local_var_error = ResponseContent {
+            status: local_var_status,
+            content: local_var_content,
+            entity: local_var_entity,
+        };
+        Err(Error::ResponseError(local_var_error))
+    }
+}
+
+/// Returns the status changes of the relayer's transactions in the order they happened, at most `limit` of them. Pass `nextCursor` as `after` to get the ones that follow. An event is returned once every database transaction that started writing before it has finished, so no event is stored later before one already returned.  With `wait`, a request that finds no events waits up to that many seconds for one and then returns the events stored by then, possibly none.  Events are kept for `service.event_retention` (7 days by default). A cursor older than that gets 410, because events after it may be gone.
+pub async fn get_events_v2(
+    configuration: &configuration::Configuration,
+    params: GetEventsV2Params,
+) -> Result<models::GetTxEventsResponse, Error<GetEventsV2Error>> {
+    let local_var_configuration = configuration;
+
+    // unbox the parameters
+    let after = params.after;
+    let limit = params.limit;
+    let wait = params.wait;
+
+    let local_var_client = &local_var_configuration.client;
+
+    let local_var_uri_str =
+        format!("{}/2/events", local_var_configuration.base_path);
+    let mut local_var_req_builder = local_var_client
+        .request(reqwest::Method::GET, local_var_uri_str.as_str());
+
+    if let Some(ref local_var_str) = after {
+        local_var_req_builder = local_var_req_builder
+            .query(&[("after", &local_var_str.to_string())]);
+    }
+    if let Some(ref local_var_str) = limit {
+        local_var_req_builder = local_var_req_builder
+            .query(&[("limit", &local_var_str.to_string())]);
+    }
+    if let Some(ref local_var_str) = wait {
+        local_var_req_builder = local_var_req_builder
+            .query(&[("wait", &local_var_str.to_string())]);
+    }
+    if let Some(ref local_var_user_agent) = local_var_configuration.user_agent {
+        local_var_req_builder = local_var_req_builder
+            .header(reqwest::header::USER_AGENT, local_var_user_agent.clone());
+    }
+    if let Some(ref local_var_token) =
+        local_var_configuration.bearer_access_token
+    {
+        local_var_req_builder =
+            local_var_req_builder.bearer_auth(local_var_token.to_owned());
+    };
+
+    let local_var_req = local_var_req_builder.build()?;
+    let local_var_resp = local_var_client.execute(local_var_req).await?;
+
+    let local_var_status = local_var_resp.status();
+    let local_var_content = local_var_resp.text().await?;
+
+    if !local_var_status.is_client_error()
+        && !local_var_status.is_server_error()
+    {
+        serde_json::from_str(&local_var_content).map_err(Error::from)
+    } else {
+        let local_var_entity: Option<GetEventsV2Error> =
             serde_json::from_str(&local_var_content).ok();
         let local_var_error = ResponseContent {
             status: local_var_status,
