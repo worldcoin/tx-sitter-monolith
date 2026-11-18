@@ -24,7 +24,7 @@ pub struct CreateTransactionV2Params {
 /// struct for passing parameters to the method [`get_events_v2`]
 #[derive(Clone, Debug)]
 pub struct GetEventsV2Params {
-    /// The `nextCursor` of an earlier response. Without it the feed starts at the oldest event kept.
+    /// The `nextCursor` of an earlier response of the relayer's feed. Without it the feed starts at the oldest event kept.
     pub after: Option<String>,
     /// The most events to return
     pub limit: Option<i32>,
@@ -47,7 +47,6 @@ pub enum CreateTransactionV2Error {
     Status403(models::ErrorResponseBody),
     Status404(models::ErrorResponseBody),
     Status409(models::ErrorResponseBody),
-    Status410(models::ErrorResponseBody),
     Status413(models::ErrorResponseBody),
     Status415(models::ErrorResponseBody),
     Status422(models::ErrorResponseBody),
@@ -63,14 +62,7 @@ pub enum CreateTransactionV2Error {
 pub enum GetEventsV2Error {
     Status400(models::ErrorResponseBody),
     Status401(models::ErrorResponseBody),
-    Status403(models::ErrorResponseBody),
-    Status404(models::ErrorResponseBody),
-    Status409(models::ErrorResponseBody),
     Status410(models::ErrorResponseBody),
-    Status413(models::ErrorResponseBody),
-    Status415(models::ErrorResponseBody),
-    Status422(models::ErrorResponseBody),
-    Status429(models::ErrorResponseBody),
     Status500(models::ErrorResponseBody),
     Status503(models::ErrorResponseBody),
     UnknownValue(serde_json::Value),
@@ -85,7 +77,6 @@ pub enum GetTransactionV2Error {
     Status403(models::ErrorResponseBody),
     Status404(models::ErrorResponseBody),
     Status409(models::ErrorResponseBody),
-    Status410(models::ErrorResponseBody),
     Status413(models::ErrorResponseBody),
     Status415(models::ErrorResponseBody),
     Status422(models::ErrorResponseBody),
@@ -146,7 +137,7 @@ pub async fn create_transaction_v2(
     }
 }
 
-/// Returns the status changes of the relayer's transactions in the order they happened, at most `limit` of them. Pass `nextCursor` as `after` to get the ones that follow. An event is returned once every database transaction that started writing before it has finished, so no event is stored later before one already returned.  With `wait`, a request that finds no events waits up to that many seconds for one and then returns the events stored by then, possibly none.  Events are kept for `service.event_retention` (7 days by default). A cursor older than that gets 410, because events after it may be gone.
+/// Returns the status changes of the relayer's transactions in the order they happened, at most `limit` of them. Pass `nextCursor` as `after` to get the ones that follow. An event is returned once every database transaction that started writing before it has finished, so no event is stored later before one already returned.  With `wait`, a request that finds no events waits up to that many seconds for one and then returns the events stored by then, possibly none.  Events are kept for `service.event_retention` (7 days by default). A cursor older than that gets 410, because events after it may be gone, and so does a cursor from before a restore of the database.
 pub async fn get_events_v2(
     configuration: &configuration::Configuration,
     params: GetEventsV2Params,

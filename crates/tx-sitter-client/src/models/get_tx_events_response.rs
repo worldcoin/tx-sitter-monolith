@@ -17,16 +17,19 @@ pub struct GetTxEventsResponse {
     /// The relayer's events after `after`, in the order they happened
     #[serde(rename = "events")]
     pub events: Vec<models::TxEvent>,
-    /// Pass as `after` to get the events after these. It is `after` when there are none, and `null` when there are none and `after` was left out.
-    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<String>,
+    /// Pass as `after` to get the events after these. It only works in the relayer's feed.
+    #[serde(rename = "nextCursor")]
+    pub next_cursor: String,
 }
 
 impl GetTxEventsResponse {
-    pub fn new(events: Vec<models::TxEvent>) -> GetTxEventsResponse {
+    pub fn new(
+        events: Vec<models::TxEvent>,
+        next_cursor: String,
+    ) -> GetTxEventsResponse {
         GetTxEventsResponse {
             events,
-            next_cursor: None,
+            next_cursor,
         }
     }
 }
