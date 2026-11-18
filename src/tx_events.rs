@@ -27,9 +27,9 @@ use crate::task_runner::{TaskContext, Wait};
 /// it may have missed
 const RECHECK_INTERVAL: Duration = Duration::from_secs(1);
 
-/// How long the listener goes without a notification before it replaces its
-/// connection, which may have died without an error
-const LISTENER_QUIET_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the listener waits for a notification before it reports
+/// progress, see [`TaskContext::wait`]
+const LISTENER_PROGRESS_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How many wakeups a waiting request may fall behind by before it reads the
 /// feed again regardless of their relayers
@@ -97,17 +97,10 @@ impl FromStr for EventCursor {
 /// It lets at most `max_waiters` requests wait at once, and wakes all of them
 /// once shutdown is requested.
 pub struct EventNotifier {
-    wakeups: broadcast::Sender<Wakeup>,
+    /// The ids of relayers whose events were stored
+    wakeups: broadcast::Sender<Arc<str>>,
     waiter_slots: Arc<Semaphore>,
     shutdown: CancellationToken,
-}
-
-#[derive(Debug, Clone)]
-enum Wakeup {
-    /// Events of the relayer were stored
-    Relayer(Arc<str>),
-    /// Events may have been stored without a notification
-    All,
 }
 
 /// A request can't wait for events, because the most requests the process
@@ -146,11 +139,7 @@ impl EventNotifier {
 
     fn wake_relayer(&self, relayer_id: &str) {
         // Fails only while no request waits
-        let _ = self.wakeups.send(Wakeup::Relayer(relayer_id.into()));
-    }
-
-    fn wake_all(&self) {
-        let _ = self.wakeups.send(Wakeup::All);
+        let _ = self.wakeups.send(relayer_id.into());
     }
 }
 
@@ -161,7 +150,7 @@ pub struct LongPoll<'a> {
     relayer_id: String,
     deadline: Instant,
     /// `None` for a poll that doesn't wait
-    wakeups: Option<broadcast::Receiver<Wakeup>>,
+    wakeups: Option<broadcast::Receiver<Arc<str>>>,
     /// Taken on the first wait and kept until the poll is dropped
     waiter_slot: Option<OwnedSemaphorePermit>,
 }
@@ -170,9 +159,8 @@ impl LongPoll<'_> {
     /// Waits until events of the relayer may have been stored, and returns
     /// `true` once the feed is worth reading again.
     ///
-    /// That is when a notification for the relayer or a reconnected
-    /// listener wakes the poll, or after a second at most, in case a
-    /// notification got lost. Returns `false` without waiting once the
+    /// That is when a notification for the relayer wakes the poll, or after
+    /// a second at most, in case a notification got lost. Returns `false` without waiting once the
     /// deadline passed or shutdown was requested.
     ///
     /// The first wait takes one of the notifier's `max_waiters` slots, and
@@ -212,12 +200,12 @@ impl LongPoll<'_> {
 /// Returns once `wakeups` wakes relayer `relayer_id`, or skipped wakeups it
 /// fell behind on
 async fn next_wakeup(
-    wakeups: &mut broadcast::Receiver<Wakeup>,
+    wakeups: &mut broadcast::Receiver<Arc<str>>,
     relayer_id: &str,
 ) {
     loop {
         match wakeups.recv().await {
-            Ok(Wakeup::Relayer(woken)) if *woken != *relayer_id => continue,
+            Ok(woken) if *woken != *relayer_id => continue,
             Ok(_) | Err(RecvError::Lagged(_)) => return,
             // The notifier, which owns the sender, outlives its polls
             Err(RecvError::Closed) => std::future::pending().await,
@@ -228,37 +216,41 @@ async fn next_wakeup(
 /// Listens for notifications of stored events and passes them on to
 /// `notifier`.
 ///
-/// Notifications sent while no connection listens are lost, so every new
-/// connection wakes every waiting request to read the feed. A connection
-/// that is lost, or that delivers no notification for a minute, is replaced:
-/// one that died without an error would deliver none.
+/// A lost connection is replaced on the next read. A connection that fails
+/// otherwise fails the task, which the task runner restarts with a new one.
+/// Notifications sent while none listens are lost, and the waiting requests
+/// find their events when they read the feed again, a second later at most.
 pub async fn listen_for_tx_events(
     app: Arc<App>,
     ctx: TaskContext,
     notifier: Arc<EventNotifier>,
 ) -> eyre::Result<()> {
-    while !ctx.is_shutting_down() {
-        let mut listener = app.db.listen_tx_events().await?;
-        notifier.wake_all();
+    let mut listener = app.db.listen_tx_events().await?;
 
-        loop {
-            match ctx.wait(LISTENER_QUIET_TIMEOUT, listener.try_recv()).await {
-                Wait::Ready(Ok(Some(notification))) => {
-                    notifier.wake_relayer(notification.payload());
-                }
-                Wait::Ready(Ok(None)) => {
-                    eyre::bail!("Lost the connection listening for tx events")
-                }
-                Wait::Ready(Err(err)) => {
-                    return Err(err).context("Listening for tx events");
-                }
-                Wait::TimedOut => break,
+    loop {
+        // A read dropped halfway through a message would leave the rest of
+        // it to the next read, so a wait that times out keeps the read going.
+        // Only shutdown drops it, and the connection with it.
+        let next_notification = listener.try_recv();
+        tokio::pin!(next_notification);
+        let notification = loop {
+            match ctx
+                .wait(LISTENER_PROGRESS_INTERVAL, &mut next_notification)
+                .await
+            {
+                Wait::Ready(notification) => break notification,
+                Wait::TimedOut => continue,
                 Wait::ShuttingDown => return Ok(()),
             }
+        };
+
+        match notification.context("Listening for tx events")? {
+            Some(notification) => notifier.wake_relayer(notification.payload()),
+            None => tracing::warn!(
+                "Lost the connection listening for tx events, reconnecting"
+            ),
         }
     }
-
-    Ok(())
 }
 
 #[cfg(test)]

@@ -64,13 +64,21 @@ const POOL_TIMEOUTS: [(&str, Duration); 2] = [
 /// payload. The `tx_events_notify` trigger sends it.
 const TX_EVENTS_CHANNEL: &str = "tx_events";
 
+/// The TCP keepalive settings of the listener's connection, with which
+/// Postgres closes it about 90s after it died. A dead listener that Postgres
+/// keeps holds back its notification queue, and storing events fails once
+/// the queue is full.
+const LISTENER_KEEPALIVES: [(&str, &str); 3] = [
+    ("tcp_keepalives_idle", "60"),
+    ("tcp_keepalives_interval", "10"),
+    ("tcp_keepalives_count", "3"),
+];
+
 pub struct Database {
     /// Connections with [`POOL_TIMEOUTS`]
     pub pool: Pool<Postgres>,
     /// Reserved for [`Database::ping`]
     probe_pool: Pool<Postgres>,
-    /// The options of [`Database::pool`]'s connections
-    pool_options: PgConnectOptions,
 }
 
 /// The outcome of [`Database::create_transaction`].
@@ -139,9 +147,7 @@ impl Database {
                 (setting, format!("{}ms", timeout.as_millis()))
             },
         ));
-        let pool = PgPoolOptions::new()
-            .connect_with(pool_options.clone())
-            .await?;
+        let pool = PgPoolOptions::new().connect_with(pool_options).await?;
         check_timeouts(&pool).await?;
 
         let probe_pool = PgPoolOptions::new()
@@ -149,11 +155,7 @@ impl Database {
             .connect_lazy_with(connect_options);
 
         tracing::info!("Database initialized");
-        Ok(Self {
-            pool,
-            probe_pool,
-            pool_options,
-        })
+        Ok(Self { pool, probe_pool })
     }
 
     /// Checks that the database answers a trivial query within `timeout`.
@@ -1359,9 +1361,15 @@ impl Database {
     /// it isn't connected are lost, and [`PgListener::try_recv`] returns
     /// `Ok(None)` or an error once the connection is.
     pub async fn listen_tx_events(&self) -> eyre::Result<PgListener> {
+        let connect_options = self
+            .pool
+            .connect_options()
+            .as_ref()
+            .clone()
+            .options(LISTENER_KEEPALIVES);
         let pool = PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy_with(self.pool_options.clone());
+            .connect_lazy_with(connect_options);
 
         let mut listener = PgListener::connect_with(&pool).await?;
         listener.listen(TX_EVENTS_CHANNEL).await?;
