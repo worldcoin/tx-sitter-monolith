@@ -21,6 +21,7 @@ pub struct ServiceBuilder {
     hard_reorg_interval: Duration,
     max_escalations: usize,
     rpc_timeout: Duration,
+    fee_estimation_interval: Duration,
     task_stall_timeout: Duration,
     tx_retention: Duration,
     shutdown_timeout: Duration,
@@ -41,6 +42,7 @@ impl Default for ServiceBuilder {
             hard_reorg_interval: Duration::from_secs(15),
             max_escalations: 100,
             rpc_timeout: Duration::from_secs(10),
+            fee_estimation_interval: Duration::from_secs(30),
             task_stall_timeout: Duration::from_secs(60),
             tx_retention: Duration::from_secs(30 * 24 * 60 * 60),
             shutdown_timeout: Duration::from_secs(20),
@@ -81,6 +83,11 @@ impl ServiceBuilder {
 
     pub fn rpc_timeout(mut self, timeout: Duration) -> Self {
         self.rpc_timeout = timeout;
+        self
+    }
+
+    pub fn fee_estimation_interval(mut self, interval: Duration) -> Self {
+        self.fee_estimation_interval = interval;
         self
     }
 
@@ -163,6 +170,7 @@ impl ServiceBuilder {
                 hard_reorg_interval: self.hard_reorg_interval,
                 block_stream_timeout: Duration::from_secs(60),
                 rpc_timeout: self.rpc_timeout,
+                fee_estimation_interval: self.fee_estimation_interval,
                 task_stall_timeout: self.task_stall_timeout,
                 tx_retention: self.tx_retention,
                 // The service refuses to keep events longer than txs

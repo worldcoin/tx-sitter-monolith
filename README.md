@@ -75,6 +75,12 @@ name = "worldchain"
 http_rpcs = ["${WORLDCHAIN_RPC_URL}", "${WORLDCHAIN_RPC_URL_FALLBACK}"]
 ws_rpc = "${WORLDCHAIN_WS_URL}"
 
+# OP-stack chains only, see "L1 fee gating"
+[networks.op_stack]
+max_l1_base_fee = "100000000000" # in wei
+max_blob_base_fee = "400000000000" # in wei
+max_fee_age = "2m" # default 2m, at least 2 × service.fee_estimation_interval + service.rpc_timeout
+
 [[relayers]]
 # A lowercase UUID. API keys embed it, so it never changes.
 id = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29"
@@ -96,7 +102,7 @@ api_key_hashes = ["0x235704acd89680dcf5be2b7ddbead1f01e93c200f8a769afad104fde70d
 
 At startup every process:
 
-1. Validates the config: distinct chain and relayer ids, distinct addresses on each chain, every relayer on a configured network, at least one HTTP RPC per network, keys of the kind `keys.kind` selects. Every problem is reported at once.
+1. Validates the config: distinct chain and relayer ids, distinct addresses on each chain, every relayer on a configured network, at least one HTTP RPC per network, keys of the kind `keys.kind` selects, a long enough `op_stack.max_fee_age`. Every problem is reported at once.
 2. Compares `service.config_revision` with the revision the database applied last, see "Config revisions". If the database already applied this revision and config, the process starts without the next two steps.
 3. Loads the key of every enabled relayer, with KMS `GetPublicKey` for KMS keys, and fails if it derives another address than `address`. Timeouts, throttling and KMS internal errors are retried for up to 60s.
 4. Writes the config into the database in one transaction, and logs every change at warn:
@@ -114,6 +120,24 @@ A disabled relayer answers every request with 403, including reads, the event fe
 
 The service no longer creates KMS keys, so it needs only `kms:GetPublicKey` and `kms:Sign` on the relayer keys.
 
+### L1 fee gating
+
+A transaction on an OP-stack chain such as Optimism or Worldchain also pays for posting its data to L1. On a network with an `op_stack` section, broadcasting and escalation pause while the chain's L1 base fee is above `max_l1_base_fee`, or its blob base fee is above `max_blob_base_fee`.
+
+- **Source.** Every `service.fee_estimation_interval` (default `30s`, at least `1s`) the worker reads both fees from the chain's own `GasPriceOracle` predeploy, `0x420000000000000000000000000000000000000F`, through the network's HTTP RPCs. Reads don't depend on block indexing, so they go on while the chain halts or its WS RPC is down. The interval sets how quickly the gate follows the fees, for two RPC calls per read; it also paces fee estimation.
+- **Last read.** The worker keeps the fees of the last successful read in memory, with the time the read started, and in the `l1_fees` table, one row per chain. A restarting worker resumes from that row.
+- **Failed reads.** A failed read is logged at warn (`Failed to read L1 fees`, with the time of the last successful read) and counted in `l1_fee_read_failures`. The fees of the last successful read stay in effect until they are older than `max_fee_age`.
+- **Unknown fees hold transactions.** The fees are unknown while no read succeeded within `max_fee_age`: before the first successful read on a chain, and once the last successful read is older than `max_fee_age`. Unknown fees hold transactions as if a fee were above its cap. `max_fee_age` must be at least `2 × service.fee_estimation_interval + service.rpc_timeout`, so that one failed read alone doesn't hold transactions while reads are fast.
+- **Logs.** The gate logs at warn when it starts holding transactions (`Holding transactions because of L1 fees`, with the reason and the fees), when the reason changes, and when it stops, not on every check.
+- **Metrics.** All tagged with `chain_id`:
+  - `l1_base_fee` and `blob_base_fee`, gauges in gwei of the last successful read;
+  - `l1_fees_age_seconds`, the age of the last successful read;
+  - `l1_fee_gate_holding`, tagged with `reason` (`l1_base_fee`, `blob_base_fee` or `unknown`): 1 for the reason the gate holds, 0 for the others;
+  - `l1_fee_held_txs`, while the gate holds, the unmined transactions of the chain's enabled relayers: unsent ones, and in-flight ones whose escalation waits. 0 otherwise.
+- **Rolling back.** Images from before L1 fee gating refuse a network with an `op_stack` section, as they refuse every unknown network field. Remove the sections from the config before deploying such an image.
+
+Networks without `op_stack` never read the oracle.
+
 ### Config revisions
 
 Every process applies its own config when it starts, so without a check a process with an old config, restarting or scaling up after a rollout, would undo the new config for every process. `service.config_revision` (`TX_SITTER__SERVICE__CONFIG_REVISION`) prevents that. The database stores the revision and a hash of the networks and relayers it applied last, and a starting process:
@@ -122,7 +146,7 @@ Every process applies its own config when it starts, so without a check a proces
 - does nothing for the same revision and hash;
 - refuses to start with a lower revision, or with the same revision and another config.
 
-The hash leaves out RPC URLs, so rotating an RPC secret doesn't need a new revision. Every process sends requests to the RPCs of its own config.
+The hash leaves out RPC URLs, so rotating an RPC secret doesn't need a new revision. Every process sends requests to the RPCs of its own config. It covers each network's `op_stack` section, so changing an L1 fee cap or `max_fee_age` needs a new revision.
 
 The deploy passes the deploy run's timestamp as the revision, the same one to the API and worker releases. To roll back, run the deploy workflow again with the old version: the old config gets a new, higher revision. Restarting old pods doesn't roll back, they refuse to start.
 

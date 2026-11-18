@@ -6,6 +6,7 @@ use crate::app::App;
 use crate::db::data::RelayerInfo;
 
 pub mod gas_estimation;
+pub mod l1_fees;
 mod send;
 
 pub use self::send::{
@@ -25,6 +26,11 @@ pub fn calculate_gas_fees_from_estimates(
     (max_fee_per_gas, max_priority_fee_per_gas)
 }
 
+/// Returns whether `relayer` may broadcast and escalate transactions now.
+///
+/// It may not while it is disabled, while the gas price of its chain is above
+/// one of its gas price limits, or while the L1 fee gate of its chain holds
+/// transactions back, see [`l1_fees::L1FeeGate::check`].
 pub async fn should_send_relayer_transactions(
     app: &App,
     relayer: &RelayerInfo,
@@ -37,6 +43,11 @@ pub async fn should_send_relayer_transactions(
             "Relayer is disabled, skipping transactions broadcast"
         );
 
+        return Ok(false);
+    }
+
+    let l1_fee_gate = app.l1_fee_gate(relayer.chain_id);
+    if l1_fee_gate.is_some_and(|gate| gate.check().is_some()) {
         return Ok(false);
     }
 

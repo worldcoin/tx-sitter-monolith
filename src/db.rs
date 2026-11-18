@@ -15,6 +15,7 @@ use sqlx::{
 use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
+use crate::broadcast_utils::l1_fees::L1Fees;
 use crate::config::{DatabaseConfig, NetworkConfig, RelayerConfig};
 use crate::db::data::{
     ApiKeyStatus, ChainNonces, ConfigChange, NetworkInfo, NonceSync,
@@ -789,6 +790,63 @@ impl Database {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Saves `fees` as the L1 fees of the OP-stack chain `chain_id` read
+    /// last, unless the database holds fees read later, for example by a
+    /// newer worker during a deploy.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn save_l1_fees(
+        &self,
+        chain_id: u64,
+        fees: &L1Fees,
+    ) -> eyre::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO l1_fees (chain_id, l1_base_fee, blob_base_fee, read_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (chain_id) DO UPDATE
+            SET l1_base_fee = EXCLUDED.l1_base_fee,
+                blob_base_fee = EXCLUDED.blob_base_fee,
+                read_at = EXCLUDED.read_at
+            WHERE l1_fees.read_at < EXCLUDED.read_at
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(fees.l1_base_fee.to_be_bytes::<32>())
+        .bind(fees.blob_base_fee.to_be_bytes::<32>())
+        .bind(fees.read_at)
+        .execute(&self.pool)
+        .await
+        .context("Saving L1 fees")?;
+
+        Ok(())
+    }
+
+    /// Returns the L1 fees of the OP-stack chain `chain_id` read last, see
+    /// [`Database::save_l1_fees`].
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_l1_fees(
+        &self,
+        chain_id: u64,
+    ) -> eyre::Result<Option<L1Fees>> {
+        let row: Option<([u8; 32], [u8; 32], DateTime<Utc>)> = sqlx::query_as(
+            r#"
+            SELECT l1_base_fee, blob_base_fee, read_at
+            FROM   l1_fees
+            WHERE  chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Reading L1 fees")?;
+
+        Ok(row.map(|(l1_base_fee, blob_base_fee, read_at)| L1Fees {
+            l1_base_fee: U256::from_be_bytes(l1_base_fee),
+            blob_base_fee: U256::from_be_bytes(blob_base_fee),
+            read_at,
+        }))
     }
 
     /// Points every mined transaction whose valid hash isn't the one in a
@@ -1932,6 +1990,30 @@ impl Database {
             total_indexed_blocks: total_indexed_blocks as u64,
             block_txs: block_txs as u64,
         })
+    }
+
+    /// Counts the transactions of the enabled relayers on `chain_id` that
+    /// are not mined yet: those never sent, which broadcasting sends, and
+    /// those sent, which escalation sends again.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn count_unmined_txs(&self, chain_id: u64) -> eyre::Result<u64> {
+        let (unmined_txs,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM transactions t
+            JOIN relayers r ON (t.relayer_id = r.id)
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE r.chain_id = $1
+            AND   r.enabled
+            AND   (s.tx_id IS NULL OR s.status = $2)
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(TxStatus::Pending)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(unmined_txs as u64)
     }
 
     /// Deletes the transactions of `relayer_id` that were never broadcast,
@@ -3613,6 +3695,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn counts_the_unmined_txs_of_enabled_relayers() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        let disabled_relayer_id = create_relayer(&db).await?;
+        let fee = U256::from(1);
+
+        for tx_id in ["unsent", "pending", "mined"] {
+            create_tx(&db, &relayer_id, tx_id).await?;
+        }
+        db.insert_tx_broadcast(
+            "pending",
+            B256::with_last_byte(1),
+            &[1],
+            fee,
+            fee,
+        )
+        .await?;
+        db.insert_tx_broadcast(
+            "mined",
+            B256::with_last_byte(2),
+            &[2],
+            fee,
+            fee,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE sent_transactions SET status = $1 WHERE tx_id = 'mined'",
+        )
+        .bind(TxStatus::Mined)
+        .execute(&db.pool)
+        .await?;
+
+        create_unsent_tx(&db, &disabled_relayer_id).await?;
+        sqlx::query("UPDATE relayers SET enabled = FALSE WHERE id = $1")
+            .bind(&disabled_relayer_id)
+            .execute(&db.pool)
+            .await?;
+
+        assert_eq!(db.count_unmined_txs(123).await?, 2);
+        assert_eq!(db.count_unmined_txs(1).await?, 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn create_with_a_taken_nonce_reports_it() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let relayer_id = create_relayer(&db).await?;
@@ -4459,6 +4586,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn keeps_the_l1_fees_read_last_per_chain() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let fees = L1Fees {
+            l1_base_fee: U256::from(168_039_652),
+            blob_base_fee: U256::MAX,
+            read_at: ymd_hms(2026, 11, 17, 12, 0, 0),
+        };
+        let later_fees = L1Fees {
+            l1_base_fee: U256::from(1),
+            read_at: ymd_hms(2026, 11, 17, 12, 0, 30),
+            ..fees
+        };
+
+        assert_eq!(db.get_l1_fees(480).await?, None);
+
+        db.save_l1_fees(480, &fees).await?;
+        db.save_l1_fees(10, &later_fees).await?;
+        assert_eq!(db.get_l1_fees(480).await?, Some(fees));
+
+        db.save_l1_fees(480, &later_fees).await?;
+        db.save_l1_fees(480, &fees).await?;
+        assert_eq!(db.get_l1_fees(480).await?, Some(later_fees));
+        assert_eq!(db.get_l1_fees(10).await?, Some(later_fees));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn wrappers_round_trip_as_raw_bytes() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
 
@@ -4932,6 +5087,7 @@ mod tests {
                 url("https://fallback.example.com/key"),
             ],
             ws_rpc: url("wss://ws.example.com/key"),
+            op_stack: None,
         }
     }
 

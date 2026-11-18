@@ -34,6 +34,16 @@ pub async fn emit_metrics(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
                 metrics::gauge!("indexed_block_age_seconds", &labels)
                     .set(age.num_milliseconds() as f64 / 1000.0);
             }
+
+            if let Some(l1_fee_gate) = app.l1_fee_gate(chain_id) {
+                let held_txs = if l1_fee_gate.check().is_some() {
+                    app.db.count_unmined_txs(chain_id).await?
+                } else {
+                    0
+                };
+                metrics::gauge!("l1_fee_held_txs", &labels)
+                    .set(held_txs as f64);
+            }
         }
 
         let tx_events_lag = app.db.get_tx_events_lag().await?;

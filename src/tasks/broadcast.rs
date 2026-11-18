@@ -128,12 +128,6 @@ async fn broadcast_relayer_txs(
         .context("Missing relayer")?;
 
     if !should_send_relayer_transactions(app, &relayer).await? {
-        tracing::warn!(
-            relayer_id,
-            relayer_address = %relayer.address,
-            "Skipping relayer broadcasts"
-        );
-
         return Ok(());
     }
 

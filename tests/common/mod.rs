@@ -88,6 +88,7 @@ pub fn anvil_network(anvil: &AnvilInstance) -> NetworkConfig {
         name: "Anvil".to_string(),
         http_rpcs: vec![rpc_url(&anvil.endpoint())],
         ws_rpc: rpc_url(&anvil.ws_endpoint()),
+        op_stack: None,
     }
 }
 
@@ -223,6 +224,7 @@ impl UnresponsiveRpc {
             name: "Unresponsive".to_string(),
             http_rpcs: vec![rpc_url(&format!("http://{}", self.addr))],
             ws_rpc: rpc_url(&format!("ws://{}", self.addr)),
+            op_stack: None,
         }
     }
 }

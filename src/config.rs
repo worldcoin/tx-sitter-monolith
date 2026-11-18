@@ -16,6 +16,10 @@ use crate::types::secret_url::SecretUrl;
 
 mod env_substitution;
 
+/// The shortest `service.fee_estimation_interval`, which bounds how often
+/// the fee tasks call each network's RPCs
+const MIN_FEE_ESTIMATION_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Loads the config from `config_files`, later files overriding earlier ones,
 /// and from `TX_SITTER__*` environment variables, which override every file.
 ///
@@ -90,9 +94,11 @@ impl Config {
     /// Checks the invariants that deserialization can't express, and reports
     /// every violation in one error.
     ///
-    /// Events must not outlive the transactions they describe. The networks
-    /// must have distinct chain ids, at least one HTTP RPC, and HTTP and WS
-    /// URLs of the right schemes. The relayers must have distinct ids in the
+    /// Events must not outlive the transactions they describe, and fees are
+    /// estimated at most once a second. The networks must have distinct chain
+    /// ids, at least one HTTP RPC, and HTTP and WS URLs of the right schemes,
+    /// and an OP-stack network's L1 fees must stay valid for at least two
+    /// fee estimation intervals and an RPC timeout. The relayers must have distinct ids in the
     /// form the API uses, distinct addresses on each chain, belong to a
     /// configured network, queue more transactions than they keep in flight,
     /// and have keys of the kind `keys` selects.
@@ -103,6 +109,8 @@ impl Config {
             tx_retention,
             event_retention,
             config_revision,
+            fee_estimation_interval,
+            rpc_timeout,
             ..
         } = &self.service;
         if event_retention > tx_retention {
@@ -121,6 +129,15 @@ impl Config {
                 i64::MAX
             ));
         }
+
+        if *fee_estimation_interval < MIN_FEE_ESTIMATION_INTERVAL {
+            errors.push(format!(
+                "service.fee_estimation_interval ({}) must be at least {}",
+                humantime::format_duration(*fee_estimation_interval),
+                humantime::format_duration(MIN_FEE_ESTIMATION_INTERVAL),
+            ));
+        }
+        let min_l1_fee_age = 2 * *fee_estimation_interval + *rpc_timeout;
 
         let mut chain_ids = HashSet::new();
         for (index, network) in self.networks.iter().enumerate() {
@@ -146,6 +163,15 @@ impl Config {
             }
             if !matches!(network.ws_rpc.expose().scheme(), "ws" | "wss") {
                 error("ws_rpc is not a ws or wss URL");
+            }
+            if let Some(op_stack) = &network.op_stack {
+                if op_stack.max_fee_age < min_l1_fee_age {
+                    error(&format!(
+                        "op_stack.max_fee_age ({}) must be at least 2 × service.fee_estimation_interval + service.rpc_timeout ({})",
+                        humantime::format_duration(op_stack.max_fee_age),
+                        humantime::format_duration(min_l1_fee_age)
+                    ));
+                }
             }
         }
 
@@ -256,6 +282,14 @@ pub struct TxSitterConfig {
     #[serde(with = "humantime_serde", default = "default::rpc_timeout")]
     pub rpc_timeout: Duration,
 
+    /// How often the fees of each network are estimated, and the L1 fees of
+    /// OP-stack networks read. At least 1s.
+    #[serde(
+        with = "humantime_serde",
+        default = "default::fee_estimation_interval"
+    )]
+    pub fee_estimation_interval: Duration,
+
     /// Max amount of time a background task may go without reporting
     /// progress before it is considered stalled and fails the liveness probe
     #[serde(with = "humantime_serde", default = "default::task_stall_timeout")]
@@ -327,6 +361,34 @@ pub struct NetworkConfig {
 
     /// The RPC URL of the block subscription
     pub ws_rpc: SecretUrl,
+
+    /// Holds back the network's transactions while its L1 fees are high, for
+    /// OP-stack chains such as Optimism and Worldchain
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_stack: Option<OpStackConfig>,
+}
+
+/// The L1 fee caps of an OP-stack network.
+///
+/// A transaction on an OP-stack chain also pays for posting its data to L1,
+/// at the L1 base fee and blob base fee that the chain's `GasPriceOracle`
+/// predeploy reports. Broadcasting and escalation pause on the network while
+/// either fee is above its cap, and while the fees are unknown: until they
+/// are first read, and once the last successful read is older than
+/// `max_fee_age`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct OpStackConfig {
+    /// In wei, as a decimal string
+    pub max_l1_base_fee: DecimalU256,
+    /// In wei, as a decimal string
+    pub max_blob_base_fee: DecimalU256,
+
+    /// How long the L1 fees of a successful read stay valid. Must be at least
+    /// `2 × service.fee_estimation_interval + service.rpc_timeout`, so that
+    /// one failed read alone doesn't hold transactions while reads are fast.
+    #[serde(with = "humantime_serde", default = "default::max_l1_fee_age")]
+    pub max_fee_age: Duration,
 }
 
 /// A relayer of the config.
@@ -558,6 +620,14 @@ mod default {
         Duration::from_secs(10)
     }
 
+    pub fn fee_estimation_interval() -> Duration {
+        Duration::from_secs(30)
+    }
+
+    pub fn max_l1_fee_age() -> Duration {
+        Duration::from_secs(2 * 60)
+    }
+
     pub fn kms_timeout() -> Duration {
         Duration::from_secs(5)
     }
@@ -619,6 +689,7 @@ mod default {
 
 #[cfg(test)]
 mod tests {
+    use alloy::primitives::U256;
     use indoc::indoc;
     use test_case::test_case;
 
@@ -633,6 +704,7 @@ mod tests {
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
         rpc_timeout = "10s"
+        fee_estimation_interval = "30s"
         task_stall_timeout = "5m"
         tx_retention = "30days"
         event_retention = "7days"
@@ -659,6 +731,7 @@ mod tests {
         hard_reorg_interval = "1h"
         block_stream_timeout = "1m"
         rpc_timeout = "10s"
+        fee_estimation_interval = "30s"
         task_stall_timeout = "5m"
         tx_retention = "30days"
         event_retention = "7days"
@@ -692,6 +765,7 @@ mod tests {
                 hard_reorg_interval: default::hard_reorg_interval(),
                 block_stream_timeout: default::block_stream_timeout(),
                 rpc_timeout: default::rpc_timeout(),
+                fee_estimation_interval: default::fee_estimation_interval(),
                 task_stall_timeout: default::task_stall_timeout(),
                 tx_retention: default::tx_retention(),
                 event_retention: default::event_retention(),
@@ -729,6 +803,7 @@ mod tests {
                 hard_reorg_interval: default::hard_reorg_interval(),
                 block_stream_timeout: default::block_stream_timeout(),
                 rpc_timeout: default::rpc_timeout(),
+                fee_estimation_interval: default::fee_estimation_interval(),
                 task_stall_timeout: default::task_stall_timeout(),
                 tx_retention: default::tx_retention(),
                 event_retention: default::event_retention(),
@@ -843,6 +918,10 @@ mod tests {
         http_rpcs = ["${TX_SITTER_TEST_RPC_URL}", "https://fallback.example.com/${TX_SITTER_TEST_RPC_KEY}"]
         ws_rpc = "wss://ws.example.com/${TX_SITTER_TEST_RPC_KEY}"
 
+        [networks.op_stack]
+        max_l1_base_fee = "1000000000"
+        max_blob_base_fee = "500000000"
+
         [[relayers]]
         id = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29"
         name = "wc_enableSafe4337Module_1"
@@ -898,6 +977,11 @@ mod tests {
                     url("https://fallback.example.com/fallback-secret"),
                 ],
                 ws_rpc: url("wss://ws.example.com/fallback-secret"),
+                op_stack: Some(OpStackConfig {
+                    max_l1_base_fee: DecimalU256(U256::from(1_000_000_000u64)),
+                    max_blob_base_fee: DecimalU256(U256::from(500_000_000u64)),
+                    max_fee_age: default::max_l1_fee_age(),
+                }),
             }]
         );
         assert_eq!(
@@ -1094,12 +1178,64 @@ mod tests {
         assert_eq!(parse_relayer(field).unwrap_err(), expected_error);
     }
 
+    #[test_case(
+        "max_l1_base_fee = \"1.5\"\nmax_blob_base_fee = \"1\"",
+        "networks[0].op_stack.max_l1_base_fee: invalid value: string \"1.5\", expected a decimal number" ;
+        "fractional cap"
+    )]
+    #[test_case(
+        "max_l1_base_fee = \"1\"",
+        "networks[0].op_stack: missing field `max_blob_base_fee`" ;
+        "missing cap"
+    )]
+    #[test_case(
+        "max_l1_base_fee = \"1\"\nmax_blob_base_fee = \"1\"\nmax_age = \"1m\"",
+        "networks[0].op_stack.max_age: unknown field `max_age`, expected one of `max_l1_base_fee`, `max_blob_base_fee`, `max_fee_age`" ;
+        "misspelled field"
+    )]
+    fn rejects_a_malformed_op_stack_section(
+        op_stack: &str,
+        expected_error: &str,
+    ) {
+        let settings = config::Config::builder()
+            .add_source(config::File::from_str(
+                &format!(
+                    "[[networks]]\nchain_id = 480\nname = \"worldchain\"\nhttp_rpcs = [\"https://rpc.example.com\"]\nws_rpc = \"wss://rpc.example.com\"\n[networks.op_stack]\n{op_stack}"
+                ),
+                FileFormat::Toml,
+            ))
+            .build()
+            .unwrap();
+
+        #[derive(Debug, Deserialize)]
+        struct Networks {
+            #[allow(dead_code)]
+            networks: Vec<NetworkConfig>,
+        }
+        let err = serde_path_to_error::deserialize::<_, Networks>(settings)
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), expected_error);
+    }
+
     fn network(chain_id: u64) -> NetworkConfig {
         NetworkConfig {
             chain_id,
             name: format!("chain {chain_id}"),
             http_rpcs: vec![url("https://rpc.example.com")],
             ws_rpc: url("wss://rpc.example.com"),
+            op_stack: None,
+        }
+    }
+
+    fn op_stack_network(chain_id: u64, max_fee_age: Duration) -> NetworkConfig {
+        NetworkConfig {
+            op_stack: Some(OpStackConfig {
+                max_l1_base_fee: DecimalU256(U256::from(1)),
+                max_blob_base_fee: DecimalU256(U256::from(1)),
+                max_fee_age,
+            }),
+            ..network(chain_id)
         }
     }
 
@@ -1147,11 +1283,26 @@ mod tests {
     fn accepts_valid_networks_and_relayers() {
         static_config(
             local_keys(),
-            vec![network(1), network(480)],
+            vec![network(1), op_stack_network(480, Duration::from_secs(70))],
             vec![relayer(RELAYER_ID, 1), relayer(OTHER_RELAYER_ID, 480)],
         )
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn estimates_fees_at_most_once_a_second() {
+        let mut config = static_config(local_keys(), vec![], vec![]);
+        config.service.fee_estimation_interval = Duration::from_secs(1);
+        config.validate().unwrap();
+
+        config.service.fee_estimation_interval = Duration::from_millis(999);
+        let err = config.validate().unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Invalid config:\n- service.fee_estimation_interval (999ms) must be at least 1s"
+        );
     }
 
     #[test]
@@ -1190,6 +1341,12 @@ mod tests {
         vec![],
         "networks[0] (chain id 1): ws_rpc is not a ws or wss URL" ;
         "http url as ws rpc"
+    )]
+    #[test_case(
+        vec![op_stack_network(1, Duration::from_secs(69))],
+        vec![],
+        "networks[0] (chain id 1): op_stack.max_fee_age (1m 9s) must be at least 2 × service.fee_estimation_interval + service.rpc_timeout (1m 10s)" ;
+        "l1 fees stale before a second read"
     )]
     #[test_case(
         vec![network(1)],
