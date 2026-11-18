@@ -2,6 +2,7 @@ mod common;
 
 use std::collections::HashMap;
 
+use eyre::ContextCompat;
 use serde_json::value::RawValue;
 use serde_json::Value;
 use tokio::time::Instant;
@@ -101,16 +102,18 @@ async fn long_poll_wakes_on_a_new_event() -> eyre::Result<()> {
     let client = service.v2_client(&service.api_key);
     send_tx_v2(&client, send_tx_request("tx-1")).await?;
 
-    let started = Instant::now();
-    let poll = tokio::spawn(get_events(client.clone(), None, Some(10)));
-    // Late enough for the poll to be waiting. A missed notification would
-    // only be noticed by the recheck a second after the poll's first read.
-    let stored_at = started + Duration::from_millis(500);
-    tokio::time::sleep_until(stored_at).await;
-    broadcast(&service.db, "tx-1", 1).await?;
+    let (events, stored_at) =
+        tokio::join!(get_events(&client, None, None, Some(10)), async {
+            // Late enough for the poll to be waiting. A missed notification
+            // would only be noticed by the recheck a second after the poll's
+            // first read.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            broadcast(&service.db, "tx-1", 1).await?;
 
-    let events = poll.await??;
-    let woken_after = stored_at.elapsed();
+            Ok::<_, eyre::Report>(Instant::now())
+        });
+    let woken_after = stored_at?.elapsed();
+    let events = events?;
 
     assert_eq!(events.events.len(), 1);
     assert_eq!(events.events[0].tx_id, "tx-1");
@@ -132,21 +135,25 @@ async fn long_poll_without_events_returns_at_its_deadline() -> eyre::Result<()>
     let client = service.v2_client(&service.api_key);
 
     let started = Instant::now();
-    let events = get_events(client.clone(), None, Some(2)).await?;
+    let events = get_events(&client, None, None, Some(2)).await?;
     let waited = started.elapsed();
 
-    assert_eq!(events, GetTxEventsResponse::new(vec![]));
+    assert_eq!(events.events, []);
     assert!(waited >= Duration::from_secs(2), "Waited {waited:?}");
     assert!(waited < Duration::from_secs(4), "Waited {waited:?}");
 
+    // The cursor of a page without events still leads to the next one
     send_tx_v2(&client, send_tx_request("tx-1")).await?;
     broadcast(&service.db, "tx-1", 1).await?;
-    let cursor = get_events(client.clone(), None, None).await?.next_cursor;
-    assert!(cursor.is_some());
-    let after_cursor =
-        get_events(client.clone(), cursor.clone(), Some(1)).await?;
-    assert_eq!(after_cursor.events, []);
-    assert_eq!(after_cursor.next_cursor, cursor);
+    let broadcast_page = get_events(&client, None, None, None).await?;
+    let empty_page =
+        get_events(&client, Some(broadcast_page.next_cursor), None, Some(1))
+            .await?;
+    assert_eq!(empty_page.events, []);
+    escalate(&service.db, "tx-1", 2).await?;
+    let escalation_page =
+        get_events(&client, Some(empty_page.next_cursor), None, None).await?;
+    assert_eq!(tx_hashes(&escalation_page), [B256::with_last_byte(2)]);
 
     Ok(())
 }
@@ -160,7 +167,10 @@ async fn long_polls_return_once_shutdown_is_requested() -> eyre::Result<()> {
         TestService::spawn(api_service().shutdown(shutdown.clone())).await?;
     let client = service.v2_client(&service.api_key);
 
-    let poll = tokio::spawn(get_events(client, None, Some(30)));
+    let poll =
+        tokio::spawn(
+            async move { get_events(&client, None, None, Some(30)).await },
+        );
     tokio::time::sleep(Duration::from_millis(500)).await;
     shutdown.cancel();
     let events = tokio::time::timeout(Duration::from_secs(5), poll).await???;
@@ -179,7 +189,7 @@ async fn cursor_before_pruned_events_gets_410() -> eyre::Result<()> {
     send_tx_v2(&client, send_tx_request("tx-1")).await?;
     broadcast(&service.db, "tx-1", 1).await?;
     escalate(&service.db, "tx-1", 2).await?;
-    let first = get_events_page(client.clone(), None, 1).await?;
+    let first = get_events(&client, None, Some(1), None).await?;
 
     sqlx::query("UPDATE tx_events SET created_at = now() - interval '8 days'")
         .execute(&service.db.pool)
@@ -188,11 +198,11 @@ async fn cursor_before_pruned_events_gets_410() -> eyre::Result<()> {
     assert_eq!(service.db.prune_tx_events(prune_timestamp, 100).await?, 2);
 
     let error = expect_v2_error(
-        get_events_page(client.clone(), first.next_cursor, 1).await,
+        get_events(&client, Some(first.next_cursor), Some(1), None).await,
         StatusCode::GONE,
     )?;
     assert_eq!(error.error_id, "cursor_expired");
-    assert_eq!(get_events(client, None, None).await?.events, []);
+    assert_eq!(get_events(&client, None, None, None).await?.events, []);
 
     Ok(())
 }
@@ -213,26 +223,26 @@ async fn relayers_see_only_their_events() -> eyre::Result<()> {
         broadcast(&service.db, tx_id, hash_byte).await?;
     }
 
-    let events = get_events(client.clone(), None, None).await?;
-    let other_events = get_events(other_client.clone(), None, None).await?;
-    // A cursor is a position in the whole feed, not only in one relayer's
-    let other_events_after = get_events(
-        other_client,
-        get_events_page(client, None, 1).await?.next_cursor,
-        None,
-    )
-    .await?;
+    let events = get_events(&client, None, None, None).await?;
+    let other_events = get_events(&other_client, None, None, None).await?;
 
     let tx_ids = |events: &GetTxEventsResponse| -> Vec<String> {
         events.events.iter().map(|e| e.tx_id.clone()).collect()
     };
     assert_eq!(tx_ids(&events), ["tx-1", "tx-2"]);
     assert_eq!(tx_ids(&other_events), ["other-tx-1"]);
-    assert_eq!(tx_ids(&other_events_after), ["other-tx-1"]);
     assert!(other_events
         .events
         .iter()
         .all(|event| event.relayer_id == other_relayer_id));
+
+    // A cursor is a position in its relayer's feed only
+    let first = get_events(&client, None, Some(1), None).await?;
+    let error = expect_v2_error(
+        get_events(&other_client, Some(first.next_cursor), None, None).await,
+        StatusCode::BAD_REQUEST,
+    )?;
+    assert_eq!(error.error_id, "invalid_request");
 
     Ok(())
 }
@@ -243,30 +253,32 @@ async fn polls_beyond_max_event_waiters_get_503() -> eyre::Result<()> {
 
     let service =
         TestService::spawn(api_service().max_event_waiters(1)).await?;
-    let http = reqwest::Client::new();
-    let poll = |wait: u64| {
-        http.get(format!("{}/2/events?wait={wait}", service.base_url()))
-            .bearer_auth(&service.api_key)
-            .send()
-    };
+    let client = service.v2_client(&service.api_key);
 
-    let responses =
-        futures::future::try_join_all((0..3).map(|_| poll(3))).await?;
-
-    let (waited, refused): (Vec<_>, Vec<_>) = responses
-        .into_iter()
-        .partition(|response| response.status() == StatusCode::OK);
-    assert_eq!((waited.len(), refused.len()), (1, 2));
-    for response in refused {
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let retry_after: u64 =
-            response.headers()["retry-after"].to_str()?.parse()?;
-        assert!((1..=3).contains(&retry_after), "Retry-After: {retry_after}");
-        let error: ErrorResponseBody = response.json().await?;
+    let mut polls: FuturesUnordered<_> = (0..3)
+        .map(|_| get_events(&client, None, None, Some(3)))
+        .collect();
+    for _ in 0..2 {
+        let refused = polls.next().await.context("Three polls were sent")?;
+        let error = expect_v2_error(refused, StatusCode::SERVICE_UNAVAILABLE)?;
         assert_eq!(error.error_id, "too_many_waiters");
     }
-    assert_eq!(poll(1).await?.status(), StatusCode::OK);
-    assert_eq!(poll(0).await?.status(), StatusCode::OK);
+
+    // The third poll still waits in the only slot
+    let response = reqwest::Client::new()
+        .get(format!("{}/2/events?wait=1", service.base_url()))
+        .bearer_auth(&service.api_key)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let retry_after: u64 =
+        response.headers()["retry-after"].to_str()?.parse()?;
+    assert!((1..=3).contains(&retry_after), "Retry-After: {retry_after}");
+
+    let waited = polls.next().await.context("Three polls were sent")??;
+    assert_eq!(waited.events, []);
+    get_events(&client, None, None, Some(1)).await?;
+    get_events(&client, None, None, None).await?;
 
     Ok(())
 }
@@ -299,6 +311,120 @@ async fn events_reject_invalid_requests() -> eyre::Result<()> {
 
     let response = http.get(&url).send().await?;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn soft_reorg_event_carries_the_new_hash() -> eyre::Result<()> {
+    setup_tracing();
+
+    let service = TestService::spawn(api_service()).await?;
+    let client = service.v2_client(&service.api_key);
+    send_tx_v2(&client, send_tx_request("tx-1")).await?;
+    broadcast(&service.db, "tx-1", 1).await?;
+    escalate(&service.db, "tx-1", 2).await?;
+
+    // The first broadcast is mined, and then a reorg mines the escalation
+    let chain_id = DEFAULT_ANVIL_CHAIN_ID;
+    let block_txs = [B256::with_last_byte(1)];
+    service
+        .db
+        .save_block(1, chain_id, chrono::Utc::now(), &block_txs)
+        .await?;
+    service.db.mine_txs(chain_id).await?;
+    let reorged_txs = [B256::with_last_byte(2)];
+    service
+        .db
+        .save_block(1, chain_id, chrono::Utc::now(), &reorged_txs)
+        .await?;
+    assert_eq!(service.db.handle_soft_reorgs().await?, ["tx-1"]);
+
+    let page = get_events(&client, None, None, None).await?;
+    let changes: Vec<_> = page
+        .events
+        .iter()
+        .map(|event| (event.status, event.tx_hash.as_ref().map(|h| h.0)))
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            (TxStatus::Pending, Some(B256::with_last_byte(1))),
+            (TxStatus::Pending, Some(B256::with_last_byte(2))),
+            (TxStatus::Mined, Some(B256::with_last_byte(1))),
+            (TxStatus::Mined, Some(B256::with_last_byte(2))),
+        ]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn api_role_listens_for_events_but_prunes_none() -> eyre::Result<()> {
+    setup_tracing();
+
+    let service = TestService::spawn(api_service()).await?;
+
+    let tasks: Vec<_> = service
+        .service
+        .task_runner()
+        .task_health()
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    assert_eq!(tasks, ["listen_tx_events"]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn poll_gets_events_while_the_listener_is_down() -> eyre::Result<()> {
+    setup_tracing();
+
+    let service = TestService::spawn(api_service()).await?;
+    let client = service.v2_client(&service.api_key);
+    send_tx_v2(&client, send_tx_request("tx-1")).await?;
+    send_tx_v2(&client, send_tx_request("tx-2")).await?;
+    let listener_pid = await_listener(&service.db, None).await?;
+
+    let (events, stored_at) =
+        tokio::join!(get_events(&client, None, None, Some(10)), async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            sqlx::query("SELECT pg_terminate_backend($1)")
+                .bind(listener_pid)
+                .execute(&service.db.pool)
+                .await?;
+            broadcast(&service.db, "tx-1", 1).await?;
+
+            Ok::<_, eyre::Report>(Instant::now())
+        });
+    let woken_after = stored_at?.elapsed();
+
+    assert_eq!(tx_hashes(&events?), [B256::with_last_byte(1)]);
+    assert!(
+        woken_after < Duration::from_millis(1_500),
+        "Woken {woken_after:?} after the event was stored"
+    );
+
+    // The listener comes back, and wakes polls again
+    await_listener(&service.db, Some(listener_pid)).await?;
+    let cursor = get_events(&client, None, None, None).await?.next_cursor;
+    let (events, stored_at) = tokio::join!(
+        get_events(&client, Some(cursor), None, Some(10)),
+        async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            broadcast(&service.db, "tx-2", 2).await?;
+
+            Ok::<_, eyre::Report>(Instant::now())
+        }
+    );
+    let woken_after = stored_at?.elapsed();
+
+    assert_eq!(tx_hashes(&events?), [B256::with_last_byte(2)]);
+    assert!(
+        woken_after < Duration::from_millis(400),
+        "Woken {woken_after:?} after the event was stored"
+    );
 
     Ok(())
 }
@@ -360,35 +486,49 @@ async fn escalate(
 }
 
 async fn get_events(
-    client: Configuration,
+    client: &Configuration,
     after: Option<String>,
+    limit: Option<i32>,
     wait: Option<i32>,
-) -> eyre::Result<GetTxEventsResponse> {
-    Ok(tx_sitter_client::apis::relayer_v2_api::get_events_v2(
-        &client,
-        GetEventsV2Params {
-            after,
-            limit: None,
-            wait,
-        },
-    )
-    .await?)
-}
-
-async fn get_events_page(
-    client: Configuration,
-    after: Option<String>,
-    limit: i32,
 ) -> Result<GetTxEventsResponse, Error<GetEventsV2Error>> {
     tx_sitter_client::apis::relayer_v2_api::get_events_v2(
-        &client,
-        GetEventsV2Params {
-            after,
-            limit: Some(limit),
-            wait: None,
-        },
+        client,
+        GetEventsV2Params { after, limit, wait },
     )
     .await
+}
+
+fn tx_hashes(page: &GetTxEventsResponse) -> Vec<B256> {
+    page.events
+        .iter()
+        .filter_map(|event| event.tx_hash.as_ref())
+        .map(|tx_hash| tx_hash.0)
+        .collect()
+}
+
+/// Returns the backend pid of the service's listener for tx events once it
+/// listens, on another connection than `replaced` if given
+async fn await_listener(
+    db: &Database,
+    replaced: Option<i32>,
+) -> eyre::Result<i32> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+
+    while Instant::now() < deadline {
+        let listener_pids: Vec<(i32,)> = sqlx::query_as(
+            r#"SELECT pid FROM pg_stat_activity WHERE query = 'LISTEN "tx_events"'"#,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+        if let Some(&(pid,)) =
+            listener_pids.iter().find(|(pid,)| Some(*pid) != replaced)
+        {
+            return Ok(pid);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    eyre::bail!("No listener for tx events")
 }
 
 /// Sends a transfer of `value` with [`METADATA`] as its exact text
@@ -449,7 +589,7 @@ async fn await_events(
             .await?;
         let page_events: Vec<RawEvent> =
             serde_json::from_str(page["events"].get())?;
-        let next_cursor: Option<String> =
+        let next_cursor: String =
             serde_json::from_str(page["nextCursor"].get())?;
 
         for event in page_events {
@@ -458,7 +598,7 @@ async fn await_events(
             }
             events.push(event);
         }
-        after = next_cursor;
+        after = Some(next_cursor);
     }
 
     Ok((events, after))
