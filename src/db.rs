@@ -527,7 +527,7 @@ impl Database {
     }
 
     /// Records the first signed version of `tx_id`, which must be stored
-    /// before it is sent.
+    /// before it is sent, with its `pending` event.
     ///
     /// Fails if `tx_id` was already broadcast, so that two broadcasts of the
     /// same transaction can't both be sent, or if a reset deleted it.
@@ -586,6 +586,8 @@ impl Database {
         .bind(initial_max_priority_fee_per_gas_bytes)
         .bind(tx_hash.as_slice())
         .execute(tx.as_mut()).await?;
+
+        insert_pending_tx_event(tx.as_mut(), tx_id, tx_hash).await?;
 
         tx.commit().await?;
 
@@ -805,19 +807,29 @@ impl Database {
     }
 
     /// Points every mined transaction whose valid hash isn't the one in a
-    /// block at the hash that is, and returns the ids of those it changed.
+    /// block at the hash that is, with a `mined` event, and returns the ids of
+    /// those it changed.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_soft_reorgs(&self) -> eyre::Result<Vec<String>> {
         let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            UPDATE    sent_transactions s
-            SET       valid_tx_hash = h.tx_hash
-            FROM      tx_hashes h
-            JOIN      block_txs bt ON h.tx_hash = bt.tx_hash
-            WHERE     h.tx_id = s.tx_id
-            AND       h.tx_hash <> s.valid_tx_hash
-            AND       s.status = $1
-            RETURNING s.tx_id
+            WITH reorged AS (
+                UPDATE    sent_transactions s
+                SET       valid_tx_hash = h.tx_hash
+                FROM      tx_hashes h
+                JOIN      block_txs bt ON h.tx_hash = bt.tx_hash
+                WHERE     h.tx_id = s.tx_id
+                AND       h.tx_hash <> s.valid_tx_hash
+                AND       s.status = $1
+                RETURNING s.tx_id, s.valid_tx_hash
+            ),
+            events AS (
+                INSERT INTO tx_events (relayer_id, tx_id, status, tx_hash)
+                SELECT t.relayer_id, r.tx_id, $1, r.valid_tx_hash
+                FROM   reorged r
+                JOIN   transactions t ON t.id = r.tx_id
+            )
+            SELECT tx_id FROM reorged
             "#,
         )
         .bind(TxStatus::Mined)
@@ -828,30 +840,39 @@ impl Database {
     }
 
     /// Moves every mined transaction none of whose hashes is in a block back
-    /// to pending, with its latest hash as the valid one, and returns the ids
-    /// of those it moved.
+    /// to pending, with its latest hash as the valid one and a `pending`
+    /// event, and returns the ids of those it moved.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_hard_reorgs(&self) -> eyre::Result<Vec<String>> {
         let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            UPDATE    sent_transactions s
-            SET       status = $1,
-                      valid_tx_hash = (
-                          SELECT tx_hash
-                          FROM   tx_hashes h
-                          WHERE  h.tx_id = s.tx_id
-                          ORDER BY created_at DESC
-                          LIMIT  1
-                      ),
-                      mined_at = NULL
-            WHERE     s.status = $2
-            AND       NOT EXISTS (
-                SELECT 1
-                FROM   tx_hashes h
-                JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
-                WHERE  h.tx_id = s.tx_id
+            WITH reorged AS (
+                UPDATE    sent_transactions s
+                SET       status = $1,
+                          valid_tx_hash = (
+                              SELECT tx_hash
+                              FROM   tx_hashes h
+                              WHERE  h.tx_id = s.tx_id
+                              ORDER BY created_at DESC
+                              LIMIT  1
+                          ),
+                          mined_at = NULL
+                WHERE     s.status = $2
+                AND       NOT EXISTS (
+                    SELECT 1
+                    FROM   tx_hashes h
+                    JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
+                    WHERE  h.tx_id = s.tx_id
+                )
+                RETURNING s.tx_id, s.valid_tx_hash
+            ),
+            events AS (
+                INSERT INTO tx_events (relayer_id, tx_id, status, tx_hash)
+                SELECT t.relayer_id, r.tx_id, $1, r.valid_tx_hash
+                FROM   reorged r
+                JOIN   transactions t ON t.id = r.tx_id
             )
-            RETURNING s.tx_id
+            SELECT tx_id FROM reorged
             "#,
         )
         .bind(TxStatus::Pending)
@@ -862,9 +883,8 @@ impl Database {
         Ok(tx_ids.into_iter().map(|(tx_id,)| tx_id).collect())
     }
 
-    /// Marks txs as mined if the associated tx hash is present in a block
-    ///
-    /// returns the tx ids and hashes for all mined txs
+    /// Marks the pending transactions of `chain_id` with a hash in a block as
+    /// mined, with a `mined` event, and returns their ids and mined hashes.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn mine_txs(
         &self,
@@ -883,15 +903,24 @@ impl Database {
                        AND bt.chain_id = b.chain_id
                 WHERE  s.status = $1
                 AND    b.chain_id = $2
+            ),
+            mined AS (
+                UPDATE    sent_transactions
+                SET       status = $3,
+                          valid_tx_hash = cte.tx_hash,
+                          mined_at = cte.timestamp
+                FROM      cte
+                WHERE     sent_transactions.tx_id = cte.id
+                AND       sent_transactions.status = $1
+                RETURNING sent_transactions.tx_id, sent_transactions.valid_tx_hash
+            ),
+            events AS (
+                INSERT INTO tx_events (relayer_id, tx_id, status, tx_hash)
+                SELECT t.relayer_id, m.tx_id, $3, m.valid_tx_hash
+                FROM   mined m
+                JOIN   transactions t ON t.id = m.tx_id
             )
-            UPDATE    sent_transactions
-            SET       status = $3,
-                      valid_tx_hash = cte.tx_hash,
-                      mined_at = cte.timestamp
-            FROM      cte
-            WHERE     sent_transactions.tx_id = cte.id
-            AND       sent_transactions.status = $1
-            RETURNING sent_transactions.tx_id, sent_transactions.valid_tx_hash
+            SELECT tx_id, valid_tx_hash FROM mined
             "#,
         )
         .bind(TxStatus::Pending)
@@ -907,8 +936,8 @@ impl Database {
     }
 
     /// Marks every mined transaction whose valid hash is in a block older
-    /// than `finalization_timestamp` as finalized, and returns the ids of
-    /// those it marked.
+    /// than `finalization_timestamp` as finalized, with a `finalized` event,
+    /// and returns the ids of those it marked.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn finalize_txs(
         &self,
@@ -916,14 +945,23 @@ impl Database {
     ) -> eyre::Result<Vec<String>> {
         let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
-            UPDATE    sent_transactions s
-            SET       status = $1
-            FROM      block_txs bt
-            JOIN      blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
-            WHERE     bt.tx_hash = s.valid_tx_hash
-            AND       s.status = $2
-            AND       b.timestamp < $3
-            RETURNING s.tx_id
+            WITH finalized AS (
+                UPDATE    sent_transactions s
+                SET       status = $1
+                FROM      block_txs bt
+                JOIN      blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
+                WHERE     bt.tx_hash = s.valid_tx_hash
+                AND       s.status = $2
+                AND       b.timestamp < $3
+                RETURNING s.tx_id, s.valid_tx_hash
+            ),
+            events AS (
+                INSERT INTO tx_events (relayer_id, tx_id, status, tx_hash)
+                SELECT t.relayer_id, f.tx_id, $1, f.valid_tx_hash
+                FROM   finalized f
+                JOIN   transactions t ON t.id = f.tx_id
+            )
+            SELECT tx_id FROM finalized
             "#,
         )
         .bind(TxStatus::Finalized)
@@ -998,10 +1036,10 @@ impl Database {
     }
 
     /// Records `tx_hash` as the replacement of `tx_id` that follows its
-    /// `escalation_count` earlier escalations. It must be stored before it is
-    /// sent. The versions it replaces keep their hashes, so that indexing
-    /// still finds them mined, but drop their signed bytes, which are never
-    /// sent again.
+    /// `escalation_count` earlier escalations, with a `pending` event. It must
+    /// be stored before it is sent. The versions it replaces keep their
+    /// hashes, so that indexing still finds them mined, but drop their signed
+    /// bytes, which are never sent again.
     ///
     /// Returns `false`, and changes nothing, unless `tx_id` is still pending
     /// with exactly `escalation_count` escalations. Then another escalation or
@@ -1083,6 +1121,8 @@ impl Database {
         .bind(tx_hash.as_slice())
         .execute(tx.as_mut())
         .await?;
+
+        insert_pending_tx_event(tx.as_mut(), tx_id, tx_hash).await?;
 
         tx.commit().await?;
 
@@ -1674,6 +1714,29 @@ async fn check_timeouts(pool: &Pool<Postgres>) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Records that `tx_id` is pending with valid hash `tx_hash`
+async fn insert_pending_tx_event(
+    executor: impl PgExecutor<'_>,
+    tx_id: &str,
+    tx_hash: B256,
+) -> eyre::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO tx_events (relayer_id, tx_id, status, tx_hash)
+        SELECT relayer_id, id, $2, $3
+        FROM   transactions
+        WHERE  id = $1
+        "#,
+    )
+    .bind(tx_id)
+    .bind(TxStatus::Pending)
+    .bind(tx_hash.as_slice())
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
 async fn match_tx_id(
     executor: impl PgExecutor<'_>,
     tx_id: &str,
@@ -2254,6 +2317,28 @@ mod tests {
         assert_eq!(tx.tx_hash.unwrap().0, tx_hash_2);
         assert_eq!(tx.status, Some(TxStatus::Finalized));
 
+        assert_eq!(
+            tx_event_changes(&db, tx_id).await?,
+            [
+                (TxStatus::Pending, Some(tx_hash_1)),
+                // Escalation
+                (TxStatus::Pending, Some(tx_hash_2)),
+                (TxStatus::Mined, Some(tx_hash_1)),
+                // Soft reorg
+                (TxStatus::Mined, Some(tx_hash_2)),
+                // Hard reorg
+                (TxStatus::Pending, Some(tx_hash_2)),
+                (TxStatus::Mined, Some(tx_hash_2)),
+                (TxStatus::Finalized, Some(tx_hash_2)),
+            ]
+        );
+        let (event_relayer_ids,): (Vec<String>,) = sqlx::query_as(
+            "SELECT array_agg(DISTINCT relayer_id) FROM tx_events",
+        )
+        .fetch_one(&db.pool)
+        .await?;
+        assert_eq!(event_relayer_ids, [relayer_id]);
+
         Ok(())
     }
 
@@ -2379,6 +2464,10 @@ mod tests {
         assert!(!stale_count);
         assert!(!mined);
         assert_eq!(tx_hashes(&db, &tx_id).await?, [B256::with_last_byte(1)]);
+        assert_eq!(
+            tx_event_changes(&db, &tx_id).await?,
+            [(TxStatus::Pending, Some(B256::with_last_byte(1)))]
+        );
 
         Ok(())
     }
@@ -2639,6 +2728,11 @@ mod tests {
         assert_eq!(finalized?, Vec::<String>::new());
         let tx = db.read_tx(&tx_id).await?.context("Missing tx")?;
         assert_eq!(tx.status, Some(TxStatus::Pending));
+        let tx_hash = Some(B256::with_last_byte(1));
+        assert_eq!(
+            tx_event_changes(&db, &tx_id).await?,
+            [(TxStatus::Pending, tx_hash), (TxStatus::Mined, tx_hash)]
+        );
 
         Ok(())
     }
@@ -3204,6 +3298,25 @@ mod tests {
             .await?;
 
         Ok(tx_id)
+    }
+
+    /// Returns the status and valid hash of every event stored for `tx_id`,
+    /// in feed order.
+    async fn tx_event_changes(
+        db: &Database,
+        tx_id: &str,
+    ) -> eyre::Result<Vec<(TxStatus, Option<B256>)>> {
+        let changes: Vec<(TxStatus, Option<H256Wrapper>)> = sqlx::query_as(
+            "SELECT status, tx_hash FROM tx_events WHERE tx_id = $1 ORDER BY tx_xid, id",
+        )
+        .bind(tx_id)
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(changes
+            .into_iter()
+            .map(|(status, tx_hash)| (status, tx_hash.map(|hash| hash.0)))
+            .collect())
     }
 
     /// Returns the hashes stored for `tx_id`, oldest first.
