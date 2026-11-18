@@ -188,7 +188,7 @@ impl RelayerApiV2 {
         /// How many seconds to wait for an event while there are none
         #[oai(default, validator(maximum(value = "30")))]
         Query(wait): Query<u64>,
-    ) -> Result<ExactJson<GetTxEventsResponse>, ApiError> {
+    ) -> Result<ExactJson<GetTxEventsResponse>, EventsApiError> {
         let api_key = api_key.authorize(app).await?;
         let relayer_id = api_key.relayer_id();
         let after = after
@@ -250,12 +250,13 @@ fn default_events_limit() -> u32 {
     100
 }
 
-fn cursor_expired(reason: &str) -> ApiError {
+fn cursor_expired(reason: &str) -> EventsApiError {
     ApiError::new(
         StatusCode::GONE,
         "cursor_expired",
         format!("{reason}. Reconcile from the transactions and restart without a cursor"),
     )
+    .into()
 }
 
 fn repeated_send(tx_id: String) -> ExactJson<SendTxResponse> {
@@ -472,7 +473,8 @@ impl ResponseError for ApiError {
     }
 }
 
-/// The responses an [`ApiError`] can be, with the `errorId`s of each
+/// The responses an [`ApiError`] of the transaction operations can be, with
+/// the `errorId`s of each
 const ERROR_RESPONSES: &[(StatusCode, &str)] = &[
     (
         StatusCode::BAD_REQUEST,
@@ -493,10 +495,6 @@ const ERROR_RESPONSES: &[(StatusCode, &str)] = &[
     (
         StatusCode::CONFLICT,
         "`transaction_already_exists`: a different request already used this `txId`",
-    ),
-    (
-        StatusCode::GONE,
-        "`cursor_expired`: events after the cursor were deleted",
     ),
     (
         StatusCode::PAYLOAD_TOO_LARGE,
@@ -520,8 +518,7 @@ const ERROR_RESPONSES: &[(StatusCode, &str)] = &[
     ),
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        "`balance_unavailable`: the relayer's balance couldn't be checked, retry later. \
-         `too_many_waiters`: too many requests wait for events, retry after `Retry-After` seconds",
+        "`balance_unavailable`: the relayer's balance couldn't be checked, retry later",
     ),
 ];
 
@@ -529,20 +526,7 @@ impl ApiResponse for ApiError {
     fn meta() -> MetaResponses {
         let responses = ERROR_RESPONSES
             .iter()
-            .map(|&(status, description)| MetaResponse {
-                description,
-                status: Some(status.as_u16()),
-                content: vec![MetaMediaType {
-                    content_type: Json::<ErrorResponseBody>::CONTENT_TYPE,
-                    schema: ErrorResponseBody::schema_ref(),
-                }],
-                headers: match status {
-                    StatusCode::SERVICE_UNAVAILABLE => {
-                        vec![retry_after_header()]
-                    }
-                    _ => vec![],
-                },
-            })
+            .map(|&(status, description)| error_response(status, description))
             .collect();
 
         MetaResponses { responses }
@@ -553,14 +537,98 @@ impl ApiResponse for ApiError {
     }
 }
 
+/// An [`ApiError`] of `GET /2/events`, which the OpenAPI schema declares
+/// with that operation's responses only
+#[derive(Debug)]
+pub struct EventsApiError(ApiError);
+
+impl From<ApiError> for EventsApiError {
+    fn from(err: ApiError) -> Self {
+        Self(err)
+    }
+}
+
+impl From<eyre::Report> for EventsApiError {
+    fn from(err: eyre::Report) -> Self {
+        Self(err.into())
+    }
+}
+
+impl From<poem::Error> for EventsApiError {
+    fn from(err: poem::Error) -> Self {
+        Self(err.into())
+    }
+}
+
+impl From<EventsApiError> for poem::Error {
+    fn from(err: EventsApiError) -> Self {
+        err.0.into()
+    }
+}
+
+/// The responses an [`EventsApiError`] can be, with the `errorId`s of each
+const EVENTS_ERROR_RESPONSES: &[(StatusCode, &str)] = &[
+    (
+        StatusCode::BAD_REQUEST,
+        "`invalid_request`: the request is invalid, or `after` isn't a cursor of the relayer's feed",
+    ),
+    (
+        StatusCode::UNAUTHORIZED,
+        "`unauthorized`: the bearer API key is missing or unknown",
+    ),
+    (
+        StatusCode::GONE,
+        "`cursor_expired`: the feed may miss events after the cursor. Reconcile from the transactions and restart without a cursor",
+    ),
+    (StatusCode::INTERNAL_SERVER_ERROR, "`internal_error`"),
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "`too_many_waiters`: too many requests wait for events, retry after `Retry-After` seconds",
+    ),
+];
+
+impl ApiResponse for EventsApiError {
+    fn meta() -> MetaResponses {
+        let responses = EVENTS_ERROR_RESPONSES
+            .iter()
+            .map(|&(status, description)| {
+                let mut response = error_response(status, description);
+                if status == StatusCode::SERVICE_UNAVAILABLE {
+                    response.headers.push(retry_after_header());
+                }
+
+                response
+            })
+            .collect();
+
+        MetaResponses { responses }
+    }
+
+    fn register(registry: &mut Registry) {
+        ApiError::register(registry);
+    }
+}
+
+fn error_response(
+    status: StatusCode,
+    description: &'static str,
+) -> MetaResponse {
+    MetaResponse {
+        description,
+        status: Some(status.as_u16()),
+        content: vec![MetaMediaType {
+            content_type: Json::<ErrorResponseBody>::CONTENT_TYPE,
+            schema: ErrorResponseBody::schema_ref(),
+        }],
+        headers: vec![],
+    }
+}
+
 fn retry_after_header() -> MetaHeader {
     MetaHeader {
         name: header::RETRY_AFTER.to_string(),
-        description: Some(
-            "Seconds to wait before retrying, sent with `too_many_waiters`"
-                .to_string(),
-        ),
-        required: false,
+        description: Some("Seconds to wait before retrying".to_string()),
+        required: true,
         deprecated: false,
         schema: u64::schema_ref(),
     }

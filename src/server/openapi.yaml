@@ -393,12 +393,6 @@ paths:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
-        '410':
-          description: '`cursor_expired`: events after the cursor were deleted'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
         '413':
           description: '`payload_too_large`: the request body is over 512 KiB'
           content:
@@ -430,18 +424,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
         '503':
-          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later. `too_many_waiters`: too many requests wait for events, retry after `Retry-After` seconds'
+          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later'
           content:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
-          headers:
-            retry-after:
-              description: Seconds to wait before retrying, sent with `too_many_waiters`
-              deprecated: false
-              schema:
-                type: integer
-                format: uint64
       security:
       - BearerApiKey: []
       operationId: create_transaction_v2
@@ -497,12 +484,6 @@ paths:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
-        '410':
-          description: '`cursor_expired`: events after the cursor were deleted'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
         '413':
           description: '`payload_too_large`: the request body is over 512 KiB'
           content:
@@ -534,18 +515,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
         '503':
-          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later. `too_many_waiters`: too many requests wait for events, retry after `Retry-After` seconds'
+          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later'
           content:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
-          headers:
-            retry-after:
-              description: Seconds to wait before retrying, sent with `too_many_waiters`
-              deprecated: false
-              schema:
-                type: integer
-                format: uint64
       security:
       - BearerApiKey: []
       operationId: get_transaction_v2
@@ -610,7 +584,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetTxEventsResponse'
         '400':
-          description: '`invalid_request`: the request is invalid'
+          description: '`invalid_request`: the request is invalid, or `after` isn''t a cursor of the relayer''s feed'
           content:
             application/json; charset=utf-8:
               schema:
@@ -621,69 +595,28 @@ paths:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
-        '403':
-          description: '`relayer_disabled`: the relayer is disabled'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
-        '404':
-          description: '`not_found`: the relayer has no transaction with this id'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
-        '409':
-          description: '`transaction_already_exists`: a different request already used this `txId`'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
         '410':
-          description: '`cursor_expired`: events after the cursor were deleted'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
-        '413':
-          description: '`payload_too_large`: the request body is over 512 KiB'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
-        '415':
-          description: '`unsupported_media_type`: the request body isn''t JSON'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
-        '422':
-          description: '`insufficient_funds`: the relayer can''t pay for its queued transactions and this one'
-          content:
-            application/json; charset=utf-8:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseBody'
-        '429':
-          description: '`queue_full`: the relayer''s queue is full'
+          description: '`cursor_expired`: the feed may miss events after the cursor. Reconcile from the transactions and restart without a cursor'
           content:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
         '500':
-          description: '`internal_error`, or `relayer_nonce_taken` until the relayer is reset'
+          description: '`internal_error`'
           content:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
         '503':
-          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later. `too_many_waiters`: too many requests wait for events, retry after `Retry-After` seconds'
+          description: '`too_many_waiters`: too many requests wait for events, retry after `Retry-After` seconds'
           content:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
           headers:
             retry-after:
-              description: Seconds to wait before retrying, sent with `too_many_waiters`
+              description: Seconds to wait before retrying
+              required: true
               deprecated: false
               schema:
                 type: integer
