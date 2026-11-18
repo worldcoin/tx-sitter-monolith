@@ -32,6 +32,7 @@ impl Service {
         config: Config,
         shutdown: CancellationToken,
     ) -> eyre::Result<Self> {
+        config.validate()?;
         let app = Arc::new(App::new(config).await?);
 
         initialize_predefined_values(&app).await?;

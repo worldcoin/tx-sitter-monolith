@@ -45,6 +45,25 @@ pub struct Config {
     pub keys: KeysConfig,
 }
 
+impl Config {
+    /// Checks the settings that depend on each other.
+    pub fn validate(&self) -> eyre::Result<()> {
+        let TxSitterConfig {
+            tx_retention,
+            event_retention,
+            ..
+        } = &self.service;
+        eyre::ensure!(
+            event_retention <= tx_retention,
+            "service.event_retention ({}) must not exceed service.tx_retention ({})",
+            humantime::format_duration(*event_retention),
+            humantime::format_duration(*tx_retention),
+        );
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TxSitterConfig {
@@ -96,7 +115,13 @@ pub struct TxSitterConfig {
     pub tx_retention: Duration,
 
     /// How long the status changes of transactions are kept for the event
-    /// feed
+    /// feed.
+    ///
+    /// At most `tx_retention`, so that an event's transaction and its
+    /// metadata are kept about as long as the event, and its id can't be
+    /// reused by another transaction while the event exists. Its `finalized`
+    /// event, stored about an hour after the transaction is mined, can outlive
+    /// it by that hour.
     #[serde(with = "humantime_serde", default = "default::event_retention")]
     pub event_retention: Duration,
 
@@ -480,6 +505,23 @@ mod tests {
         let toml = toml::to_string_pretty(&config).unwrap();
 
         assert_eq!(toml, WITH_DB_PARTS);
+    }
+
+    #[test]
+    fn events_must_not_outlive_their_transactions() {
+        let mut config: Config =
+            toml::from_str(WITH_DB_CONNECTION_STRING).unwrap();
+        config.validate().unwrap();
+
+        config.service.event_retention = config.service.tx_retention;
+        config.validate().unwrap();
+
+        config.service.event_retention += Duration::from_secs(1);
+        let err = config.validate().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "service.event_retention (30days 1s) must not exceed service.tx_retention (30days)"
+        );
     }
 
     #[test]

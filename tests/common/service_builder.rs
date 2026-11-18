@@ -144,7 +144,10 @@ impl ServiceBuilder {
                 rpc_timeout: self.rpc_timeout,
                 task_stall_timeout: self.task_stall_timeout,
                 tx_retention: self.tx_retention,
-                event_retention: Duration::from_secs(7 * 24 * 60 * 60),
+                // The service refuses to keep events longer than txs
+                event_retention: self
+                    .tx_retention
+                    .min(Duration::from_secs(7 * 24 * 60 * 60)),
                 telemetry: None,
                 predefined,
             },
