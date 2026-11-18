@@ -8,6 +8,7 @@ docs/CreateNetworkRequest.md
 docs/CreateRelayerRequest.md
 docs/CreateRelayerResponse.md
 docs/ErrorResponseBody.md
+docs/GetTxEventsResponse.md
 docs/GetTxResponse.md
 docs/GetTxResponseV2.md
 docs/JsonRpcVersion.md
@@ -23,6 +24,7 @@ docs/SendTxRequestV2.md
 docs/SendTxResponse.md
 docs/ServiceApi.md
 docs/TransactionPriority.md
+docs/TxEvent.md
 docs/TxStatus.md
 docs/TxStatusV2.md
 git_push.sh
@@ -38,6 +40,7 @@ src/models/create_network_request.rs
 src/models/create_relayer_request.rs
 src/models/create_relayer_response.rs
 src/models/error_response_body.rs
+src/models/get_tx_events_response.rs
 src/models/get_tx_response.rs
 src/models/get_tx_response_v2.rs
 src/models/json_rpc_version.rs
@@ -51,5 +54,6 @@ src/models/send_tx_request.rs
 src/models/send_tx_request_v2.rs
 src/models/send_tx_response.rs
 src/models/transaction_priority.rs
+src/models/tx_event.rs
 src/models/tx_status.rs
 src/models/tx_status_v2.rs

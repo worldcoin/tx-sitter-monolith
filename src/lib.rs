@@ -14,4 +14,5 @@ pub mod task_runner;
 pub mod tasks;
 #[cfg(test)]
 mod test_utils;
+pub mod tx_events;
 pub mod types;

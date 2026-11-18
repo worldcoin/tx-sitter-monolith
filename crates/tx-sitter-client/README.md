@@ -64,6 +64,7 @@ Class | Method | HTTP request | Description
 *RelayerV1Api* | [**get_transaction**](docs/RelayerV1Api.md#get_transaction) | **GET** /1/api/{api_token}/tx/{tx_id} | Get Transaction
 *RelayerV1Api* | [**get_transactions**](docs/RelayerV1Api.md#get_transactions) | **GET** /1/api/{api_token}/txs | Get Transactions
 *RelayerV2Api* | [**create_transaction_v2**](docs/RelayerV2Api.md#create_transaction_v2) | **POST** /2/tx | Send Transaction
+*RelayerV2Api* | [**get_events_v2**](docs/RelayerV2Api.md#get_events_v2) | **GET** /2/events | Get Transaction Events
 *RelayerV2Api* | [**get_transaction_v2**](docs/RelayerV2Api.md#get_transaction_v2) | **GET** /2/tx/{tx_id} | Get Transaction
 *ServiceApi* | [**health**](docs/ServiceApi.md#health) | **GET** /health | Health
 *ServiceApi* | [**health_live**](docs/ServiceApi.md#health_live) | **GET** /health/live | Liveness
@@ -77,6 +78,7 @@ Class | Method | HTTP request | Description
  - [CreateRelayerRequest](docs/CreateRelayerRequest.md)
  - [CreateRelayerResponse](docs/CreateRelayerResponse.md)
  - [ErrorResponseBody](docs/ErrorResponseBody.md)
+ - [GetTxEventsResponse](docs/GetTxEventsResponse.md)
  - [GetTxResponse](docs/GetTxResponse.md)
  - [GetTxResponseV2](docs/GetTxResponseV2.md)
  - [JsonRpcVersion](docs/JsonRpcVersion.md)
@@ -89,6 +91,7 @@ Class | Method | HTTP request | Description
  - [SendTxRequestV2](docs/SendTxRequestV2.md)
  - [SendTxResponse](docs/SendTxResponse.md)
  - [TransactionPriority](docs/TransactionPriority.md)
+ - [TxEvent](docs/TxEvent.md)
  - [TxStatus](docs/TxStatus.md)
  - [TxStatusV2](docs/TxStatusV2.md)
 

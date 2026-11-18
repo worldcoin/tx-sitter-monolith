@@ -9,8 +9,9 @@ use serde_json::Value;
 
 use crate::api_key::ApiKey;
 use crate::db::data::{
-    NetworkInfo, ReadTxData, RelayerGasPriceLimit, RelayerInfo,
+    NetworkInfo, ReadTxData, RelayerGasPriceLimit, RelayerInfo, TxEventData,
 };
+use crate::tx_events::EventCursor;
 
 pub mod secret_string;
 pub mod tx_metadata;
@@ -431,6 +432,71 @@ impl From<Option<TxStatus>> for TxStatusV2 {
             Some(TxStatus::Pending) => Self::Pending,
             Some(TxStatus::Mined) => Self::Mined,
             Some(TxStatus::Finalized) => Self::Finalized,
+        }
+    }
+}
+
+// serde writes v2 responses, so that `metadata` comes back exactly as it was
+// sent
+#[derive(Debug, Clone, Serialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct GetTxEventsResponse {
+    /// The relayer's events after `after`, in the order they happened
+    pub events: Vec<TxEvent>,
+    /// Pass as `after` to get the events after these. It only works in the
+    /// relayer's feed.
+    pub next_cursor: String,
+}
+
+impl GetTxEventsResponse {
+    /// Answers a request of relayer `relayer_id` with `events`, which
+    /// `next_cursor` follows
+    pub fn new(
+        events: Vec<TxEventData>,
+        next_cursor: EventCursor,
+        relayer_id: &str,
+    ) -> Self {
+        Self {
+            events: events.into_iter().map(TxEvent::from).collect(),
+            next_cursor: next_cursor.encode(relayer_id),
+        }
+    }
+}
+
+/// A status change of a transaction
+#[derive(Debug, Clone, Serialize, Object)]
+#[serde(rename_all = "camelCase")]
+#[oai(rename_all = "camelCase")]
+pub struct TxEvent {
+    pub tx_id: String,
+    pub relayer_id: String,
+    pub chain_id: u64,
+    /// The status the transaction changed to: `pending` once it is
+    /// broadcast, escalated or reorged out of its block, `mined` once it is
+    /// in a block or reorged into another one, `finalized` once its block is
+    /// old enough to count as final
+    pub status: TxStatus,
+    /// Hash of the broadcast transaction that is mined, or else of the latest
+    /// one broadcast
+    pub tx_hash: Option<H256>,
+    /// `null` for transactions sent through the v1 API, and once the
+    /// transaction is deleted `service.tx_retention` after it is mined
+    pub metadata: Option<TxMetadata>,
+    /// When tx-sitter stored the change
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<TxEventData> for TxEvent {
+    fn from(event: TxEventData) -> Self {
+        Self {
+            tx_id: event.tx_id,
+            relayer_id: event.relayer_id,
+            chain_id: event.chain_id,
+            status: event.status,
+            tx_hash: event.tx_hash.map(|v| v.into()),
+            metadata: event.metadata,
+            created_at: event.created_at,
         }
     }
 }

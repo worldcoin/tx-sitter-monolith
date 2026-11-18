@@ -84,6 +84,7 @@ pub async fn setup_app(
         server: ServerConfig {
             host: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             shutdown_timeout: Duration::from_secs(20),
+            max_event_waiters: 64,
             username: None,
             password: None,
             server_address: None,

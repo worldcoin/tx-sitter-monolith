@@ -523,6 +523,107 @@ paths:
       security:
       - BearerApiKey: []
       operationId: get_transaction_v2
+  /2/events:
+    get:
+      tags:
+      - RelayerV2
+      summary: Get Transaction Events
+      description: |-
+        Returns the status changes of the relayer's transactions in the order
+        they happened, at most `limit` of them. Pass `nextCursor` as `after`
+        to get the ones that follow. An event is returned once every
+        database transaction that started writing before it has finished, so
+        no event is stored later before one already returned.
+
+        With `wait`, a request that finds no events waits up to that many
+        seconds for one and then returns the events stored by then, possibly
+        none.
+
+        Events are kept for `service.event_retention` (7 days by default). A
+        cursor older than that gets 410, because events after it may be gone,
+        and so does a cursor from before a restore of the database.
+      parameters:
+      - name: after
+        schema:
+          type: string
+        in: query
+        description: |-
+          The `nextCursor` of an earlier response of the relayer's feed.
+          Without it the feed starts at the oldest event kept.
+        required: false
+        deprecated: false
+        explode: true
+      - name: limit
+        schema:
+          type: integer
+          format: uint32
+          default: 100
+          maximum: 1000.0
+          minimum: 1.0
+        in: query
+        description: The most events to return
+        required: false
+        deprecated: false
+        explode: true
+      - name: wait
+        schema:
+          type: integer
+          format: uint64
+          default: 0
+          maximum: 30.0
+        in: query
+        description: How many seconds to wait for an event while there are none
+        required: false
+        deprecated: false
+        explode: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/GetTxEventsResponse'
+        '400':
+          description: '`invalid_request`: the request is invalid, or `after` isn''t a cursor of the relayer''s feed'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '401':
+          description: '`unauthorized`: the bearer API key is missing or unknown'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '410':
+          description: '`cursor_expired`: the feed may miss events after the cursor. Reconcile from the transactions and restart without a cursor'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '500':
+          description: '`internal_error`'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+        '503':
+          description: '`too_many_waiters`: too many requests wait for events, retry after `Retry-After` seconds'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
+          headers:
+            retry-after:
+              description: Seconds to wait before retrying
+              required: true
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+      security:
+      - BearerApiKey: []
+      operationId: get_events_v2
   /health:
     get:
       tags:
@@ -635,6 +736,22 @@ components:
           type: string
         errorMessage:
           type: string
+    GetTxEventsResponse:
+      type: object
+      required:
+      - events
+      - nextCursor
+      properties:
+        events:
+          type: array
+          description: The relayer's events after `after`, in the order they happened
+          items:
+            $ref: '#/components/schemas/TxEvent'
+        nextCursor:
+          type: string
+          description: |-
+            Pass as `after` to get the events after these. It only works in the
+            relayer's feed.
     GetTxResponse:
       type: object
       required:
@@ -1021,6 +1138,53 @@ components:
       - regular
       - fast
       - fastest
+    TxEvent:
+      type: object
+      description: A status change of a transaction
+      required:
+      - txId
+      - relayerId
+      - chainId
+      - status
+      - createdAt
+      properties:
+        txId:
+          type: string
+        relayerId:
+          type: string
+        chainId:
+          type: integer
+          format: uint64
+        status:
+          allOf:
+          - $ref: '#/components/schemas/TxStatus'
+          - description: |-
+              The status the transaction changed to: `pending` once it is
+              broadcast, escalated or reorged out of its block, `mined` once it is
+              in a block or reorged into another one, `finalized` once its block is
+              old enough to count as final
+        txHash:
+          type: string
+          format: h256
+          title: H256
+          description: |-
+            Hash of the broadcast transaction that is mined, or else of the latest
+            one broadcast
+          default: '0x0000000000000000000000000000000000000000000000000000000000000000'
+          example: 0x46239dbfe5502b9f82c3dff992927d8d9b3168e732b4fd5771288569f5a1813d
+        metadata:
+          type: object
+          title: Transaction metadata
+          description: |-
+            `null` for transactions sent through the v1 API, and once the
+            transaction is deleted `service.tx_retention` after it is mined
+          additionalProperties: {}
+          example:
+            transactionType: SafeDeployment
+        createdAt:
+          type: string
+          format: date-time
+          description: When tx-sitter stored the change
     TxStatus:
       type: string
       enum:

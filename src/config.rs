@@ -114,8 +114,10 @@ pub struct TxSitterConfig {
     #[serde(with = "humantime_serde", default = "default::tx_retention")]
     pub tx_retention: Duration,
 
-    /// How long the status changes of transactions are kept for the event
-    /// feed.
+    /// How long events stay in the feed of `GET /2/events`.
+    ///
+    /// A consumer whose cursor is older gets 410, because it may have missed
+    /// events.
     ///
     /// At most `tx_retention`, so that an event's transaction and its
     /// metadata are kept about as long as the event, and its id can't be
@@ -145,7 +147,8 @@ pub enum ServiceRole {
     /// Serves the HTTP API and runs the background tasks
     #[default]
     All,
-    /// Serves the HTTP API and runs no background tasks
+    /// Serves the HTTP API and runs none of the background tasks that
+    /// process transactions
     Api,
     /// Runs the background tasks and serves only the health endpoints
     Worker,
@@ -196,6 +199,11 @@ pub struct ServerConfig {
     /// tasks to finish after shutdown is requested
     #[serde(with = "humantime_serde", default = "default::shutdown_timeout")]
     pub shutdown_timeout: Duration,
+
+    /// Max number of `GET /2/events` requests that wait for events at once.
+    /// Further ones get 503 until one finishes.
+    #[serde(default = "default::max_event_waiters")]
+    pub max_event_waiters: usize,
 
     pub username: Option<SecretString>,
     pub password: Option<SecretString>,
@@ -349,6 +357,10 @@ mod default {
         Duration::from_secs(7 * 24 * 60 * 60)
     }
 
+    pub fn max_event_waiters() -> usize {
+        64
+    }
+
     pub fn max_escalations() -> usize {
         100
     }
@@ -394,6 +406,7 @@ mod tests {
         [server]
         host = "127.0.0.1:3000"
         shutdown_timeout = "20s"
+        max_event_waiters = 64
 
         [database]
         kind = "connection_string"
@@ -419,6 +432,7 @@ mod tests {
         [server]
         host = "127.0.0.1:3000"
         shutdown_timeout = "20s"
+        max_event_waiters = 64
 
         [database]
         kind = "parts"
@@ -452,6 +466,7 @@ mod tests {
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
                 shutdown_timeout: default::shutdown_timeout(),
+                max_event_waiters: default::max_event_waiters(),
                 username: None,
                 password: None,
                 server_address: None,
@@ -488,6 +503,7 @@ mod tests {
             server: ServerConfig {
                 host: SocketAddr::from(([127, 0, 0, 1], 3000)),
                 shutdown_timeout: default::shutdown_timeout(),
+                max_event_waiters: default::max_event_waiters(),
                 username: None,
                 password: None,
                 server_address: None,
@@ -553,6 +569,10 @@ mod tests {
         assert_eq!(config.service.rpc_timeout, default::rpc_timeout());
         assert_eq!(config.service.tx_retention, default::tx_retention());
         assert_eq!(config.service.event_retention, default::event_retention());
+        assert_eq!(
+            config.server.max_event_waiters,
+            default::max_event_waiters()
+        );
         let KeysConfig::Kms(kms_config) = &config.keys else {
             panic!("Expected KMS keys config");
         };

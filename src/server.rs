@@ -26,6 +26,7 @@ use crate::app::App;
 use crate::db::data::RelayerInfo;
 use crate::db::CreateResult;
 use crate::task_runner::{TaskHealth, TaskRunner};
+use crate::tx_events::EventNotifier;
 use crate::types::{
     CreateApiKeyResponse, CreateNetworkRequest, CreateRelayerRequest,
     CreateRelayerResponse, ErrorResponse, GetTxResponse, NetworkResponse,
@@ -817,6 +818,7 @@ pub async fn generate_spec_yaml(server_address: Option<&String>) -> String {
 pub async fn spawn_server(
     app: Arc<App>,
     task_runner: Arc<TaskRunner<App>>,
+    event_notifier: Arc<EventNotifier>,
     shutdown: CancellationToken,
 ) -> eyre::Result<ServerHandle> {
     let routes = if app.config.service.role.serves_api() {
@@ -829,7 +831,8 @@ pub async fn spawn_server(
         .with(trace_middleware::TraceMiddleware)
         .with(Cors::new())
         .data(app.clone())
-        .data(task_runner);
+        .data(task_runner)
+        .data(event_notifier);
 
     let listener = TcpListener::bind(app.config.server.host);
     let acceptor = listener.into_acceptor().await?;
