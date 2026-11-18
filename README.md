@@ -138,6 +138,30 @@ Every change below is a config change followed by a deploy.
 - **Disable a relayer.** Set `enabled = false`, or remove the relayer from the config, which also revokes its API keys.
 - **Reset a stuck relayer.** Run `tx-sitter --config <the service's config> relayer reset --relayer-id <id>`. It deletes the relayer's unsent transactions and moves its nonce back to the first one no remaining transaction holds, never below a nonce the chain or a sent transaction used. It needs the database schema of its own version, so run the image that is deployed.
 
+### Import a key from tx-sitter-aws
+
+A tx-sitter-aws relayer signs with a KMS key in a tx-sitter-aws account, and contracts whitelist its address, so it moves to this service with its key. A key must never sign in both services at once, because both would use the same nonces. The service can't prevent that, so hand a key over only once tx-sitter-aws has stopped using it:
+
+1. **Grant the key.** In the AWS account that owns the key, add a statement to the key's key policy that lets the service's pod role use it. In a key policy, `"Resource": "*"` is the key itself.
+
+   ```json
+   {
+     "Sid": "AllowTxSitterMonolith",
+     "Effect": "Allow",
+     "Principal": { "AWS": "arn:aws:iam::<the service's account id>:role/<the service's pod role>" },
+     "Action": ["kms:GetPublicKey", "kms:Sign", "kms:DescribeKey"],
+     "Resource": "*"
+   }
+   ```
+
+2. **Allow the key on the service's side.** A key of another account also needs the service's IAM policy to allow it: add the key ARN to the KMS statement of the service's role in the infrastructure repo (`crypto/<env>/us-east-1/tx-sitter-monolith.tf`).
+3. **Stop the relayer in tx-sitter-aws.** Disable it and let its in-flight transactions finish, until the address has no pending transactions: `cast nonce --block pending <address>` equals `cast nonce --block latest <address>`.
+4. **Add the relayer to the config** with a new id, `key = { kms = "<the key ARN>" }` and the key's `address`, then deploy. KMS looks up key ids and aliases in the service's own account, so use the full key ARN. The key must be in the service's region.
+5. **Verify the key and the nonce.** Startup fails, naming the relayer, while the key can't be read or derives another address than `address`. Then the worker logs `Synced the relayer's nonce from its chain for the first time` with the relayer id and `chain_nonce`, which should equal the address's transaction count. Until then sends to the relayer return 503.
+6. **Switch the callers** to the service with the relayer's API key. The relayer's first transaction takes the chain's nonce.
+
+To move a relayer back, disable it here, wait for its in-flight transactions as in step 3, and enable it in tx-sitter-aws.
+
 ### Migrating from the admin API
 
 Earlier versions managed networks, relayers and API keys through `/1/admin/*`. Before deploying a version without it, export the database's state once:
