@@ -17,8 +17,9 @@ use tracing::instrument;
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
 use crate::config::{DatabaseConfig, NetworkConfig, RelayerConfig};
 use crate::db::data::{
-    ApiKeyStatus, ConfigChange, NetworkInfo, Reconciliation, RelayerBacklog,
-    RelayerGasPriceLimit, RelayerInfo, RelayerNonces,
+    ApiKeyStatus, ChainNonces, ConfigChange, NetworkInfo, NonceSync,
+    Reconciliation, RelayerBacklog, RelayerGasPriceLimit, RelayerInfo,
+    RelayerNonces,
 };
 use crate::db::wrappers::h256::H256Wrapper;
 use crate::db::wrappers::hex_u256::HexU256Wrapper;
@@ -282,7 +283,8 @@ impl Database {
                    address,
                    nonce,
                    current_nonce,
-                   nonce_synced_at IS NOT NULL AS is_nonce_synced
+                   nonce_synced_at IS NOT NULL AS is_nonce_synced,
+                   enabled
             FROM   relayers
             WHERE  chain_id = $1
             "#,
@@ -1365,31 +1367,39 @@ impl Database {
         Ok(listener)
     }
 
-    /// Records `nonce`, the on-chain transaction count of `relayer_address`,
-    /// as the confirmed nonce of its relayers on `chain_id`, and moves their
-    /// local nonce up to it.
+    /// Records `nonces.latest`, the on-chain transaction count of
+    /// `relayer_address`, as the confirmed nonce of its relayers on
+    /// `chain_id`, and moves their local nonce up to it.
     ///
-    /// A relayer that was never synced also becomes synced, so that
+    /// An enabled relayer whose nonce isn't synced, because it is new or was
+    /// enabled again, also becomes synced, so that
     /// [`Database::create_transaction`] starts allocating nonces to it from
     /// the chain's. This is what lets a key with on-chain history join as a
-    /// new relayer.
+    /// new relayer. It stays unsynced without `nonces.pending`, and while
+    /// `nonces.pending` is above both its local nonce and `nonces.latest`:
+    /// another signer still has transactions in flight at the nonces the
+    /// relayer would allocate.
     ///
-    /// Returns the synced relayers whose local nonce was behind `nonce`, with
-    /// that local nonce. Their key sent transactions that tx-sitter didn't
-    /// create.
+    /// Returns what it found for each relayer, see [`NonceSync`].
     #[instrument(skip(self), level = "debug")]
     pub async fn update_relayer_nonce(
         &self,
         chain_id: u64,
         relayer_address: Address,
-        nonce: u64,
-    ) -> eyre::Result<Vec<(String, u64)>> {
+        nonces: ChainNonces,
+    ) -> eyre::Result<NonceSync> {
         let mut tx = self.pool.begin().await?;
 
-        // Locks the relayers, so that no create takes a nonce in between
-        let relayers: Vec<(String, i64, bool)> = sqlx::query_as(
+        // Locks the relayers, so that no create takes a nonce and no config
+        // changes them in between
+        let relayers: Vec<RelayerNonces> = sqlx::query_as(
             r#"
-            SELECT id, nonce, nonce_synced_at IS NOT NULL
+            SELECT id,
+                   address,
+                   nonce,
+                   current_nonce,
+                   nonce_synced_at IS NOT NULL AS is_nonce_synced,
+                   enabled
             FROM   relayers
             WHERE  chain_id = $1
             AND    address = $2
@@ -1401,12 +1411,17 @@ impl Database {
         .fetch_all(tx.as_mut())
         .await?;
 
+        let sync = nonce_sync(&relayers, nonces);
+
         sqlx::query(
             r#"
             UPDATE relayers
             SET    current_nonce = $3,
                    nonce = GREATEST(nonce, $3),
-                   nonce_synced_at = COALESCE(nonce_synced_at, now()),
+                   nonce_synced_at = CASE
+                       WHEN id = ANY($4) THEN now()
+                       ELSE nonce_synced_at
+                   END,
                    updated_at = now()
             WHERE  chain_id = $1
             AND    address = $2
@@ -1414,18 +1429,14 @@ impl Database {
         )
         .bind(chain_id as i64)
         .bind(relayer_address.as_slice())
-        .bind(nonce as i64)
+        .bind(nonces.latest as i64)
+        .bind(&sync.first_synced)
         .execute(tx.as_mut())
         .await?;
 
         tx.commit().await?;
 
-        Ok(relayers
-            .into_iter()
-            .filter(|(_, _, is_nonce_synced)| *is_nonce_synced)
-            .map(|(id, local_nonce, _)| (id, local_nonce as u64))
-            .filter(|(_, local_nonce)| *local_nonce < nonce)
-            .collect())
+        Ok(sync)
     }
 
     /// Counts, for every relayer, the transactions that aren't mined but
@@ -2099,6 +2110,30 @@ fn connect_options(config: &DatabaseConfig) -> eyre::Result<PgConnectOptions> {
 /// The advisory lock that serialises [`Database::apply_static_config`]
 const STATIC_CONFIG_LOCK_ID: i64 = 0x7478_7369_7474_6572;
 
+/// Decides what [`Database::update_relayer_nonce`] does to the locked
+/// `relayers` of an account with `nonces`.
+fn nonce_sync(relayers: &[RelayerNonces], nonces: ChainNonces) -> NonceSync {
+    let mut sync = NonceSync::default();
+
+    for relayer in relayers {
+        if relayer.is_nonce_synced {
+            if relayer.nonce < nonces.latest {
+                sync.behind_chain.push((relayer.id.clone(), relayer.nonce));
+            }
+        } else if relayer.awaits_first_sync() {
+            match nonces.pending {
+                Some(pending) if pending > relayer.nonce.max(nonces.latest) => {
+                    sync.pending_elsewhere.push(relayer.id.clone())
+                }
+                Some(_) => sync.first_synced.push(relayer.id.clone()),
+                None => {}
+            }
+        }
+    }
+
+    sync
+}
+
 async fn select_relayers<'e>(
     executor: impl PgExecutor<'e>,
 ) -> eyre::Result<Vec<RelayerInfo>> {
@@ -2615,6 +2650,7 @@ mod tests {
     use hex_literal::hex;
     use postgres_docker_utils::DockerContainerGuard;
     use serde_json::json;
+    use test_case::test_case;
 
     use super::*;
     use crate::config::{GasPriceLimitConfig, RelayerKey};
@@ -2824,12 +2860,7 @@ mod tests {
         let (db, _db_container) = setup_db().await?;
         let chain_id = 1;
         let relayer = relayer_config(chain_id, 1);
-        db.apply_static_config(
-            &[network_config(chain_id)],
-            std::slice::from_ref(&relayer),
-            None,
-        )
-        .await?;
+        apply_relayers(&db, std::slice::from_ref(&relayer)).await?;
 
         let result = create_tx(&db, &relayer.id, "tx-1").await?;
         assert_eq!(result, CreateResult::NonceNotSynced);
@@ -2839,9 +2870,21 @@ mod tests {
         assert_eq!(stored.nonce, 0);
 
         let chain_nonce = 42;
-        db.update_relayer_nonce(chain_id, relayer.address, chain_nonce)
+        let sync = db
+            .update_relayer_nonce(
+                chain_id,
+                relayer.address,
+                settled(chain_nonce),
+            )
             .await?;
 
+        assert_eq!(
+            sync,
+            NonceSync {
+                first_synced: vec![relayer.id.clone()],
+                ..NonceSync::default()
+            }
+        );
         let result = create_tx(&db, &relayer.id, "tx-1").await?;
         assert_eq!(result, CreateResult::Created);
         let tx = db.read_tx("tx-1").await?.context("No tx")?;
@@ -2852,6 +2895,86 @@ mod tests {
         assert_eq!(stored.current_nonce, chain_nonce);
 
         Ok(())
+    }
+
+    /// Another signer, such as tx-sitter-aws, still has transactions of the
+    /// key in mempools, at nonces the relayer would allocate
+    #[tokio::test]
+    async fn first_sync_waits_for_pending_txs_of_another_signer(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let chain_id = 1;
+        let relayer = relayer_config(chain_id, 1);
+        apply_relayers(&db, std::slice::from_ref(&relayer)).await?;
+
+        let nonces = ChainNonces {
+            latest: 5,
+            pending: Some(7),
+        };
+        let sync = db
+            .update_relayer_nonce(chain_id, relayer.address, nonces)
+            .await?;
+
+        assert_eq!(
+            sync,
+            NonceSync {
+                pending_elsewhere: vec![relayer.id.clone()],
+                ..NonceSync::default()
+            }
+        );
+        assert_eq!(
+            create_tx(&db, &relayer.id, "tx-1").await?,
+            CreateResult::NonceNotSynced
+        );
+        let stored =
+            db.get_relayer(&relayer.id).await?.context("No relayer")?;
+        assert_eq!((stored.nonce, stored.current_nonce), (5, 5));
+
+        db.update_relayer_nonce(chain_id, relayer.address, settled(7))
+            .await?;
+
+        assert_eq!(
+            create_tx(&db, &relayer.id, "tx-1").await?,
+            CreateResult::Created
+        );
+        let tx = db.read_tx("tx-1").await?.context("No tx")?;
+        assert_eq!(tx.nonce, 7);
+
+        Ok(())
+    }
+
+    #[test_case(0, 0, None, None ; "without a pending count")]
+    #[test_case(0, 3, Some(3), Some(true) ; "nothing pending")]
+    #[test_case(0, 3, Some(4), Some(false) ; "pending from another signer")]
+    #[test_case(
+        6, 3, Some(5), Some(true) ;
+        "pending at nonces the relayer allocated before it was disabled"
+    )]
+    fn first_nonce_sync(
+        local_nonce: u64,
+        latest: u64,
+        pending: Option<u64>,
+        is_synced: Option<bool>,
+    ) {
+        let relayer = RelayerNonces {
+            id: "relayer".to_string(),
+            address: AddressWrapper(Address::ZERO),
+            nonce: local_nonce,
+            current_nonce: 0,
+            is_nonce_synced: false,
+            enabled: true,
+        };
+
+        let sync = nonce_sync(&[relayer], ChainNonces { latest, pending });
+
+        let outcome =
+            match (&sync.first_synced[..], &sync.pending_elsewhere[..]) {
+                ([], []) => None,
+                ([_], []) => Some(true),
+                ([], [_]) => Some(false),
+                _ => panic!("Unexpected sync {sync:?}"),
+            };
+        assert_eq!(outcome, is_synced);
     }
 
     #[tokio::test]
@@ -4102,7 +4225,7 @@ mod tests {
         );
 
         // The key used both nonces outside tx-sitter
-        db.update_relayer_nonce(123, Address::with_last_byte(1), 2)
+        db.update_relayer_nonce(123, Address::with_last_byte(1), settled(2))
             .await?;
         db.purge_unsent_txs(&relayer_id).await?;
 
@@ -4763,6 +4886,29 @@ mod tests {
             revision,
             hash: B256::with_last_byte(hash_byte),
         })
+    }
+
+    /// Applies a config with `relayers` and the networks of their chains
+    async fn apply_relayers(
+        db: &Database,
+        relayers: &[RelayerConfig],
+    ) -> eyre::Result<()> {
+        let chain_ids: BTreeSet<u64> =
+            relayers.iter().map(|relayer| relayer.chain_id).collect();
+        let networks: Vec<NetworkConfig> =
+            chain_ids.into_iter().map(network_config).collect();
+
+        db.apply_static_config(&networks, relayers, None).await?;
+
+        Ok(())
+    }
+
+    /// The nonces of an account without pending transactions
+    fn settled(nonce: u64) -> ChainNonces {
+        ChainNonces {
+            latest: nonce,
+            pending: Some(nonce),
+        }
     }
 
     /// Marks relayer `relayer_id` synced and gives it an unsent transaction

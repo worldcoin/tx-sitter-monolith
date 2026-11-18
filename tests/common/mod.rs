@@ -20,6 +20,7 @@ use tx_sitter::api_key::ApiKey;
 use tx_sitter::config::{
     DatabaseConfig, NetworkConfig, RelayerConfig, RelayerKey,
 };
+use tx_sitter::db::data::ChainNonces;
 use tx_sitter::db::Database;
 use tx_sitter::service::Service;
 use tx_sitter::types::secret_string::SecretString;
@@ -348,8 +349,13 @@ pub async fn sync_relayer_nonces(
     let provider = setup_provider(anvil.endpoint()).await?;
 
     for &address in addresses {
-        let chain_nonce = provider.get_transaction_count(address).await?;
-        db.update_relayer_nonce(DEFAULT_ANVIL_CHAIN_ID, address, chain_nonce)
+        let nonces = ChainNonces {
+            latest: provider.get_transaction_count(address).await?,
+            pending: Some(
+                provider.get_transaction_count(address).pending().await?,
+            ),
+        };
+        db.update_relayer_nonce(DEFAULT_ANVIL_CHAIN_ID, address, nonces)
             .await?;
     }
 

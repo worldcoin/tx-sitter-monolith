@@ -3,6 +3,7 @@ mod common;
 use std::time::Instant;
 
 use tx_sitter::broadcast_utils::gas_estimation::FeesEstimate;
+use tx_sitter::db::data::ChainNonces;
 use tx_sitter::db::{CreateResult, Database};
 use tx_sitter::types::TransactionPriority;
 
@@ -55,7 +56,11 @@ async fn create_tx_on_unresponsive_chain(
     db: &Database,
     relayer: &RelayerConfig,
 ) -> eyre::Result<String> {
-    db.update_relayer_nonce(UNRESPONSIVE_CHAIN_ID, relayer.address, 0)
+    let nonces = ChainNonces {
+        latest: 0,
+        pending: Some(0),
+    };
+    db.update_relayer_nonce(UNRESPONSIVE_CHAIN_ID, relayer.address, nonces)
         .await?;
     let gwei: U256 = parse_units("1", "gwei")?.into();
     db.save_block(1, UNRESPONSIVE_CHAIN_ID, chrono::Utc::now(), &[])
