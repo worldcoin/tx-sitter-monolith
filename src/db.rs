@@ -157,19 +157,93 @@ impl Database {
         connection.close().await?;
 
         tracing::info!("Connecting to the database");
-        let pool_options = connect_options.clone().options(POOL_TIMEOUTS.map(
-            |(setting, timeout)| {
-                (setting, format!("{}ms", timeout.as_millis()))
-            },
-        ));
-        let pool = PgPoolOptions::new().connect_with(pool_options).await?;
+        let db = Self::connect_existing(connect_options, PgPoolOptions::new())
+            .await?;
+
+        tracing::info!("Database initialized");
+        Ok(db)
+    }
+
+    /// Connects to the existing database of `config` for a one-off command
+    /// that only reads it, such as `config dump`.
+    ///
+    /// It neither creates nor migrates the database, so it reads databases
+    /// of older versions, and every transaction of its connections is
+    /// read-only.
+    pub async fn connect_read_only(
+        config: &DatabaseConfig,
+    ) -> eyre::Result<Self> {
+        let options = connect_options(config)?
+            .options([("default_transaction_read_only", "on")]);
+
+        Self::connect_existing(options, one_off_pool()).await
+    }
+
+    /// Connects to the existing database of `config` for a one-off command
+    /// that writes it, such as `relayer reset`.
+    ///
+    /// It neither creates nor migrates the database, and fails unless the
+    /// database has exactly the migrations of this binary, so that the
+    /// command only writes a schema it knows.
+    pub async fn connect_current(
+        config: &DatabaseConfig,
+    ) -> eyre::Result<Self> {
+        let db =
+            Self::connect_existing(connect_options(config)?, one_off_pool())
+                .await?;
+
+        let applied: Vec<(i64,)> = sqlx::query_as(
+            "SELECT version FROM _sqlx_migrations WHERE success",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .context("Reading the database's migrations")?;
+        let applied: BTreeSet<i64> =
+            applied.into_iter().map(|(version,)| version).collect();
+        let known: BTreeSet<i64> =
+            MIGRATOR.iter().map(|migration| migration.version).collect();
+
+        let missing: Vec<&i64> = known.difference(&applied).collect();
+        if !missing.is_empty() {
+            eyre::bail!(
+                "The database schema is older than this binary, it lacks \
+                 migrations {missing:?}. Use the binary of the deployed \
+                 version."
+            );
+        }
+        let unknown: Vec<&i64> = applied.difference(&known).collect();
+        if !unknown.is_empty() {
+            eyre::bail!(
+                "The database schema is newer than this binary, it has \
+                 migrations {unknown:?}. Use the binary of the deployed \
+                 version."
+            );
+        }
+
+        Ok(db)
+    }
+
+    /// Connects `pool` to the database of `options`, with [`POOL_TIMEOUTS`].
+    async fn connect_existing(
+        options: PgConnectOptions,
+        pool: PgPoolOptions,
+    ) -> eyre::Result<Self> {
+        let pool_options =
+            options
+                .clone()
+                .options(POOL_TIMEOUTS.map(|(setting, timeout)| {
+                    (setting, format!("{}ms", timeout.as_millis()))
+                }));
+        let pool = pool
+            .connect_with(pool_options)
+            .await
+            .context("Connecting to the database")?;
         check_timeouts(&pool).await?;
 
         let probe_pool = PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy_with(connect_options);
+            .connect_lazy_with(options);
 
-        tracing::info!("Database initialized");
         Ok(Self { pool, probe_pool })
     }
 
@@ -1516,8 +1590,8 @@ impl Database {
     /// holds `version`.
     ///
     /// - Networks are upserted, and `rpcs` gets the first HTTP RPC and the WS
-    ///   RPC of each, which previous versions read. Networks missing from
-    ///   `networks` are left as they are.
+    ///   RPC of each, which previous versions read and `config dump` prints.
+    ///   Networks missing from `networks` are left as they are.
     /// - Relayers are upserted and keep their nonces.
     /// - Relayers missing from `relayers` are disabled rather than deleted,
     ///   because their transactions reference them, and lose their API keys.
@@ -1572,8 +1646,8 @@ impl Database {
             if enabled_relayers > 0 {
                 eyre::bail!(
                     "The config defines no relayers, but the database has \
-                     {enabled_relayers} enabled relayers. Add them to the \
-                     config, or disable them first."
+                     {enabled_relayers} enabled relayers. Run `tx-sitter \
+                     config dump` to write them into the config."
                 );
             }
         }
@@ -1735,6 +1809,31 @@ impl Database {
         .bind(TxStatus::Pending)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    /// Returns the hashes of the API keys of every relayer, by relayer id.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_api_key_hashes(
+        &self,
+    ) -> eyre::Result<Vec<(String, B256)>> {
+        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+            r#"
+            SELECT   relayer_id, key_hash
+            FROM     api_keys
+            ORDER BY relayer_id, key_hash
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|(relayer_id, key_hash)| {
+                let key_hash = B256::try_from(key_hash.as_slice())
+                    .context("API key hash is not 32 bytes")?;
+
+                Ok((relayer_id, key_hash))
+            })
+            .collect()
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -1973,6 +2072,18 @@ async fn count_queued_txs(
     .await?;
 
     Ok(tx_count as usize)
+}
+
+/// The pool of a one-off command, which needs few connections
+fn one_off_pool() -> PgPoolOptions {
+    PgPoolOptions::new().max_connections(2)
+}
+
+fn connect_options(config: &DatabaseConfig) -> eyre::Result<PgConnectOptions> {
+    config
+        .to_connection_string()
+        .parse()
+        .context("Invalid database connection string")
 }
 
 /// The advisory lock that serialises [`Database::apply_static_config`]
@@ -2526,6 +2637,99 @@ mod tests {
     #[tokio::test]
     async fn migration() -> eyre::Result<()> {
         let (_db, _db_container) = setup_db().await?;
+
+        Ok(())
+    }
+
+    fn database_config(
+        db_container: &DockerContainerGuard,
+        database: &str,
+    ) -> DatabaseConfig {
+        DatabaseConfig::connection_string(format!(
+            "postgres://postgres:postgres@{}/{database}",
+            db_container.address()
+        ))
+    }
+
+    #[tokio::test]
+    async fn read_only_connections_reject_writes() -> eyre::Result<()> {
+        let (_db, db_container) = setup_db().await?;
+
+        let db = Database::connect_read_only(&database_config(
+            &db_container,
+            "database",
+        ))
+        .await?;
+
+        assert_eq!(db.get_relayers().await?, vec![]);
+        let err = sqlx::query("DELETE FROM api_keys")
+            .execute(&db.pool)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("read-only transaction"), "{err}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn one_off_connections_dont_create_the_database() -> eyre::Result<()>
+    {
+        let (_db, db_container) = setup_db().await?;
+        let config = database_config(&db_container, "missing");
+
+        assert!(Database::connect_read_only(&config).await.is_err());
+        assert!(Database::connect_current(&config).await.is_err());
+
+        assert!(
+            !Postgres::database_exists(&config.to_connection_string()).await?
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn current_connections_require_this_binarys_migrations(
+    ) -> eyre::Result<()> {
+        let (db, db_container) = setup_db().await?;
+        let config = database_config(&db_container, "database");
+        Database::connect_current(&config).await?;
+
+        let latest = MIGRATOR.iter().map(|m| m.version).max().unwrap();
+        sqlx::query(
+            "UPDATE _sqlx_migrations SET version = 9999 WHERE version = $1",
+        )
+        .bind(latest)
+        .execute(&db.pool)
+        .await?;
+
+        let err = Database::connect_current(&config).await.err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "The database schema is older than this binary, it lacks \
+                 migrations [{latest}]. Use the binary of the deployed \
+                 version."
+            )
+        );
+
+        sqlx::query(
+            r#"
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            SELECT $1, description, success, checksum, execution_time
+            FROM   _sqlx_migrations
+            WHERE  version = 9999
+            "#,
+        )
+        .bind(latest)
+        .execute(&db.pool)
+        .await?;
+
+        let err = Database::connect_current(&config).await.err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            "The database schema is newer than this binary, it has \
+             migrations [9999]. Use the binary of the deployed version."
+        );
 
         Ok(())
     }
