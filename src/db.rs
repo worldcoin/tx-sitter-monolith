@@ -5,7 +5,7 @@ use std::time::Duration;
 use alloy::primitives::{Address, B256, U256};
 use chrono::{DateTime, Utc};
 use sqlx::migrate::{MigrateDatabase, Migrator};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use sqlx::types::{BigDecimal, Json};
 use sqlx::{Connection, PgConnection, PgExecutor, Pool, Postgres, Row};
 use tracing::instrument;
@@ -15,6 +15,7 @@ use crate::config::DatabaseConfig;
 use crate::db::data::{NetworkInfo, RelayerInfo};
 use crate::db::wrappers::h256::H256Wrapper;
 use crate::db::wrappers::hex_u256::HexU256Wrapper;
+use crate::tx_events::EventCursor;
 use crate::types::{
     RelayerUpdateRequest, TransactionPriority, TxMetadata, TxStatus,
 };
@@ -24,7 +25,7 @@ pub mod wrappers;
 
 use self::data::{
     BlockFees, NetworkStats, ReadTxData, RelayerStaleTxs,
-    RelayerTxsAtMaxEscalations, RpcKind, TxEventsLag,
+    RelayerTxsAtMaxEscalations, RpcKind, TxEventData, TxEventsLag,
 };
 pub use self::data::{TxForEscalation, UnsentTx};
 
@@ -47,7 +48,7 @@ const STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// without running a statement before Postgres closes it.
 ///
 /// An open transaction holds back the event feed, see
-/// [`Database::get_tx_events_lag`].
+/// [`Database::read_tx_events`].
 const IDLE_IN_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The settings every connection of [`Database::pool`] asks for
@@ -59,11 +60,17 @@ const POOL_TIMEOUTS: [(&str, Duration); 2] = [
     ),
 ];
 
+/// The channel that storing tx events notifies, with the relayer id as the
+/// payload. The `tx_events_notify` trigger sends it.
+const TX_EVENTS_CHANNEL: &str = "tx_events";
+
 pub struct Database {
     /// Connections with [`POOL_TIMEOUTS`]
     pub pool: Pool<Postgres>,
     /// Reserved for [`Database::ping`]
     probe_pool: Pool<Postgres>,
+    /// The options of [`Database::pool`]'s connections
+    pool_options: PgConnectOptions,
 }
 
 /// The outcome of [`Database::create_transaction`].
@@ -84,6 +91,15 @@ pub enum CreateResult {
     NonceTaken {
         nonce: u64,
     },
+}
+
+/// The outcome of [`Database::read_tx_events`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TxEventsPage {
+    Events(Vec<TxEventData>),
+    /// Pruning deleted events after the cursor, which the reader may not
+    /// have seen
+    CursorExpired,
 }
 
 /// How a send request relates to the transaction stored under its id
@@ -123,7 +139,9 @@ impl Database {
                 (setting, format!("{}ms", timeout.as_millis()))
             },
         ));
-        let pool = PgPoolOptions::new().connect_with(pool_options).await?;
+        let pool = PgPoolOptions::new()
+            .connect_with(pool_options.clone())
+            .await?;
         check_timeouts(&pool).await?;
 
         let probe_pool = PgPoolOptions::new()
@@ -131,7 +149,11 @@ impl Database {
             .connect_lazy_with(connect_options);
 
         tracing::info!("Database initialized");
-        Ok(Self { pool, probe_pool })
+        Ok(Self {
+            pool,
+            probe_pool,
+            pool_options,
+        })
     }
 
     /// Checks that the database answers a trivial query within `timeout`.
@@ -1262,6 +1284,91 @@ impl Database {
         .await?)
     }
 
+    /// Returns up to `limit` of the events of relayer `relayer_id` that follow
+    /// `after`, or that follow [`EventCursor::START`] without a cursor, in
+    /// feed order.
+    ///
+    /// The feed orders events by the database transaction that stored them,
+    /// then by their id. It holds back the events of a transaction while an
+    /// older one is still running anywhere on the database server: a
+    /// transaction can take a lower id and commit after one with a higher id,
+    /// and holding back keeps it from landing before an event the feed
+    /// already served. A transaction that stays open stalls the feed, which
+    /// [`Database::get_tx_events_lag`] shows.
+    ///
+    /// An event's metadata is `None` once its transaction was pruned.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn read_tx_events(
+        &self,
+        relayer_id: &str,
+        after: Option<EventCursor>,
+        limit: u32,
+    ) -> eyre::Result<TxEventsPage> {
+        let start = after.unwrap_or(EventCursor::START);
+
+        let events: Vec<TxEventData> = sqlx::query_as(
+            r#"
+            SELECT    e.tx_xid, e.id, e.tx_id, e.relayer_id, r.chain_id, e.status,
+                      e.tx_hash, t.metadata, e.created_at
+            FROM      tx_events e
+            JOIN      relayers r ON r.id = e.relayer_id
+            LEFT JOIN transactions t ON t.id = e.tx_id
+            WHERE     e.relayer_id = $1
+            AND       (e.tx_xid, e.id) > ($2, $3)
+            AND       e.tx_xid < (SELECT pg_snapshot_xmin(pg_current_snapshot()))
+            ORDER BY  e.tx_xid, e.id
+            LIMIT     $4
+            "#,
+        )
+        .bind(relayer_id)
+        .bind(start.tx_xid)
+        .bind(start.id)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Checked after the read, so that pruning which deleted events before
+        // the read shows here too
+        if let Some(after) = after {
+            let (is_expired,): (bool,) = sqlx::query_as(
+                r#"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM   tx_events_pruned
+                    WHERE  (tx_xid, id) > ($1, $2)
+                )
+                "#,
+            )
+            .bind(after.tx_xid)
+            .bind(after.id)
+            .fetch_one(&self.pool)
+            .await?;
+
+            if is_expired {
+                return Ok(TxEventsPage::CursorExpired);
+            }
+        }
+
+        Ok(TxEventsPage::Events(events))
+    }
+
+    /// Connects a listener for the notifications that storing events of a
+    /// relayer sends, with the relayer id as their payload.
+    ///
+    /// Every listener has a connection of its own. Notifications sent while
+    /// it isn't connected are lost, and [`PgListener::try_recv`] returns
+    /// `Ok(None)` or an error once the connection is.
+    pub async fn listen_tx_events(&self) -> eyre::Result<PgListener> {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy_with(self.pool_options.clone());
+
+        let mut listener = PgListener::connect_with(&pool).await?;
+        listener.listen(TX_EVENTS_CHANNEL).await?;
+
+        Ok(listener)
+    }
+
     /// Records `nonce`, the on-chain transaction count of `relayer_address`,
     /// as the confirmed nonce of its relayers on `chain_id`, and moves their
     /// local nonce up to it.
@@ -1406,9 +1513,8 @@ impl Database {
     /// Deletes up to `batch_size` of the events stored before `timestamp`,
     /// and returns how many it deleted.
     ///
-    /// It records the last position in the feed it deleted, in `(tx_xid, id)`
-    /// order, so that the feed can tell a cursor before it may have missed
-    /// events.
+    /// It records the last position in the feed it deleted, so that the feed
+    /// answers a cursor before it with [`TxEventsPage::CursorExpired`].
     #[instrument(skip(self), level = "debug")]
     pub async fn prune_tx_events(
         &self,
@@ -1467,7 +1573,8 @@ impl Database {
                            LIMIT    1
                        ),
                        0
-                   ) AS held_back_seconds
+                   ) AS held_back_seconds,
+                   pg_notification_queue_usage() AS notification_queue_usage
             "#,
         )
         .fetch_one(&self.pool)
@@ -2911,6 +3018,7 @@ mod tests {
 
         let lag = db.get_tx_events_lag().await?;
         assert!(lag.held_back_seconds >= 1.0, "{lag:?}");
+        assert!(lag.notification_queue_usage < 0.01, "{lag:?}");
 
         a.commit().await?;
         assert_eq!(db.get_tx_events_lag().await?.held_back_seconds, 0.0);
@@ -2962,6 +3070,184 @@ mod tests {
         assert_eq!(last_pruned(&db).await?, later);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn feed_holds_back_events_until_older_transactions_finish(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        for tx_id in ["a", "b"] {
+            create_tx(&db, &relayer_id, tx_id).await?;
+        }
+
+        // A takes the lower event id and commits after B
+        let mut a = db.pool.begin().await?;
+        insert_pending_tx_event(a.as_mut(), "a", B256::with_last_byte(1))
+            .await?;
+        insert_pending_tx_event(&db.pool, "b", B256::with_last_byte(2)).await?;
+
+        assert_eq!(read_events(&db, &relayer_id, None).await?, []);
+
+        a.commit().await?;
+
+        let events = read_events(&db, &relayer_id, None).await?;
+        let tx_ids: Vec<_> = events.iter().map(|e| e.tx_id.as_str()).collect();
+        assert_eq!(tx_ids, ["a", "b"]);
+        assert!(events[0].cursor < events[1].cursor);
+        assert!(events[0].cursor.id < events[1].cursor.id);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn feed_pages_follow_the_cursor() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        let other_relayer_id = create_relayer(&db).await?;
+        let metadata: TxMetadata =
+            serde_json::from_str(r#"{ "amount": 18446744073709551617 }"#)?;
+        db.create_transaction(
+            "with_metadata",
+            Address::with_last_byte(1),
+            &[],
+            U256::ZERO,
+            U256::from(21_000),
+            TransactionPriority::Regular,
+            None,
+            &relayer_id,
+            Some(&metadata),
+            None,
+        )
+        .await?;
+        create_tx(&db, &other_relayer_id, "other").await?;
+        for (tx_id, hash_byte) in [("with_metadata", 1), ("other", 2)] {
+            let fee = U256::from(1);
+            db.insert_tx_broadcast(
+                tx_id,
+                B256::with_last_byte(hash_byte),
+                &[hash_byte],
+                fee,
+                fee,
+            )
+            .await?;
+        }
+        db.escalate_tx(
+            "with_metadata",
+            0,
+            B256::with_last_byte(3),
+            &[3],
+            U256::from(2),
+            U256::from(2),
+        )
+        .await?;
+
+        let first_page = read_events_page(&db, &relayer_id, None, 1).await?;
+        let [first] = &first_page[..] else {
+            panic!("Expected one event, got {first_page:?}");
+        };
+        let second_page =
+            read_events_page(&db, &relayer_id, Some(first.cursor), 10).await?;
+        let [second] = &second_page[..] else {
+            panic!("Expected one event, got {second_page:?}");
+        };
+        let last_page =
+            read_events_page(&db, &relayer_id, Some(second.cursor), 10).await?;
+
+        assert_eq!(first.tx_id, "with_metadata");
+        assert_eq!(first.relayer_id, relayer_id);
+        assert_eq!(first.chain_id, 123);
+        assert_eq!(first.status, TxStatus::Pending);
+        assert_eq!(first.tx_hash, Some(H256Wrapper(B256::with_last_byte(1))));
+        assert_eq!(second.tx_hash, Some(H256Wrapper(B256::with_last_byte(3))));
+        assert_eq!(
+            second.metadata.as_ref().map(TxMetadata::as_str),
+            Some(metadata.as_str())
+        );
+        assert_eq!(last_page, []);
+        let other_events = read_events(&db, &other_relayer_id, None).await?;
+        assert_eq!(other_events.len(), 1);
+        assert_eq!(other_events[0].tx_id, "other");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn feed_refuses_cursors_before_pruned_events() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        for i in 0..3 {
+            let tx_id = format!("tx_{i}");
+            create_tx(&db, &relayer_id, &tx_id).await?;
+            insert_pending_tx_event(&db.pool, &tx_id, B256::with_last_byte(i))
+                .await?;
+        }
+        let events = read_events(&db, &relayer_id, None).await?;
+        sqlx::query("UPDATE tx_events SET created_at = now() - interval '2 days' WHERE tx_id <> 'tx_2'")
+            .execute(&db.pool)
+            .await?;
+
+        let prune_timestamp = Utc::now() - chrono::Duration::days(1);
+        assert_eq!(db.prune_tx_events(prune_timestamp, 1).await?, 1);
+        assert_eq!(db.prune_tx_events(prune_timestamp, 1).await?, 1);
+        assert_eq!(db.prune_tx_events(prune_timestamp, 1).await?, 0);
+
+        for cursor in [EventCursor::START, events[0].cursor] {
+            assert_eq!(
+                db.read_tx_events(&relayer_id, Some(cursor), 10).await?,
+                TxEventsPage::CursorExpired,
+                "{cursor:?}"
+            );
+        }
+        // Nothing after the last pruned event is missing
+        assert_eq!(
+            read_events(&db, &relayer_id, Some(events[1].cursor)).await?,
+            events[2..]
+        );
+        assert_eq!(read_events(&db, &relayer_id, None).await?, events[2..]);
+        assert_eq!(
+            read_events(&db, &relayer_id, Some(events[2].cursor)).await?,
+            []
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listener_receives_relayer_ids_of_committed_events(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        create_tx(&db, &relayer_id, "tx").await?;
+        let connections_before = client_connections(&db).await?;
+
+        for _ in 0..3 {
+            let mut listener = db.listen_tx_events().await?;
+            let mut tx = db.pool.begin().await?;
+            insert_pending_tx_event(tx.as_mut(), "tx", B256::with_last_byte(1))
+                .await?;
+
+            let before_commit = tokio::time::timeout(
+                Duration::from_millis(200),
+                listener.try_recv(),
+            )
+            .await;
+            assert!(before_commit.is_err(), "{before_commit:?}");
+
+            tx.commit().await?;
+            let notification = listener.try_recv().await?.context("Lost")?;
+            assert_eq!(notification.channel(), TX_EVENTS_CHANNEL);
+            assert_eq!(notification.payload(), relayer_id);
+        }
+
+        // Dropped listeners close their connections
+        for _ in 0..50 {
+            if client_connections(&db).await? == connections_before {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        eyre::bail!("Dropped listeners kept their connections open");
     }
 
     #[tokio::test]
@@ -3527,6 +3813,27 @@ mod tests {
         Ok(tx_id)
     }
 
+    /// Returns up to 100 events of `relayer_id` after `after`.
+    async fn read_events(
+        db: &Database,
+        relayer_id: &str,
+        after: Option<EventCursor>,
+    ) -> eyre::Result<Vec<TxEventData>> {
+        read_events_page(db, relayer_id, after, 100).await
+    }
+
+    async fn read_events_page(
+        db: &Database,
+        relayer_id: &str,
+        after: Option<EventCursor>,
+        limit: u32,
+    ) -> eyre::Result<Vec<TxEventData>> {
+        match db.read_tx_events(relayer_id, after, limit).await? {
+            TxEventsPage::Events(events) => Ok(events),
+            TxEventsPage::CursorExpired => eyre::bail!("Cursor expired"),
+        }
+    }
+
     /// Returns the status and valid hash of every event stored for `tx_id`,
     /// in feed order.
     async fn tx_event_changes(
@@ -3567,6 +3874,16 @@ mod tests {
         Ok(sqlx::query_as("SELECT tx_xid, id FROM tx_events_pruned")
             .fetch_one(&db.pool)
             .await?)
+    }
+
+    async fn client_connections(db: &Database) -> eyre::Result<i64> {
+        let (connections,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pg_stat_activity WHERE backend_type = 'client backend'",
+        )
+        .fetch_one(&db.pool)
+        .await?;
+
+        Ok(connections)
     }
 
     /// Returns the hashes stored for `tx_id`, oldest first.

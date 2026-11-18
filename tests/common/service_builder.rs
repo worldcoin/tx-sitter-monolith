@@ -27,6 +27,7 @@ pub struct ServiceBuilder {
     task_stall_timeout: Duration,
     tx_retention: Duration,
     shutdown_timeout: Duration,
+    max_event_waiters: usize,
     shutdown: CancellationToken,
     inserts_predefined_values: bool,
 }
@@ -43,6 +44,7 @@ impl Default for ServiceBuilder {
             task_stall_timeout: Duration::from_secs(60),
             tx_retention: Duration::from_secs(30 * 24 * 60 * 60),
             shutdown_timeout: Duration::from_secs(20),
+            max_event_waiters: 64,
             shutdown: CancellationToken::new(),
             inserts_predefined_values: true,
         }
@@ -92,6 +94,11 @@ impl ServiceBuilder {
 
     pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
+        self
+    }
+
+    pub fn max_event_waiters(mut self, max: usize) -> Self {
+        self.max_event_waiters = max;
         self
     }
 
@@ -157,6 +164,7 @@ impl ServiceBuilder {
                     0,
                 )),
                 shutdown_timeout: self.shutdown_timeout,
+                max_event_waiters: self.max_event_waiters,
                 username: None,
                 password: None,
                 server_address: None,

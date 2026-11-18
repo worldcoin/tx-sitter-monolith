@@ -40,6 +40,8 @@ pub async fn emit_metrics(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
         let tx_events_lag = app.db.get_tx_events_lag().await?;
         metrics::gauge!("tx_events_held_back_seconds")
             .set(tx_events_lag.held_back_seconds);
+        metrics::gauge!("notification_queue_usage")
+            .set(tx_events_lag.notification_queue_usage);
 
         ctx.idle(EMIT_METRICS_INTERVAL).await;
     }

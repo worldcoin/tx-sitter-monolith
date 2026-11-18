@@ -64,7 +64,7 @@ The Tx Sitter can be configured in 2 ways:
 `service.role` (`TX_SITTER__SERVICE__ROLE`) selects what a process runs:
 
 - `all` (default): the HTTP API and the background tasks.
-- `api`: the HTTP API only.
+- `api`: the HTTP API only, and the listener for its event feed.
 - `worker`: the background tasks, with only the health endpoints over HTTP.
 
 Run exactly one `worker` or `all` process per database, next to any number of `api` processes.
@@ -86,11 +86,20 @@ To recover, reset the relayer with `POST /1/admin/relayer/{relayer_id}/reset`. T
 
 ### Relayer API v2
 
-`POST /2/tx` and `GET /2/tx/{txId}` take the relayer's API key in an `Authorization: Bearer <api key>` header, never in the URL. The v1 API under `/1/api/<api key>/` is unchanged.
+`POST /2/tx`, `GET /2/tx/{txId}` and `GET /2/events` take the relayer's API key in an `Authorization: Bearer <api key>` header, never in the URL. The v1 API under `/1/api/<api key>/` is unchanged.
 
 A send may carry `metadata`, a JSON object of at most 64 KiB that tx-sitter stores and returns byte for byte. Sending a `txId` again with an identical request, metadata text included, returns the existing transaction without taking a nonce. A different request with the same `txId` returns 409. That holds while the transaction is kept: finalized transactions are deleted `service.tx_retention` (default `30d`) after they are mined.
 
 Every v2 error is a JSON `{ "errorId": ..., "errorMessage": ... }` whose `errorId` stays stable. The OpenAPI schema lists them per status.
+
+### Transaction events
+
+`GET /2/events` returns the status changes of the relayer's transactions in order: `pending` when a transaction is broadcast, escalated or reorged out of its block, `mined` when it is in a block or reorged into another one, and `finalized`. Each event carries the transaction's id, hash and `metadata`. A consumer keeps the response's `nextCursor` and passes it back as `after`, so it gets every event once, in order, also after a restart. `wait=<seconds>` (at most 30) waits for an event when there is none.
+
+- Events are stored in the database transaction that makes the change. The feed returns an event only once every database transaction that started writing before it has finished, so that no event is stored behind one already returned. A transaction that stays open holds the feed back; Postgres closes tx-sitter's own connections after 30s idle in a transaction, and the worker's `tx_events_held_back_seconds` gauge shows how long the feed has been held back.
+- Events are deleted `service.event_retention` (default `7d`) after they are stored. A cursor from before deleted events gets 410 `cursor_expired`: the consumer may have missed events and has to restart without a cursor.
+- Every process that serves the API listens for new events on one database connection. At most `server.max_event_waiters` (default `64`) requests wait at once per process; further ones get 503 `too_many_waiters` with `Retry-After`.
+- `notification_queue_usage` is the fraction of Postgres' notification queue in use. Storing events, and with them every status change, fails once it is full.
 
 ## Running tests
 

@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::keys::local_keys::signing_key_from_hex;
 use crate::task_runner::{TaskContext, TaskRunner};
 use crate::tasks;
+use crate::tx_events::{self, EventNotifier};
 
 const NETWORK_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -43,12 +44,27 @@ impl Service {
             app.config.service.task_stall_timeout,
         ));
 
+        let event_notifier = Arc::new(EventNotifier::new(
+            app.config.server.max_event_waiters,
+            shutdown.clone(),
+        ));
         let server = crate::server::spawn_server(
             app.clone(),
             task_runner.clone(),
+            event_notifier.clone(),
             shutdown.clone(),
         )
         .await?;
+
+        if app.config.service.role.serves_api() {
+            task_runner.add_task("listen_tx_events", move |app, ctx| {
+                tx_events::listen_for_tx_events(
+                    app,
+                    ctx,
+                    event_notifier.clone(),
+                )
+            });
+        }
 
         if app.config.service.role.runs_tasks() {
             tracing::info!("Spawning tasks");

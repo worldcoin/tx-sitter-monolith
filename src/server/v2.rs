@@ -1,15 +1,16 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use poem::error::ResponseError;
-use poem::http::StatusCode;
+use poem::http::{header, StatusCode};
 use poem::web::Data;
 use poem::{Endpoint, EndpointExt, IntoResponse, Request, Response};
-use poem_openapi::param::Path;
+use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::{Json, Payload};
 use poem_openapi::registry::{
-    MetaMediaType, MetaResponse, MetaResponses, Registry,
+    MetaHeader, MetaMediaType, MetaResponse, MetaResponses, Registry,
 };
 use poem_openapi::types::Type;
 use poem_openapi::{ApiResponse, OpenApi};
@@ -20,15 +21,19 @@ use super::{
     ensure_relayer_accepts_tx, parse_gas_limit, OpenAPITags, SendTxError,
 };
 use crate::app::App;
-use crate::db::{CreateResult, TxIdMatch};
+use crate::db::{CreateResult, TxEventsPage, TxIdMatch};
+use crate::tx_events::{EventCursor, EventNotifier, TooManyWaiters};
 use crate::types::{
-    ErrorResponse, ErrorResponseBody, GetTxResponseV2, SendTxRequestV2,
-    SendTxResponse,
+    ErrorResponse, ErrorResponseBody, GetTxEventsResponse, GetTxResponseV2,
+    SendTxRequestV2, SendTxResponse,
 };
 
 /// The largest `POST /2/tx` body: room for the largest transaction nodes
 /// relay (128 KiB of calldata, hex encoded) plus the metadata
 const MAX_SEND_TX_BODY_SIZE: usize = 512 * 1024;
+
+/// When a request refused with `too_many_waiters` may try again
+const WAITER_RETRY_AFTER: Duration = Duration::from_secs(1);
 
 pub struct RelayerApiV2;
 
@@ -138,6 +143,86 @@ impl RelayerApiV2 {
 
         Ok(ExactJson(tx.into()))
     }
+
+    /// Get Transaction Events
+    ///
+    /// Returns the status changes of the relayer's transactions in the order
+    /// they happened, at most `limit` of them. Pass `nextCursor` as `after`
+    /// to get the ones that follow. An event is returned once every
+    /// database transaction that started writing before it has finished, so
+    /// no event is stored later before one already returned.
+    ///
+    /// With `wait`, a request that finds no events waits up to that many
+    /// seconds for one and then returns the events stored by then, possibly
+    /// none.
+    ///
+    /// Events are kept for `service.event_retention` (7 days by default). A
+    /// cursor older than that gets 410, because events after it may be gone.
+    #[oai(
+        path = "/events",
+        method = "get",
+        operation_id = "get_events_v2",
+        tag = "OpenAPITags::RelayerV2",
+        transform = "api_errors"
+    )]
+    async fn get_events(
+        &self,
+        api_key: BearerApiKey,
+        Data(app): Data<&Arc<App>>,
+        Data(notifier): Data<&Arc<EventNotifier>>,
+        /// The `nextCursor` of an earlier response. Without it the feed
+        /// starts at the oldest event kept.
+        Query(after): Query<Option<String>>,
+        /// The most events to return
+        #[oai(
+            default = "default_events_limit",
+            validator(minimum(value = "1"), maximum(value = "1000"))
+        )]
+        Query(limit): Query<u32>,
+        /// How many seconds to wait for an event while there are none
+        #[oai(default, validator(maximum(value = "30")))]
+        Query(wait): Query<u64>,
+    ) -> Result<ExactJson<GetTxEventsResponse>, ApiError> {
+        let api_key = api_key.authorize(app).await?;
+        let relayer_id = api_key.relayer_id();
+        let after = after
+            .map(|after| after.parse::<EventCursor>())
+            .transpose()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "after isn't a cursor of this feed",
+                )
+            })?;
+
+        let mut poll =
+            notifier.long_poll(relayer_id, Duration::from_secs(wait));
+        loop {
+            let events = match app
+                .db
+                .read_tx_events(relayer_id, after, limit)
+                .await?
+            {
+                TxEventsPage::Events(events) => events,
+                TxEventsPage::CursorExpired => {
+                    return Err(ApiError::new(
+                        StatusCode::GONE,
+                        "cursor_expired",
+                        "Events after the cursor were deleted, restart without a cursor",
+                    ))
+                }
+            };
+
+            if !events.is_empty() || !poll.wait().await? {
+                return Ok(ExactJson(GetTxEventsResponse::new(events, after)));
+            }
+        }
+    }
+}
+
+fn default_events_limit() -> u32 {
+    100
 }
 
 fn repeated_send(tx_id: String) -> ExactJson<SendTxResponse> {
@@ -196,6 +281,8 @@ pub struct ApiError {
     error_id: &'static str,
     message: Cow<'static, str>,
     cause: Option<eyre::Report>,
+    /// Sent as the `Retry-After` header
+    retry_after: Option<Duration>,
 }
 
 impl ApiError {
@@ -209,6 +296,7 @@ impl ApiError {
             error_id,
             message: message.into(),
             cause: None,
+            retry_after: None,
         }
     }
 
@@ -266,6 +354,19 @@ impl From<SendTxError> for ApiError {
     }
 }
 
+impl From<TooManyWaiters> for ApiError {
+    fn from(TooManyWaiters: TooManyWaiters) -> Self {
+        Self {
+            retry_after: Some(WAITER_RETRY_AFTER),
+            ..Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "too_many_waiters",
+                "Too many requests are waiting for events, retry later",
+            )
+        }
+    }
+}
+
 impl From<eyre::Report> for ApiError {
     fn from(err: eyre::Report) -> Self {
         Self::internal(err)
@@ -319,8 +420,20 @@ impl ResponseError for ApiError {
     }
 
     fn as_response(&self) -> Response {
-        ErrorResponse::new(self.status, self.error_id, self.message.clone())
-            .into_response()
+        let mut response = ErrorResponse::new(
+            self.status,
+            self.error_id,
+            self.message.clone(),
+        )
+        .into_response();
+
+        if let Some(retry_after) = self.retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, retry_after.as_secs().into());
+        }
+
+        response
     }
 }
 
@@ -347,6 +460,10 @@ const ERROR_RESPONSES: &[(StatusCode, &str)] = &[
         "`transaction_already_exists`: a different request already used this `txId`",
     ),
     (
+        StatusCode::GONE,
+        "`cursor_expired`: events after the cursor were deleted",
+    ),
+    (
         StatusCode::PAYLOAD_TOO_LARGE,
         "`payload_too_large`: the request body is over 512 KiB",
     ),
@@ -368,7 +485,8 @@ const ERROR_RESPONSES: &[(StatusCode, &str)] = &[
     ),
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        "`balance_unavailable`: the relayer's balance couldn't be checked, retry later",
+        "`balance_unavailable`: the relayer's balance couldn't be checked, retry later. \
+         `too_many_waiters`: too many requests wait for events, retry after `Retry-After` seconds",
     ),
 ];
 
@@ -383,7 +501,12 @@ impl ApiResponse for ApiError {
                     content_type: Json::<ErrorResponseBody>::CONTENT_TYPE,
                     schema: ErrorResponseBody::schema_ref(),
                 }],
-                headers: vec![],
+                headers: match status {
+                    StatusCode::SERVICE_UNAVAILABLE => {
+                        vec![retry_after_header()]
+                    }
+                    _ => vec![],
+                },
             })
             .collect();
 
@@ -392,5 +515,18 @@ impl ApiResponse for ApiError {
 
     fn register(registry: &mut Registry) {
         ErrorResponseBody::register(registry);
+    }
+}
+
+fn retry_after_header() -> MetaHeader {
+    MetaHeader {
+        name: header::RETRY_AFTER.to_string(),
+        description: Some(
+            "Seconds to wait before retrying, sent with `too_many_waiters`"
+                .to_string(),
+        ),
+        required: false,
+        deprecated: false,
+        schema: u64::schema_ref(),
     }
 }

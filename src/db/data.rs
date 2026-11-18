@@ -8,6 +8,7 @@ use crate::db::wrappers::address::AddressWrapper;
 use crate::db::wrappers::decimal_u256::DecimalU256Wrapper;
 use crate::db::wrappers::h256::H256Wrapper;
 use crate::db::wrappers::hex_u256::HexU256Wrapper;
+use crate::tx_events::EventCursor;
 use crate::types::{TransactionPriority, TxMetadata, TxStatus};
 
 #[derive(Debug, Clone, FromRow)]
@@ -101,6 +102,27 @@ pub struct ReadTxData {
     pub mined_at: Option<DateTime<Utc>>,
 }
 
+/// A status change of a transaction, see
+/// [`Database::read_tx_events`](crate::db::Database::read_tx_events).
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct TxEventData {
+    /// The event's position in the feed
+    #[sqlx(flatten)]
+    pub cursor: EventCursor,
+    pub tx_id: String,
+    pub relayer_id: String,
+    #[sqlx(try_from = "i64")]
+    pub chain_id: u64,
+    /// The status the transaction changed to
+    pub status: TxStatus,
+    /// The transaction's valid hash after the change
+    pub tx_hash: Option<H256Wrapper>,
+    /// The caller's metadata, `None` for v1 sends and once the transaction
+    /// is pruned
+    pub metadata: Option<TxMetadata>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// How far the event feed is behind the events stored.
 #[derive(Debug, Clone, FromRow, PartialEq)]
 pub struct TxEventsLag {
@@ -108,6 +130,9 @@ pub struct TxEventsLag {
     /// holds back none. A database transaction that writes and stays open
     /// holds back every event stored after its first write.
     pub held_back_seconds: f64,
+    /// The fraction of Postgres' notification queue in use. Storing events
+    /// fails once it is full, which a listener that stops reading causes.
+    pub notification_queue_usage: f64,
 }
 
 #[derive(Debug, Clone)]
