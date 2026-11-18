@@ -259,7 +259,9 @@ async fn polls_beyond_max_event_waiters_get_503() -> eyre::Result<()> {
     assert_eq!((waited.len(), refused.len()), (1, 2));
     for response in refused {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(response.headers()["retry-after"], "1");
+        let retry_after: u64 =
+            response.headers()["retry-after"].to_str()?.parse()?;
+        assert!((1..=3).contains(&retry_after), "Retry-After: {retry_after}");
         let error: ErrorResponseBody = response.json().await?;
         assert_eq!(error.error_id, "too_many_waiters");
     }

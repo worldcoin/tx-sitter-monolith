@@ -1,7 +1,10 @@
 use std::borrow::Cow;
 use std::fmt;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
+
+use eyre::Context;
 
 use poem::error::ResponseError;
 use poem::http::{header, StatusCode};
@@ -14,6 +17,7 @@ use poem_openapi::registry::{
 };
 use poem_openapi::types::Type;
 use poem_openapi::{ApiResponse, OpenApi};
+use rand::Rng;
 
 use super::exact_json::ExactJson;
 use super::security::BearerApiKey;
@@ -32,8 +36,9 @@ use crate::types::{
 /// relay (128 KiB of calldata, hex encoded) plus the metadata
 const MAX_SEND_TX_BODY_SIZE: usize = 512 * 1024;
 
-/// When a request refused with `too_many_waiters` may try again
-const WAITER_RETRY_AFTER: Duration = Duration::from_secs(1);
+/// When a request refused with `too_many_waiters` may try again, in
+/// seconds, spread so that refused requests don't all return at once
+const WAITER_RETRY_AFTER_SECS: RangeInclusive<u64> = 1..=3;
 
 pub struct RelayerApiV2;
 
@@ -196,14 +201,18 @@ impl RelayerApiV2 {
                 )
             })?;
 
-        let mut poll =
-            notifier.long_poll(relayer_id, Duration::from_secs(wait));
+        let mut poll = notifier
+            .long_poll(relayer_id, Duration::from_secs(wait))
+            .map_err(ApiError::from)?;
         loop {
-            let events = match app
-                .db
-                .read_tx_events(relayer_id, after, limit)
-                .await?
-            {
+            let page = tokio::time::timeout_at(
+                poll.read_deadline(),
+                app.db.read_tx_events(relayer_id, after, limit),
+            )
+            .await
+            .context("Reading tx events timed out")??;
+
+            let events = match page {
                 TxEventsPage::Events(events) => events,
                 TxEventsPage::CursorExpired => {
                     return Err(ApiError::new(
@@ -214,7 +223,7 @@ impl RelayerApiV2 {
                 }
             };
 
-            if !events.is_empty() || !poll.wait().await? {
+            if !events.is_empty() || !poll.wait().await {
                 return Ok(ExactJson(GetTxEventsResponse::new(events, after)));
             }
         }
@@ -355,9 +364,11 @@ impl From<SendTxError> for ApiError {
 }
 
 impl From<TooManyWaiters> for ApiError {
-    fn from(TooManyWaiters: TooManyWaiters) -> Self {
+    fn from(_: TooManyWaiters) -> Self {
+        let retry_after = rand::thread_rng().gen_range(WAITER_RETRY_AFTER_SECS);
+
         Self {
-            retry_after: Some(WAITER_RETRY_AFTER),
+            retry_after: Some(Duration::from_secs(retry_after)),
             ..Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "too_many_waiters",

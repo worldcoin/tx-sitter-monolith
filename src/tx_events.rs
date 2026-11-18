@@ -27,6 +27,10 @@ use crate::task_runner::{TaskContext, Wait};
 /// it may have missed
 const RECHECK_INTERVAL: Duration = Duration::from_secs(1);
 
+/// The least time a poll gives a read of the feed, also once its deadline is
+/// near or past
+const MIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long the listener waits for a notification before it reports
 /// progress, see [`TaskContext::wait`]
 const LISTENER_PROGRESS_INTERVAL: Duration = Duration::from_secs(60);
@@ -119,22 +123,40 @@ impl EventNotifier {
         }
     }
 
-    /// Starts a wait of up to `timeout` for events of relayer `relayer_id`.
+    /// Starts a request's poll of the feed of relayer `relayer_id`, which
+    /// may wait up to `timeout` for events.
     ///
-    /// Start it before reading the feed, so that no notification goes unseen
-    /// between the read and [`LongPoll::wait`].
+    /// A poll that may wait takes one of the notifier's `max_waiters` slots
+    /// until it is dropped, and fails with [`TooManyWaiters`] if none is
+    /// free. Start it before reading the feed, so that the slots also bound
+    /// the reads, and no notification goes unseen between a read and
+    /// [`LongPoll::wait`].
     pub fn long_poll(
         &self,
         relayer_id: &str,
         timeout: Duration,
-    ) -> LongPoll<'_> {
-        LongPoll {
+    ) -> Result<LongPoll<'_>, TooManyWaiters> {
+        let waiter = if timeout.is_zero() {
+            None
+        } else {
+            let slot = self
+                .waiter_slots
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| TooManyWaiters)?;
+
+            Some(Waiter {
+                wakeups: self.wakeups.subscribe(),
+                _slot: slot,
+            })
+        };
+
+        Ok(LongPoll {
             notifier: self,
             relayer_id: relayer_id.to_string(),
             deadline: Instant::now() + timeout,
-            wakeups: (!timeout.is_zero()).then(|| self.wakeups.subscribe()),
-            waiter_slot: None,
-        }
+            waiter,
+        })
     }
 
     fn wake_relayer(&self, relayer_id: &str) {
@@ -143,57 +165,52 @@ impl EventNotifier {
     }
 }
 
-/// A request's wait for events of a relayer, see
-/// [`EventNotifier::long_poll`].
+/// A request's poll of a relayer's feed, see [`EventNotifier::long_poll`].
 pub struct LongPoll<'a> {
     notifier: &'a EventNotifier,
     relayer_id: String,
     deadline: Instant,
     /// `None` for a poll that doesn't wait
-    wakeups: Option<broadcast::Receiver<Arc<str>>>,
-    /// Taken on the first wait and kept until the poll is dropped
-    waiter_slot: Option<OwnedSemaphorePermit>,
+    waiter: Option<Waiter>,
+}
+
+struct Waiter {
+    wakeups: broadcast::Receiver<Arc<str>>,
+    _slot: OwnedSemaphorePermit,
 }
 
 impl LongPoll<'_> {
+    /// Returns when a read of the feed must finish: at the poll's deadline,
+    /// or [`MIN_READ_TIMEOUT`] from now if that is later.
+    pub fn read_deadline(&self) -> Instant {
+        self.deadline.max(Instant::now() + MIN_READ_TIMEOUT)
+    }
+
     /// Waits until events of the relayer may have been stored, and returns
     /// `true` once the feed is worth reading again.
     ///
     /// That is when a notification for the relayer wakes the poll, or after
-    /// a second at most, in case a notification got lost. Returns `false` without waiting once the
-    /// deadline passed or shutdown was requested.
-    ///
-    /// The first wait takes one of the notifier's `max_waiters` slots, and
-    /// fails with [`TooManyWaiters`] if none is free.
-    pub async fn wait(&mut self) -> Result<bool, TooManyWaiters> {
+    /// a second at most, in case a notification got lost. Returns `false`
+    /// without waiting once the deadline passed or shutdown was requested.
+    pub async fn wait(&mut self) -> bool {
         let now = Instant::now();
         let shutdown = &self.notifier.shutdown;
-        let Some(wakeups) = self.wakeups.as_mut() else {
-            return Ok(false);
+        let Some(waiter) = self.waiter.as_mut() else {
+            return false;
         };
 
         if now >= self.deadline || shutdown.is_cancelled() {
-            return Ok(false);
-        }
-
-        if self.waiter_slot.is_none() {
-            let waiter_slot = self
-                .notifier
-                .waiter_slots
-                .clone()
-                .try_acquire_owned()
-                .map_err(|_| TooManyWaiters)?;
-            self.waiter_slot = Some(waiter_slot);
+            return false;
         }
 
         let recheck_at = self.deadline.min(now + RECHECK_INTERVAL);
         tokio::select! {
             () = shutdown.cancelled() => {}
             () = tokio::time::sleep_until(recheck_at) => {}
-            () = next_wakeup(wakeups, &self.relayer_id) => {}
+            () = next_wakeup(&mut waiter.wakeups, &self.relayer_id) => {}
         }
 
-        Ok(true)
+        true
     }
 }
 
@@ -294,25 +311,29 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn poll_wakes_on_its_relayers_events() {
         let notifier = EventNotifier::new(2, CancellationToken::new());
-        let mut poll = notifier.long_poll("relayer", Duration::from_secs(30));
+        let mut poll = notifier
+            .long_poll("relayer", Duration::from_secs(30))
+            .unwrap();
         let started = Instant::now();
 
         notifier.wake_relayer("other relayer");
         notifier.wake_relayer("relayer");
 
-        assert_eq!(poll.wait().await, Ok(true));
+        assert!(poll.wait().await);
         assert_eq!(started.elapsed(), Duration::ZERO);
     }
 
     #[tokio::test(start_paused = true)]
     async fn poll_rechecks_without_a_wakeup() {
         let notifier = EventNotifier::new(2, CancellationToken::new());
-        let mut poll = notifier.long_poll("relayer", Duration::from_secs(30));
+        let mut poll = notifier
+            .long_poll("relayer", Duration::from_secs(30))
+            .unwrap();
         let started = Instant::now();
 
         notifier.wake_relayer("other relayer");
 
-        assert_eq!(poll.wait().await, Ok(true));
+        assert!(poll.wait().await);
         assert_eq!(started.elapsed(), RECHECK_INTERVAL);
     }
 
@@ -321,32 +342,53 @@ mod tests {
         let shutdown = CancellationToken::new();
         let notifier = EventNotifier::new(2, shutdown.clone());
         let timeout = Duration::from_millis(2_500);
-        let mut poll = notifier.long_poll("relayer", timeout);
+        let mut poll = notifier.long_poll("relayer", timeout).unwrap();
         let started = Instant::now();
 
-        while poll.wait().await == Ok(true) {}
+        while poll.wait().await {}
         assert_eq!(started.elapsed(), timeout);
 
-        let mut poll = notifier.long_poll("relayer", Duration::from_secs(30));
+        let mut poll = notifier
+            .long_poll("relayer", Duration::from_secs(30))
+            .unwrap();
         shutdown.cancel();
-        assert_eq!(poll.wait().await, Ok(false));
+        assert!(!poll.wait().await);
 
-        let mut poll = notifier.long_poll("relayer", Duration::ZERO);
-        assert_eq!(poll.wait().await, Ok(false));
+        let mut poll = notifier.long_poll("relayer", Duration::ZERO).unwrap();
+        assert!(!poll.wait().await);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn polls_beyond_max_waiters_are_refused() {
+    async fn reads_get_until_the_deadline_or_min_read_timeout() {
+        let notifier = EventNotifier::new(2, CancellationToken::new());
+        let started = Instant::now();
+
+        let poll = notifier
+            .long_poll("relayer", Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(poll.read_deadline(), started + Duration::from_secs(30));
+
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert_eq!(poll.read_deadline(), Instant::now() + MIN_READ_TIMEOUT);
+
+        let poll = notifier.long_poll("relayer", Duration::ZERO).unwrap();
+        assert_eq!(poll.read_deadline(), Instant::now() + MIN_READ_TIMEOUT);
+    }
+
+    #[test]
+    fn polls_beyond_max_waiters_are_refused() {
         let notifier = EventNotifier::new(1, CancellationToken::new());
-        let mut waiting = notifier.long_poll("relayer", Duration::from_secs(5));
-        let mut refused = notifier.long_poll("relayer", Duration::from_secs(5));
+        let timeout = Duration::from_secs(5);
 
-        assert_eq!(waiting.wait().await, Ok(true));
-        assert_eq!(refused.wait().await, Err(TooManyWaiters));
+        let waiting = notifier.long_poll("relayer", timeout).unwrap();
+        assert!(matches!(
+            notifier.long_poll("relayer", timeout),
+            Err(TooManyWaiters)
+        ));
+        // A poll that doesn't wait needs no slot
+        assert!(notifier.long_poll("relayer", Duration::ZERO).is_ok());
 
-        // A poll keeps its slot between waits, and frees it once dropped
-        assert_eq!(waiting.wait().await, Ok(true));
         drop(waiting);
-        assert_eq!(refused.wait().await, Ok(true));
+        assert!(notifier.long_poll("relayer", timeout).is_ok());
     }
 }
