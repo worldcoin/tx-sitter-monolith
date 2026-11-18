@@ -329,7 +329,8 @@ pub struct NonceSync {
     /// local nonce. Their key sent transactions that tx-sitter didn't
     /// create.
     pub behind_chain: Vec<(String, u64)>,
-    /// Relayers synced for the first time
+    /// Relayers synced for the first time since they were added, enabled
+    /// again or moved to this account
     pub first_synced: Vec<String>,
     /// Relayers whose first sync was refused, because the account has
     /// pending transactions at nonces tx-sitter never allocated

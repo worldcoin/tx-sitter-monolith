@@ -309,8 +309,8 @@ enum SendTxError {
     /// Another transaction of the relayer holds its next nonce, which a
     /// relayer reset repairs
     NonceTaken,
-    /// The relayer's nonce was never synced from its chain, so it can't
-    /// allocate one yet
+    /// The relayer's nonce isn't synced from its chain, so it can't allocate
+    /// one yet
     NonceNotSynced,
     /// The RPC didn't return the relayer's balance
     BalanceUnavailable(eyre::Report),
@@ -334,7 +334,7 @@ impl SendTxError {
     }
 
     /// Reports that `create_transaction` refused `relayer` a nonce, because
-    /// its nonce was never synced from its chain.
+    /// its nonce isn't synced from its chain.
     fn nonce_not_synced(relayer: &RelayerInfo) -> Self {
         metrics::counter!(
             "relayer_not_ready_tx_sends",

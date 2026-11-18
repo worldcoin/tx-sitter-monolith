@@ -107,8 +107,8 @@ pub enum CreateResult {
     NonceTaken {
         nonce: u64,
     },
-    /// The relayer's nonce was never synced from its chain, so it can't
-    /// allocate one yet, see [`Database::update_relayer_nonce`]
+    /// The relayer's nonce isn't synced from its chain, so it can't allocate
+    /// one yet, see [`Database::update_relayer_nonce`]
     NonceNotSynced,
 }
 
@@ -360,8 +360,8 @@ impl Database {
     }
 
     /// Creates a transaction of `relayer_id` with the relayer's next nonce,
-    /// unless `tx_id` exists, the relayer's nonce was never synced from its
-    /// chain, its queue is full or the nonce is taken.
+    /// unless `tx_id` exists, the relayer's nonce isn't synced from its chain,
+    /// its queue is full or the nonce is taken.
     ///
     /// `request_hash` identifies the request, see [`TxIdMatch`]. An existing
     /// `tx_id` is checked first, so a repeat is answered even when the queue
@@ -2314,6 +2314,10 @@ fn changed_relayer_identities(
 
 /// Inserts `relayer`, or updates the settings of the stored relayer with its
 /// id, leaving its nonces as they are.
+///
+/// The relayer's nonce sync, see [`Database::update_relayer_nonce`], is
+/// dropped when its chain id or address changes, or when it is enabled
+/// again, so that it syncs before it allocates a nonce.
 async fn upsert_relayer_in(
     conn: &mut PgConnection,
     relayer: &RelayerConfig,
@@ -2342,7 +2346,16 @@ async fn upsert_relayer_in(
             max_inflight_txs = EXCLUDED.max_inflight_txs,
             max_queued_txs = EXCLUDED.max_queued_txs,
             gas_price_limits = EXCLUDED.gas_price_limits,
-            enabled = EXCLUDED.enabled
+            enabled = EXCLUDED.enabled,
+            -- A sync holds for the account it read, and the key may have
+            -- been used elsewhere while the relayer was disabled
+            nonce_synced_at = CASE
+                WHEN relayers.chain_id <> EXCLUDED.chain_id
+                  OR relayers.address <> EXCLUDED.address
+                  OR (EXCLUDED.enabled AND NOT relayers.enabled)
+                THEN NULL
+                ELSE relayers.nonce_synced_at
+            END
         "#,
     )
     .bind(&relayer.id)
@@ -2975,6 +2988,78 @@ mod tests {
                 _ => panic!("Unexpected sync {sync:?}"),
             };
         assert_eq!(outcome, is_synced);
+    }
+
+    /// A synced relayer that never allocated a nonce may move to another
+    /// account, which it hasn't synced
+    #[test_case(
+        |relayer| RelayerConfig { address: Address::with_last_byte(2), ..relayer } ;
+        "address"
+    )]
+    #[test_case(|relayer| RelayerConfig { chain_id: 2, ..relayer } ; "chain id")]
+    #[tokio::test]
+    async fn moving_a_relayer_drops_its_nonce_sync(
+        change: fn(RelayerConfig) -> RelayerConfig,
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer = relayer_config(1, 1);
+        apply_relayers(&db, std::slice::from_ref(&relayer)).await?;
+        db.update_relayer_nonce(1, relayer.address, settled(0))
+            .await?;
+
+        apply_relayers(&db, &[change(relayer.clone())]).await?;
+
+        assert_eq!(
+            create_tx(&db, &relayer.id, "tx-1").await?,
+            CreateResult::NonceNotSynced
+        );
+
+        Ok(())
+    }
+
+    /// Only an enabled relayer syncs, and enabling one again drops its sync:
+    /// its key may have signed elsewhere in the meantime
+    #[tokio::test]
+    async fn relayers_sync_once_they_are_enabled() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let chain_id = 1;
+        let relayer = relayer_config(chain_id, 1);
+        let disabled = RelayerConfig {
+            enabled: false,
+            ..relayer.clone()
+        };
+        apply_relayers(&db, std::slice::from_ref(&disabled)).await?;
+
+        let sync = db
+            .update_relayer_nonce(chain_id, relayer.address, settled(3))
+            .await?;
+
+        assert_eq!(sync, NonceSync::default());
+        let [stored] = &db.get_relayer_nonces(chain_id).await?[..] else {
+            eyre::bail!("Expected one relayer");
+        };
+        assert!(!stored.is_nonce_synced);
+
+        apply_relayers(&db, std::slice::from_ref(&relayer)).await?;
+        assert_eq!(
+            create_tx(&db, &relayer.id, "tx-1").await?,
+            CreateResult::NonceNotSynced
+        );
+        db.update_relayer_nonce(chain_id, relayer.address, settled(3))
+            .await?;
+        assert_eq!(
+            create_tx(&db, &relayer.id, "tx-1").await?,
+            CreateResult::Created
+        );
+
+        apply_relayers(&db, std::slice::from_ref(&disabled)).await?;
+        apply_relayers(&db, std::slice::from_ref(&relayer)).await?;
+        assert_eq!(
+            create_tx(&db, &relayer.id, "tx-2").await?,
+            CreateResult::NonceNotSynced
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
