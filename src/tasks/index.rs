@@ -278,10 +278,13 @@ pub async fn estimate_gas(
 /// starts from the chains' nonces, and new relayers accept transactions
 /// without waiting for each chain's next block. The API is already serving by
 /// then: until a relayer's first sync it refuses the relayer's transactions,
-/// see [`Database::create_transaction`]. Chains are synced concurrently, each
-/// within [`STARTUP_NONCE_SYNC_TIMEOUT`]. A chain that fails is logged and
-/// left to indexing, so that one unavailable chain doesn't hold up the
-/// others.
+/// see [`Database::create_transaction`].
+///
+/// Like indexing, it reads the nonces as of the chain's latest indexed block,
+/// see [`backfill_to_block`], or as of its newest block while it has none.
+/// Chains are synced concurrently, each within
+/// [`STARTUP_NONCE_SYNC_TIMEOUT`]. A chain that fails is logged and left to
+/// indexing, so that one unavailable chain doesn't hold up the others.
 ///
 /// [`Database::create_transaction`]: crate::db::Database::create_transaction
 pub async fn sync_relayer_nonces_at_startup(app: &App) {
@@ -289,9 +292,12 @@ pub async fn sync_relayer_nonces_at_startup(app: &App) {
         let chain_id = network.chain_id;
         let sync = async {
             let rpc = app.http_provider(chain_id).await?;
+            let block = match app.db.get_latest_block_number(chain_id).await? {
+                Some(block_number) => block_number.into(),
+                None => BlockNumberOrTag::Latest,
+            };
 
-            sync_relayer_nonces(app, &rpc, chain_id, BlockNumberOrTag::Latest)
-                .await
+            sync_relayer_nonces(app, &rpc, chain_id, block).await
         };
 
         let result = timeout(STARTUP_NONCE_SYNC_TIMEOUT, sync)

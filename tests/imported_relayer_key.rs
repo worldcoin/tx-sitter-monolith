@@ -143,6 +143,47 @@ async fn first_sync_waits_for_pending_txs_of_another_signer() -> eyre::Result<()
     Ok(())
 }
 
+/// A restarted worker syncs nonces as of the block it indexed last, like
+/// indexing does, so that a confirmed nonce doesn't count transactions in
+/// blocks it hasn't indexed yet
+#[tokio::test]
+async fn startup_sync_reads_nonces_as_of_the_indexed_block() -> eyre::Result<()>
+{
+    setup_tracing();
+
+    let (db_url, _db_container) = setup_db().await?;
+    let anvil = AnvilBuilder::default().spawn().await?;
+    let (_api, _) = ServiceBuilder::default()
+        .role(ServiceRole::Api)
+        .build(&anvil, &db_url)
+        .await?;
+    sync_relayer_nonces(&db_url, &anvil, &[DEFAULT_ANVIL_ACCOUNT]).await?;
+    let db = connect_db(&db_url).await?;
+    let provider = setup_provider(anvil.endpoint()).await?;
+    let indexed_block = provider.get_block_number().await?;
+    db.save_block(
+        indexed_block,
+        DEFAULT_ANVIL_CHAIN_ID,
+        chrono::Utc::now(),
+        &[],
+    )
+    .await?;
+    let key = PrivateKeySigner::from_slice(DEFAULT_ANVIL_PRIVATE_KEY)?;
+    send_txs_outside_tx_sitter(&anvil, key, PRIOR_TXS).await?;
+    set_block_time(&anvil, 0).await?;
+
+    let relayer = TestRelayer::random(DEFAULT_ANVIL_CHAIN_ID);
+    let _worker = worker(&anvil, &db_url, &relayer).await?;
+
+    let stored = db
+        .get_relayer(DEFAULT_RELAYER_ID)
+        .await?
+        .ok_or_else(|| eyre::eyre!("Missing relayer"))?;
+    assert_eq!(stored.current_nonce, 0);
+
+    Ok(())
+}
+
 /// Starts a service with the API and the background tasks, the anvil
 /// network, the default relayer and `relayer`.
 ///
