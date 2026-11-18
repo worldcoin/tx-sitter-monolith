@@ -108,6 +108,9 @@ alloy = { version = "1.8.3", default-features = false, features = [
     "provider-anvil-api",
 ] }
 indoc = "2.0.3"
+metrics-util = { version = "0.17.0", default-features = false, features = [
+    "debugging",
+] }
 test-case = "3.1.0"
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.28"

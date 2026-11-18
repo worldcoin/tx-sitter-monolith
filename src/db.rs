@@ -1992,6 +1992,30 @@ impl Database {
         })
     }
 
+    /// Counts the transactions of the enabled relayers on `chain_id` that
+    /// are not mined yet: those never sent, which broadcasting sends, and
+    /// those sent, which escalation sends again.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn count_unmined_txs(&self, chain_id: u64) -> eyre::Result<u64> {
+        let (unmined_txs,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(1)
+            FROM transactions t
+            JOIN relayers r ON (t.relayer_id = r.id)
+            LEFT JOIN sent_transactions s ON (t.id = s.tx_id)
+            WHERE r.chain_id = $1
+            AND   r.enabled
+            AND   (s.tx_id IS NULL OR s.status = $2)
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(TxStatus::Pending)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(unmined_txs as u64)
+    }
+
     /// Deletes the transactions of `relayer_id` that were never broadcast,
     /// and moves its nonce back to the first one that no remaining
     /// transaction holds.
@@ -3666,6 +3690,51 @@ mod tests {
         .execute(&db.pool)
         .await?;
         assert_eq!(txs_at(1).await?, [0, 0]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn counts_the_unmined_txs_of_enabled_relayers() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        let disabled_relayer_id = create_relayer(&db).await?;
+        let fee = U256::from(1);
+
+        for tx_id in ["unsent", "pending", "mined"] {
+            create_tx(&db, &relayer_id, tx_id).await?;
+        }
+        db.insert_tx_broadcast(
+            "pending",
+            B256::with_last_byte(1),
+            &[1],
+            fee,
+            fee,
+        )
+        .await?;
+        db.insert_tx_broadcast(
+            "mined",
+            B256::with_last_byte(2),
+            &[2],
+            fee,
+            fee,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE sent_transactions SET status = $1 WHERE tx_id = 'mined'",
+        )
+        .bind(TxStatus::Mined)
+        .execute(&db.pool)
+        .await?;
+
+        create_unsent_tx(&db, &disabled_relayer_id).await?;
+        sqlx::query("UPDATE relayers SET enabled = FALSE WHERE id = $1")
+            .bind(&disabled_relayer_id)
+            .execute(&db.pool)
+            .await?;
+
+        assert_eq!(db.count_unmined_txs(123).await?, 2);
+        assert_eq!(db.count_unmined_txs(1).await?, 0);
 
         Ok(())
     }

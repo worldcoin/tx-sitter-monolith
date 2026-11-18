@@ -91,6 +91,23 @@ pub enum L1FeeHold {
     BlobBaseFeeAboveCap,
 }
 
+impl L1FeeHold {
+    const ALL: [Self; 3] = [
+        Self::Unknown,
+        Self::L1BaseFeeAboveCap,
+        Self::BlobBaseFeeAboveCap,
+    ];
+
+    /// The `reason` tag of the `l1_fee_gate_holding` gauge
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::L1BaseFeeAboveCap => "l1_base_fee",
+            Self::BlobBaseFeeAboveCap => "blob_base_fee",
+        }
+    }
+}
+
 /// Returns why the L1 fees last read, `fees`, hold back transactions at
 /// `now`, or `None` if they let transactions go out.
 ///
@@ -169,8 +186,9 @@ impl L1FeeGate {
     /// Returns why the chain's transactions are held back now, or `None` if
     /// they may go out, see [`l1_fee_hold`].
     ///
-    /// It logs at warn when it starts or stops holding, or holds for another
-    /// reason.
+    /// It sets the `l1_fee_gate_holding` gauge, 1 for the reason it holds and
+    /// 0 for the others, and the `l1_fees_age_seconds` gauge, and logs at
+    /// warn when it starts or stops holding, or holds for another reason.
     pub fn check(&self) -> Option<L1FeeHold> {
         let now = Utc::now();
         let (fees, hold, previous_hold) = {
@@ -180,6 +198,24 @@ impl L1FeeGate {
 
             (state.fees, hold, previous_hold)
         };
+
+        let chain_id = self.chain_id.to_string();
+        for reason in L1FeeHold::ALL {
+            let is_holding = hold == Some(reason);
+            metrics::gauge!(
+                "l1_fee_gate_holding",
+                &[
+                    ("chain_id", chain_id.clone()),
+                    ("reason", reason.reason().to_string())
+                ]
+            )
+            .set(if is_holding { 1.0 } else { 0.0 });
+        }
+        if let Some(fees) = fees {
+            let age = now - fees.read_at;
+            metrics::gauge!("l1_fees_age_seconds", &[("chain_id", chain_id)])
+                .set(age.num_milliseconds() as f64 / 1000.0);
+        }
 
         if hold != previous_hold {
             let message = if hold.is_some() {
@@ -212,10 +248,12 @@ impl L1FeeGate {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::time::Duration;
 
     use base_api_types::DecimalU256;
     use chrono::TimeZone;
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
     use test_case::test_case;
 
     use super::*;
@@ -318,6 +356,68 @@ mod tests {
         };
 
         assert_eq!(L1FeeGate::new(480, caps(), Some(fresh_fees)).check(), None);
+    }
+
+    #[test_case(None, Some("unknown") ; "fees not read")]
+    #[test_case(Some(MAX_L1_BASE_FEE + 1), Some("l1_base_fee") ; "l1 base fee above its cap")]
+    #[test_case(Some(MAX_L1_BASE_FEE), None ; "l1 base fee at its cap")]
+    fn check_reports_why_it_holds(
+        l1_base_fee: Option<u64>,
+        holding_reason: Option<&str>,
+    ) {
+        let read_at = Utc::now() - chrono::Duration::seconds(3);
+        let fees = l1_base_fee.map(|l1_base_fee| L1Fees {
+            l1_base_fee: U256::from(l1_base_fee),
+            read_at,
+            ..fees(Duration::ZERO)
+        });
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            L1FeeGate::new(480, caps(), fees).check()
+        });
+
+        let gauges: HashMap<_, _> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _, _, value)| {
+                let DebugValue::Gauge(value) = value else {
+                    return None;
+                };
+                let labels: Vec<_> = key
+                    .key()
+                    .labels()
+                    .map(|label| format!("{}={}", label.key(), label.value()))
+                    .collect();
+
+                Some((
+                    format!("{}{{{}}}", key.key().name(), labels.join(",")),
+                    value.into_inner(),
+                ))
+            })
+            .collect();
+
+        for reason in ["l1_base_fee", "blob_base_fee", "unknown"] {
+            let expected = if holding_reason == Some(reason) {
+                1.0
+            } else {
+                0.0
+            };
+            assert_eq!(
+                gauges[&format!(
+                    "l1_fee_gate_holding{{chain_id=480,reason={reason}}}"
+                )],
+                expected,
+                "{reason}"
+            );
+        }
+        let age = gauges.get("l1_fees_age_seconds{chain_id=480}");
+        match fees {
+            Some(_) => assert!(age.is_some_and(|age| *age >= 3.0), "{age:?}"),
+            None => assert_eq!(age, None),
+        }
     }
 
     #[test]
