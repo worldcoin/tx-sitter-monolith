@@ -62,6 +62,7 @@ pub enum CreateTransactionV2Error {
 pub enum GetEventsV2Error {
     Status400(models::ErrorResponseBody),
     Status401(models::ErrorResponseBody),
+    Status403(models::ErrorResponseBody),
     Status410(models::ErrorResponseBody),
     Status500(models::ErrorResponseBody),
     Status503(models::ErrorResponseBody),

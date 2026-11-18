@@ -595,6 +595,12 @@ paths:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
+        '403':
+          description: '`relayer_disabled`: the relayer is disabled'
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBody'
         '410':
           description: '`cursor_expired`: the feed may miss events after the cursor. Reconcile from the transactions and restart without a cursor'
           content:

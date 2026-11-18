@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
@@ -80,7 +80,7 @@ pub struct Config {
     pub networks: Vec<NetworkConfig>,
 
     /// Every relayer the service knows. A relayer in the database but not
-    /// in this list is disabled at startup.
+    /// in this list is disabled at startup, and loses its API keys.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relayers: Vec<RelayerConfig>,
 }
@@ -92,14 +92,114 @@ impl Config {
     /// Events must not outlive the transactions they describe. The networks
     /// must have distinct chain ids, at least one HTTP RPC, and HTTP and WS
     /// URLs of the right schemes. The relayers must have distinct ids in the
-    /// form the API uses, belong to a configured network, queue more
-    /// transactions than they keep in flight, and have keys of the kind
-    /// `keys` selects.
+    /// form the API uses, distinct addresses on each chain, belong to a
+    /// configured network, queue more transactions than they keep in flight,
+    /// and have keys of the kind `keys` selects.
     pub fn validate(&self) -> eyre::Result<()> {
-        let errors: Vec<String> = service_errors(&self.service)
-            .chain(network_errors(&self.networks))
-            .chain(relayer_errors(&self.relayers, &self.networks, &self.keys))
-            .collect();
+        let mut errors = vec![];
+
+        let TxSitterConfig {
+            tx_retention,
+            event_retention,
+            config_revision,
+            ..
+        } = &self.service;
+        if event_retention > tx_retention {
+            errors.push(format!(
+                "service.event_retention ({}) must not exceed service.tx_retention ({})",
+                humantime::format_duration(*event_retention),
+                humantime::format_duration(*tx_retention),
+            ));
+        }
+
+        if config_revision
+            .is_some_and(|revision| i64::try_from(revision).is_err())
+        {
+            errors.push(format!(
+                "service.config_revision must be at most {}",
+                i64::MAX
+            ));
+        }
+
+        let mut chain_ids = HashSet::new();
+        for (index, network) in self.networks.iter().enumerate() {
+            let mut error = |message: &str| {
+                errors.push(format!(
+                    "networks[{index}] (chain id {}): {message}",
+                    network.chain_id
+                ));
+            };
+
+            if !chain_ids.insert(network.chain_id) {
+                error("duplicate chain id");
+            }
+            if network.http_rpcs.is_empty() {
+                error("http_rpcs is empty");
+            }
+            for (rpc_index, rpc) in network.http_rpcs.iter().enumerate() {
+                if !matches!(rpc.expose().scheme(), "http" | "https") {
+                    error(&format!(
+                        "http_rpcs[{rpc_index}] is not an http or https URL"
+                    ));
+                }
+            }
+            if !matches!(network.ws_rpc.expose().scheme(), "ws" | "wss") {
+                error("ws_rpc is not a ws or wss URL");
+            }
+        }
+
+        let mut relayer_ids = HashSet::new();
+        let mut accounts = HashMap::new();
+        for (index, relayer) in self.relayers.iter().enumerate() {
+            let mut error = |message: &str| {
+                errors.push(format!(
+                    "relayers[{index}] ({}): {message}",
+                    relayer.id
+                ));
+            };
+
+            let is_canonical_uuid = uuid::Uuid::parse_str(&relayer.id)
+                .is_ok_and(|id| id.to_hyphenated().to_string() == relayer.id);
+            if !is_canonical_uuid {
+                error("id is not a lowercase hyphenated UUID");
+            }
+            if !relayer_ids.insert(relayer.id.as_str()) {
+                error("duplicate relayer id");
+            }
+            if let Some(first) =
+                accounts.insert((relayer.chain_id, relayer.address), index)
+            {
+                error(&format!(
+                    "relayers[{first}] has the same chain id and address, so they would allocate the same nonces"
+                ));
+            }
+            if !chain_ids.contains(&relayer.chain_id) {
+                error(&format!(
+                    "chain id {} is not in networks",
+                    relayer.chain_id
+                ));
+            }
+            if relayer.max_queued_txs <= relayer.max_inflight_txs {
+                error(&format!(
+                    "max_queued_txs ({}) must be greater than max_inflight_txs ({})",
+                    relayer.max_queued_txs, relayer.max_inflight_txs
+                ));
+            }
+            match (&relayer.key, &self.keys) {
+                (RelayerKey::Kms(_), KeysConfig::Kms(_)) => {}
+                (RelayerKey::Local(key), KeysConfig::Local(_)) => {
+                    if signing_key_from_hex(key.expose()).is_err() {
+                        error("key.local is not a hex-encoded secp256k1 private key");
+                    }
+                }
+                (RelayerKey::Kms(_), KeysConfig::Local(_)) => {
+                    error("key.kms requires keys.kind = \"kms\"");
+                }
+                (RelayerKey::Local(_), KeysConfig::Kms(_)) => {
+                    error("key.local requires keys.kind = \"local\"");
+                }
+            }
+        }
 
         if !errors.is_empty() {
             eyre::bail!("Invalid config:\n- {}", errors.join("\n- "));
@@ -109,126 +209,21 @@ impl Config {
     }
 }
 
-fn service_errors(service: &TxSitterConfig) -> impl Iterator<Item = String> {
-    let TxSitterConfig {
-        tx_retention,
-        event_retention,
-        ..
-    } = service;
-
-    (event_retention > tx_retention)
-        .then(|| {
-            format!(
-                "service.event_retention ({}) must not exceed service.tx_retention ({})",
-                humantime::format_duration(*event_retention),
-                humantime::format_duration(*tx_retention),
-            )
-        })
-        .into_iter()
-}
-
-fn network_errors(
-    networks: &[NetworkConfig],
-) -> impl Iterator<Item = String> + '_ {
-    let mut chain_ids = HashSet::new();
-
-    networks
-        .iter()
-        .enumerate()
-        .flat_map(move |(index, network)| {
-            let name =
-                format!("networks[{index}] (chain id {})", network.chain_id);
-            let mut errors = vec![];
-
-            if !chain_ids.insert(network.chain_id) {
-                errors.push(format!("{name}: duplicate chain id"));
-            }
-
-            if network.http_rpcs.is_empty() {
-                errors.push(format!("{name}: http_rpcs is empty"));
-            }
-
-            for (rpc_index, rpc) in network.http_rpcs.iter().enumerate() {
-                if !matches!(rpc.expose().scheme(), "http" | "https") {
-                    errors.push(format!(
-                    "{name}: http_rpcs[{rpc_index}] is not an http or https URL"
-                ));
-                }
-            }
-
-            if !matches!(network.ws_rpc.expose().scheme(), "ws" | "wss") {
-                errors.push(format!("{name}: ws_rpc is not a ws or wss URL"));
-            }
-
-            errors
-        })
-}
-
-fn relayer_errors<'a>(
-    relayers: &'a [RelayerConfig],
-    networks: &'a [NetworkConfig],
-    keys: &'a KeysConfig,
-) -> impl Iterator<Item = String> + 'a {
-    let chain_ids: HashSet<u64> = networks.iter().map(|n| n.chain_id).collect();
-    let mut relayer_ids = HashSet::new();
-
-    relayers.iter().enumerate().flat_map(move |(index, relayer)| {
-        let name = format!("relayers[{index}] ({})", relayer.id);
-        let mut errors = vec![];
-
-        let is_canonical_uuid = uuid::Uuid::parse_str(&relayer.id)
-            .is_ok_and(|id| id.to_hyphenated().to_string() == relayer.id);
-        if !is_canonical_uuid {
-            errors.push(format!(
-                "{name}: id is not a lowercase hyphenated UUID"
-            ));
-        }
-
-        if !relayer_ids.insert(relayer.id.as_str()) {
-            errors.push(format!("{name}: duplicate relayer id"));
-        }
-
-        if !chain_ids.contains(&relayer.chain_id) {
-            errors.push(format!(
-                "{name}: chain id {} is not in networks",
-                relayer.chain_id
-            ));
-        }
-
-        if relayer.max_queued_txs <= relayer.max_inflight_txs {
-            errors.push(format!(
-                "{name}: max_queued_txs ({}) must be greater than max_inflight_txs ({})",
-                relayer.max_queued_txs, relayer.max_inflight_txs
-            ));
-        }
-
-        match (&relayer.key, keys) {
-            (RelayerKey::Kms(_), KeysConfig::Kms(_)) => {}
-            (RelayerKey::Local(key), KeysConfig::Local(_)) => {
-                if signing_key_from_hex(key.expose()).is_err() {
-                    errors.push(format!(
-                        "{name}: key.local is not a hex-encoded secp256k1 private key"
-                    ));
-                }
-            }
-            (RelayerKey::Kms(_), KeysConfig::Local(_)) => errors.push(format!(
-                "{name}: key.kms requires keys.kind = \"kms\""
-            )),
-            (RelayerKey::Local(_), KeysConfig::Kms(_)) => errors.push(format!(
-                "{name}: key.local requires keys.kind = \"local\""
-            )),
-        }
-
-        errors
-    })
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TxSitterConfig {
     /// Which parts of the service this process runs
     #[serde(default)]
     pub role: ServiceRole,
+
+    /// The revision of `networks` and `relayers`, which a deploy raises with
+    /// every rollout. A process refuses to start with a lower revision than
+    /// the one the database applied last, so a process with a stale config
+    /// can't undo a newer one, see [`crate::static_config`]. Without a
+    /// revision the config is applied unconditionally, for local
+    /// development.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_revision: Option<u64>,
 
     #[serde(with = "humantime_serde")]
     pub escalation_interval: Duration,
@@ -685,6 +680,7 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 role: ServiceRole::All,
+                config_revision: None,
                 escalation_interval: Duration::from_secs(60 * 60),
                 max_escalations: default::max_escalations(),
                 soft_reorg_interval: default::soft_reorg_interval(),
@@ -723,6 +719,7 @@ mod tests {
         let config = Config {
             service: TxSitterConfig {
                 role: ServiceRole::All,
+                config_revision: None,
                 escalation_interval: Duration::from_secs(60 * 60),
                 max_escalations: default::max_escalations(),
                 soft_reorg_interval: default::soft_reorg_interval(),
@@ -821,6 +818,7 @@ mod tests {
     }
 
     const RELAYER_ID: &str = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29";
+    const OTHER_RELAYER_ID: &str = "1b908a34-5dc1-4d2d-a146-5eb46e975830";
 
     /// One of anvil's default dev accounts
     const LOCAL_KEY: &str =
@@ -1133,15 +1131,26 @@ mod tests {
 
     #[test]
     fn accepts_valid_networks_and_relayers() {
-        let other_id = "1b908a34-5dc1-4d2d-a146-5eb46e975830";
-
         static_config(
             local_keys(),
             vec![network(1), network(480)],
-            vec![relayer(RELAYER_ID, 1), relayer(other_id, 480)],
+            vec![relayer(RELAYER_ID, 1), relayer(OTHER_RELAYER_ID, 480)],
         )
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn rejects_a_revision_that_doesnt_fit_the_database() {
+        let mut config = static_config(local_keys(), vec![], vec![]);
+        config.service.config_revision = Some(u64::MAX);
+
+        let err = config.validate().unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Invalid config:\n- service.config_revision must be at most 9223372036854775807"
+        );
     }
 
     #[test_case(
@@ -1170,9 +1179,15 @@ mod tests {
     )]
     #[test_case(
         vec![network(1)],
-        vec![relayer(RELAYER_ID, 1), relayer(RELAYER_ID, 1)],
+        vec![relayer(RELAYER_ID, 1), RelayerConfig { address: Address::with_last_byte(1), ..relayer(RELAYER_ID, 1) }],
         "relayers[1] (6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29): duplicate relayer id" ;
         "duplicate relayer id"
+    )]
+    #[test_case(
+        vec![network(1)],
+        vec![relayer(RELAYER_ID, 1), RelayerConfig { enabled: false, ..relayer(OTHER_RELAYER_ID, 1) }],
+        "relayers[1] (1b908a34-5dc1-4d2d-a146-5eb46e975830): relayers[0] has the same chain id and address, so they would allocate the same nonces" ;
+        "duplicate address on a chain"
     )]
     #[test_case(
         vec![network(1)],

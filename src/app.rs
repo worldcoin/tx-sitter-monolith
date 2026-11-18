@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::api_key::ApiKey;
 use crate::config::{Config, KeysConfig};
-use crate::db::data::RpcKind;
+use crate::db::data::{ApiKeyStatus, RpcKind};
 use crate::db::Database;
 use crate::keys::{KeysSource, KmsKeys, LocalKeys, UniversalSigner};
 
@@ -87,12 +87,12 @@ impl App {
             .context("Missing signer")
     }
 
-    pub async fn is_authorized(
+    pub async fn api_key_status(
         &self,
         api_token: &ApiKey,
-    ) -> eyre::Result<bool> {
+    ) -> eyre::Result<ApiKeyStatus> {
         self.db
-            .is_api_key_valid(
+            .get_api_key_status(
                 api_token.relayer_id(),
                 api_token.api_key_secret_hash(),
             )

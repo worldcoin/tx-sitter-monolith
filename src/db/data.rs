@@ -161,7 +161,7 @@ pub enum RpcKind {
     Ws,
 }
 
-#[derive(Debug, Default, Clone, FromRow)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, FromRow)]
 pub struct NetworkInfo {
     #[sqlx(try_from = "i64")]
     pub chain_id: u64,
@@ -184,17 +184,87 @@ pub struct RelayerGasPriceLimit {
     pub chain_id: i64,
 }
 
-/// A relayer that [`Database::apply_static_config`] disabled because the
-/// config no longer has it
+/// A change [`Database::apply_static_config`] made to the database
 ///
 /// [`Database::apply_static_config`]: crate::db::Database::apply_static_config
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
-pub struct DisabledRelayer {
-    pub id: String,
-    pub name: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigChange {
+    NetworkAdded {
+        chain_id: u64,
+    },
+    /// The network's `fields`, such as its name or RPC URLs, changed
+    NetworkChanged {
+        chain_id: u64,
+        fields: Vec<&'static str>,
+    },
+    RelayerAdded {
+        relayer_id: String,
+        relayer_name: String,
+    },
+    /// The relayer's `fields`, other than `enabled`, changed
+    RelayerChanged {
+        relayer_id: String,
+        relayer_name: String,
+        fields: Vec<&'static str>,
+    },
+    RelayerEnabled {
+        relayer_id: String,
+        relayer_name: String,
+    },
+    /// The config disabled the relayer
+    RelayerDisabled {
+        relayer_id: String,
+        relayer_name: String,
+    },
+    /// The relayer was disabled because the config no longer has it
+    RelayerRemoved {
+        relayer_id: String,
+        relayer_name: String,
+    },
+    ApiKeysAdded {
+        relayer_id: String,
+        count: usize,
+    },
+    ApiKeysRevoked {
+        relayer_id: String,
+        count: usize,
+    },
 }
 
-#[derive(Debug, Clone, FromRow)]
+/// What [`Database::apply_static_config`] did
+///
+/// [`Database::apply_static_config`]: crate::db::Database::apply_static_config
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reconciliation {
+    /// The database already held the config's version, so nothing was
+    /// written
+    AlreadyApplied,
+    /// The config was written, making these changes
+    Applied(Vec<ConfigChange>),
+}
+
+/// Whether a relayer accepts an API key
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKeyStatus {
+    /// The relayer doesn't exist or doesn't have the key
+    Unknown,
+    /// The relayer has the key, but is disabled
+    RelayerDisabled,
+    Valid,
+}
+
+/// The transactions a disabled relayer neither sent nor saw mined
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct RelayerBacklog {
+    pub relayer_id: String,
+    pub relayer_name: String,
+    /// Transactions it never broadcast
+    pub unsent_txs: i64,
+    /// Broadcast transactions that aren't mined yet
+    pub inflight_txs: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct RelayerInfo {
     pub id: String,
     pub name: String,

@@ -15,6 +15,7 @@ use super::{anvil_network, await_estimates, default_relayer};
 
 pub struct ServiceBuilder {
     role: ServiceRole,
+    config_revision: Option<u64>,
     escalation_interval: Duration,
     soft_reorg_interval: Duration,
     hard_reorg_interval: Duration,
@@ -34,6 +35,7 @@ impl Default for ServiceBuilder {
     fn default() -> Self {
         Self {
             role: ServiceRole::All,
+            config_revision: None,
             escalation_interval: Duration::from_secs(5),
             soft_reorg_interval: Duration::from_secs(10),
             hard_reorg_interval: Duration::from_secs(15),
@@ -107,6 +109,12 @@ impl ServiceBuilder {
         self
     }
 
+    /// Gives the networks and relayers of the config `revision`.
+    pub fn config_revision(mut self, revision: u64) -> Self {
+        self.config_revision = Some(revision);
+        self
+    }
+
     /// Configures the service without the anvil network and the default
     /// relayer.
     pub fn without_defaults(mut self) -> Self {
@@ -148,6 +156,7 @@ impl ServiceBuilder {
         let config = Config {
             service: TxSitterConfig {
                 role: self.role,
+                config_revision: self.config_revision,
                 escalation_interval: self.escalation_interval,
                 max_escalations: self.max_escalations,
                 soft_reorg_interval: self.soft_reorg_interval,

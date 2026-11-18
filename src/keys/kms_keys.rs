@@ -1,11 +1,13 @@
 use std::time::Duration;
 
 use alloy::network::TxSigner;
-use alloy::signers::aws::AwsSigner;
+use alloy::signers::aws::{AwsSigner, AwsSignerError};
 use aws_config::{BehaviorVersion, SdkConfig};
 use aws_sdk_kms::config::retry::RetryConfig;
 use aws_sdk_kms::config::timeout::TimeoutConfig;
+use aws_sdk_kms::error::ProvideErrorMetadata;
 use aws_sdk_kms::types::{KeySpec, KeyUsageType, Tag};
+use aws_smithy_runtime_api::client::result::SdkError;
 use eyre::{Context, ContextCompat};
 use tokio::time::timeout;
 
@@ -138,11 +140,41 @@ impl KeysSource for KmsKeys {
     }
 }
 
+/// Returns whether `err`, from loading a KMS key, may pass when retried: the
+/// request timed out or didn't get a response, or KMS answered with a
+/// throttling, internal or availability error.
+pub fn is_transient_error(err: &eyre::Report) -> bool {
+    let Some(AwsSignerError::GetPublicKey(err)) = err.downcast_ref() else {
+        return false;
+    };
+
+    match err {
+        SdkError::TimeoutError(_)
+        | SdkError::DispatchFailure(_)
+        | SdkError::ResponseError(_) => true,
+        SdkError::ServiceError(service_err) => {
+            let status = service_err.raw().status().as_u16();
+            let err = service_err.err();
+
+            err.is_dependency_timeout_exception()
+                || err.is_key_unavailable_exception()
+                || err.is_kms_internal_exception()
+                || err.code() == Some("ThrottlingException")
+                || status == 429
+                || status >= 500
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
 
     use aws_sdk_kms::config::{Credentials, Region, SharedCredentialsProvider};
+    use poem::http::StatusCode;
+    use poem::listener::{Acceptor, Listener};
+    use test_case::test_case;
 
     use super::*;
     use crate::test_utils::UnresponsiveServer;
@@ -209,13 +241,85 @@ mod tests {
         Ok(())
     }
 
-    /// The config `aws_config::load_defaults` resolves for a KMS endpoint at
-    /// `kms` when `AWS_MAX_ATTEMPTS` is `max_attempts`.
+    #[tokio::test]
+    async fn timeouts_are_transient() -> eyre::Result<()> {
+        let kms = UnresponsiveServer::spawn().await?;
+        let keys = KmsKeys::from_aws_config(
+            &aws_config(&kms, 1),
+            &KmsKeysConfig {
+                kms_timeout: Duration::from_secs(1),
+            },
+        );
+
+        let err = keys.load_signer("key-id".to_string()).await.unwrap_err();
+
+        assert!(is_transient_error(&err), "{err:?}");
+
+        Ok(())
+    }
+
+    #[test_case(StatusCode::BAD_REQUEST, "NotFoundException", false ; "missing key")]
+    #[test_case(StatusCode::BAD_REQUEST, "AccessDeniedException", false ; "missing permission")]
+    #[test_case(StatusCode::BAD_REQUEST, "ThrottlingException", true ; "throttling")]
+    #[test_case(StatusCode::INTERNAL_SERVER_ERROR, "KMSInternalException", true ; "internal error")]
+    #[tokio::test]
+    async fn classifies_kms_errors(
+        status: StatusCode,
+        error_type: &'static str,
+        is_transient: bool,
+    ) -> eyre::Result<()> {
+        let kms = spawn_failing_kms(status, error_type).await?;
+        let keys = KmsKeys::from_aws_config(
+            &aws_config_for(&kms, 1),
+            &KmsKeysConfig {
+                kms_timeout: Duration::from_secs(5),
+            },
+        );
+
+        let err = keys.load_signer("key-id".to_string()).await.unwrap_err();
+
+        assert_eq!(is_transient_error(&err), is_transient, "{err:?}");
+
+        Ok(())
+    }
+
+    /// Starts a KMS endpoint that answers every request with `status` and an
+    /// error of type `error_type`, and returns its URL.
+    async fn spawn_failing_kms(
+        status: StatusCode,
+        error_type: &'static str,
+    ) -> eyre::Result<String> {
+        let endpoint = poem::endpoint::make_sync(move |_| {
+            poem::Response::builder()
+                .status(status)
+                .content_type("application/x-amz-json-1.1")
+                .body(format!(
+                    r#"{{"__type":"{error_type}","message":"stub"}}"#
+                ))
+        });
+        let acceptor = poem::listener::TcpListener::bind("127.0.0.1:0")
+            .into_acceptor()
+            .await?;
+        let addr = acceptor.local_addr()[0]
+            .as_socket_addr()
+            .copied()
+            .ok_or_else(|| eyre::eyre!("Stub KMS has no socket address"))?;
+        tokio::spawn(poem::Server::new_with_acceptor(acceptor).run(endpoint));
+
+        Ok(format!("http://{addr}"))
+    }
+
     fn aws_config(kms: &UnresponsiveServer, max_attempts: u32) -> SdkConfig {
+        aws_config_for(&format!("http://{}", kms.addr), max_attempts)
+    }
+
+    /// The config `aws_config::load_defaults` resolves for a KMS endpoint at
+    /// `endpoint` when `AWS_MAX_ATTEMPTS` is `max_attempts`.
+    fn aws_config_for(endpoint: &str, max_attempts: u32) -> SdkConfig {
         SdkConfig::builder()
             .behavior_version(BehaviorVersion::latest())
             .region(Region::new("us-east-1"))
-            .endpoint_url(format!("http://{}", kms.addr))
+            .endpoint_url(endpoint)
             .credentials_provider(SharedCredentialsProvider::new(
                 Credentials::new("key-id", "secret", None, None, "test"),
             ))
