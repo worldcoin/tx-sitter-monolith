@@ -94,12 +94,44 @@ Every v2 error is a JSON `{ "errorId": ..., "errorMessage": ... }` whose `errorI
 
 ### Transaction events
 
-`GET /2/events` returns the status changes of the relayer's transactions in order: `pending` when a transaction is broadcast, escalated or reorged out of its block, `mined` when it is in a block or reorged into another one, and `finalized`. Each event carries the transaction's id, hash and `metadata`. A consumer keeps the response's `nextCursor` and passes it back as `after`, so it gets every event once, in order, also after a restart. `wait=<seconds>` (at most 30) waits for an event when there is none.
+`GET /2/events` returns the status changes of the relayer's transactions in order: `pending` when a transaction is broadcast, escalated or reorged out of its block, `mined` when it is in a block or reorged into another one, and `finalized`. Each event carries the transaction's id, hash and `metadata`. `wait=<seconds>` (at most 30) waits for an event when there is none.
+
+A consumer keeps a checkpoint, the `nextCursor` of the last page it handled, and passes it back as `after`:
+
+- Delivery is at least once. Store the new checkpoint only after every event of the page is handled, and make handling idempotent: a crash between the two returns the page again. A transaction id repeats legitimately, as when an escalation is followed by `mined`, or a reorg moves it back to `pending`.
+- Keep one checkpoint per consumer and relayer. A cursor only works in the feed of the relayer whose API key got it; another relayer's key gets 400 `invalid_request`.
+- 410 `cursor_expired` means the feed can't serve every event after the checkpoint, and the gap can't be recovered from the feed. Reconcile by reading the consumer's transactions with `GET /2/tx/{txId}`, then restart without `after`.
+
+tx-sitter treats `metadata` as opaque. A consumer that replaces the legacy tx-sitter can wrap what it needs in an envelope of its own, such as `{ "transactionType": ..., "legacy": { ... } }`, and map the event's `chainId` to its network itself.
+
+How the feed works:
 
 - Events are stored in the database transaction that makes the change. The feed returns an event only once every database transaction that started writing before it has finished, so that no event is stored behind one already returned. A transaction that stays open holds the feed back; Postgres closes tx-sitter's own connections after 30s idle in a transaction, and the worker's `tx_events_held_back_seconds` gauge shows how long the feed has been held back.
-- Events are deleted `service.event_retention` (default `7d`) after they are stored. A cursor from before deleted events gets 410 `cursor_expired`: the consumer may have missed events and has to restart without a cursor.
-- Every process that serves the API listens for new events on one database connection. At most `server.max_event_waiters` (default `64`) requests wait at once per process; further ones get 503 `too_many_waiters` with `Retry-After`.
+- Events are deleted `service.event_retention` (default `7d`) after they are stored. A checkpoint from before deleted events gets 410. `service.event_retention` must not exceed `service.tx_retention`, so that a transaction, and its metadata, is kept as long as its events.
+- Every process that serves the API listens for new events on one database connection, and waiting requests read the feed again every second in case a notification was lost. At most `server.max_event_waiters` (default `64`) requests wait at once per process; further ones get 503 `too_many_waiters` with a `Retry-After` of 1 to 3 seconds.
 - `notification_queue_usage` is the fraction of Postgres' notification queue in use. Storing events, and with them every status change, fails once it is full.
+
+Status changes made by a binary from before the event feed store no events. After rolling back to one and forward again, once no process of the older binary runs, make every checkpoint expire so that consumers reconcile:
+
+```sql
+INSERT INTO tx_events_pruned (tx_xid, id)
+VALUES (pg_snapshot_xmin(pg_current_snapshot()), 0)
+ON CONFLICT (singleton) DO UPDATE
+SET tx_xid = EXCLUDED.tx_xid, id = EXCLUDED.id;
+```
+
+The feed and its order rely on Postgres transaction ids. A checkpoint ahead of the database's newest transaction gets 410, as after a restore to an earlier point. That misses checkpoints the restored database's transactions have already passed, so make every checkpoint expire after a restore too. Moving to a database with other transaction ids, such as a blue/green switchover through logical replication, needs the feed reset before tx-sitter starts on it, or status changes stop applying to existing transactions:
+
+```sql
+BEGIN;
+UPDATE sent_transactions SET last_event_xid = NULL WHERE last_event_xid IS NOT NULL;
+TRUNCATE tx_events;
+INSERT INTO tx_events_pruned (tx_xid, id)
+VALUES (pg_snapshot_xmin(pg_current_snapshot()), 0)
+ON CONFLICT (singleton) DO UPDATE
+SET tx_xid = EXCLUDED.tx_xid, id = EXCLUDED.id;
+COMMIT;
+```
 
 ## Running tests
 
