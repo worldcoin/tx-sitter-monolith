@@ -43,8 +43,21 @@ static MIGRATOR: Migrator = Migrator {
 /// waits for locks
 const STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a connection of [`Database::pool`] may sit in an open transaction
+/// without running a statement before Postgres closes it.
+const IDLE_IN_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The settings every connection of [`Database::pool`] asks for
+const POOL_TIMEOUTS: [(&str, Duration); 2] = [
+    ("statement_timeout", STATEMENT_TIMEOUT),
+    (
+        "idle_in_transaction_session_timeout",
+        IDLE_IN_TRANSACTION_TIMEOUT,
+    ),
+];
+
 pub struct Database {
-    /// Connections whose statements fail after [`STATEMENT_TIMEOUT`]
+    /// Connections with [`POOL_TIMEOUTS`]
     pub pool: Pool<Postgres>,
     /// Reserved for [`Database::ping`]
     probe_pool: Pool<Postgres>,
@@ -102,13 +115,13 @@ impl Database {
         connection.close().await?;
 
         tracing::info!("Connecting to the database");
-        let pool = PgPoolOptions::new()
-            .connect_with(connect_options.clone().options([(
-                "statement_timeout",
-                format!("{}ms", STATEMENT_TIMEOUT.as_millis()),
-            )]))
-            .await?;
-        check_statement_timeout(&pool, STATEMENT_TIMEOUT).await?;
+        let pool_options = connect_options.clone().options(POOL_TIMEOUTS.map(
+            |(setting, timeout)| {
+                (setting, format!("{}ms", timeout.as_millis()))
+            },
+        ));
+        let pool = PgPoolOptions::new().connect_with(pool_options).await?;
+        check_timeouts(&pool).await?;
 
         let probe_pool = PgPoolOptions::new()
             .max_connections(1)
@@ -1637,28 +1650,26 @@ impl Database {
     }
 }
 
-/// Fails unless the connections of `pool` time out statements after
-/// `statement_timeout`.
+/// Fails unless the connections of `pool` have [`POOL_TIMEOUTS`].
 ///
 /// A connection pooler such as PgBouncer with `ignore_startup_parameters`
-/// drops the timeout a connection asks for without an error.
-async fn check_statement_timeout(
-    pool: &Pool<Postgres>,
-    statement_timeout: Duration,
-) -> eyre::Result<()> {
-    let (timeout_ms,): (String,) = sqlx::query_as(
-        "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'",
-    )
-    .fetch_one(pool)
-    .await?;
-    let expected_ms = statement_timeout.as_millis().to_string();
+/// drops the timeouts a connection asks for without an error.
+async fn check_timeouts(pool: &Pool<Postgres>) -> eyre::Result<()> {
+    for (setting, timeout) in POOL_TIMEOUTS {
+        let (timeout_ms,): (String,) =
+            sqlx::query_as("SELECT setting FROM pg_settings WHERE name = $1")
+                .bind(setting)
+                .fetch_one(pool)
+                .await?;
+        let expected_ms = timeout.as_millis().to_string();
 
-    eyre::ensure!(
-        timeout_ms == expected_ms,
-        "The database connections have a statement_timeout of {timeout_ms}ms \
-         instead of {expected_ms}ms, is a connection pooler dropping the \
-         options startup parameter?"
-    );
+        eyre::ensure!(
+            timeout_ms == expected_ms,
+            "The database connections have a {setting} of {timeout_ms}ms \
+             instead of {expected_ms}ms, is a connection pooler dropping the \
+             options startup parameter?"
+        );
+    }
 
     Ok(())
 }
@@ -1774,36 +1785,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pool_statements_time_out() -> eyre::Result<()> {
+    async fn pool_connections_have_timeouts() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
 
-        let (statement_timeout,): (String,) =
-            sqlx::query_as("SHOW statement_timeout")
-                .fetch_one(&db.pool)
-                .await?;
+        let (statement_timeout, idle_in_transaction_timeout): (String, String) =
+            sqlx::query_as(
+                "SELECT current_setting('statement_timeout'), current_setting('idle_in_transaction_session_timeout')",
+            )
+            .fetch_one(&db.pool)
+            .await?;
 
         assert_eq!(statement_timeout, "30s");
+        assert_eq!(idle_in_transaction_timeout, "30s");
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn rejects_connections_without_the_statement_timeout(
-    ) -> eyre::Result<()> {
+    async fn rejects_connections_without_the_timeouts() -> eyre::Result<()> {
         let (db, db_container) = setup_db().await?;
         let url = format!(
             "postgres://postgres:postgres@{}/database",
             db_container.address()
         );
-        let pool_without_timeout = PgPoolOptions::new().connect(&url).await?;
+        let without_timeouts = PgPoolOptions::new().connect(&url).await?;
+        let only_statement_timeout = PgPoolOptions::new()
+            .connect_with(
+                url.parse::<PgConnectOptions>()?
+                    .options([("statement_timeout", "30000ms")]),
+            )
+            .await?;
 
-        check_statement_timeout(&db.pool, STATEMENT_TIMEOUT).await?;
-        assert!(check_statement_timeout(
-            &pool_without_timeout,
-            STATEMENT_TIMEOUT
-        )
-        .await
-        .is_err());
+        check_timeouts(&db.pool).await?;
+        assert!(check_timeouts(&without_timeouts).await.is_err());
+        assert!(check_timeouts(&only_statement_timeout).await.is_err());
 
         Ok(())
     }
@@ -2624,6 +2639,21 @@ mod tests {
         assert_eq!(finalized?, Vec::<String>::new());
         let tx = db.read_tx(&tx_id).await?.context("Missing tx")?;
         assert_eq!(tx.status, Some(TxStatus::Pending));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn idle_transactions_are_closed() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let mut tx = db.pool.begin().await?;
+        sqlx::query("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
+            .execute(tx.as_mut())
+            .await?;
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert!(sqlx::query("SELECT 1").execute(tx.as_mut()).await.is_err());
 
         Ok(())
     }
