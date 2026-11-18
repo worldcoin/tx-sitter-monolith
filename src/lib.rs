@@ -8,6 +8,7 @@ pub mod config_dump;
 pub mod db;
 pub mod failover_transport;
 pub mod keys;
+pub mod rate_limited_logs;
 pub mod serde_utils;
 pub mod server;
 pub mod service;

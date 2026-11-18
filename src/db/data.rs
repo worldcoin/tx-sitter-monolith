@@ -277,3 +277,62 @@ pub struct RelayerInfo {
     pub gas_price_limits: Vec<RelayerGasPriceLimit>,
     pub enabled: bool,
 }
+
+/// A relayer's nonces, which indexing syncs from its chain
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct RelayerNonces {
+    pub id: String,
+    pub address: AddressWrapper,
+    /// The nonce the relayer gives its next transaction
+    #[sqlx(try_from = "i64")]
+    pub nonce: u64,
+    /// The relayer's transaction count on its chain when it was last synced
+    #[sqlx(try_from = "i64")]
+    pub current_nonce: u64,
+    /// Whether its nonce was synced from its chain since it was last
+    /// enabled or moved to another account. Until then the relayer allocates
+    /// no nonces.
+    pub is_nonce_synced: bool,
+    pub enabled: bool,
+}
+
+impl RelayerNonces {
+    /// Whether the next sync is the relayer's first, which only an enabled
+    /// relayer gets, see [`Database::update_relayer_nonce`].
+    ///
+    /// [`Database::update_relayer_nonce`]: crate::db::Database::update_relayer_nonce
+    pub fn awaits_first_sync(&self) -> bool {
+        self.enabled && !self.is_nonce_synced
+    }
+}
+
+/// An account's transaction counts on its chain, which
+/// [`Database::update_relayer_nonce`] records.
+///
+/// [`Database::update_relayer_nonce`]: crate::db::Database::update_relayer_nonce
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainNonces {
+    /// Its transactions in the indexed block and before
+    pub latest: u64,
+    /// Its transactions including the ones pending in the RPC's mempool,
+    /// which only a relayer's first sync needs
+    pub pending: Option<u64>,
+}
+
+/// What [`Database::update_relayer_nonce`] found for the relayers of an
+/// account
+///
+/// [`Database::update_relayer_nonce`]: crate::db::Database::update_relayer_nonce
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NonceSync {
+    /// Synced relayers whose local nonce was behind the chain's, with that
+    /// local nonce. Their key sent transactions that tx-sitter didn't
+    /// create.
+    pub behind_chain: Vec<(String, u64)>,
+    /// Relayers synced for the first time since they were added, enabled
+    /// again or moved to this account
+    pub first_synced: Vec<String>,
+    /// Relayers whose first sync was refused, because the account has
+    /// pending transactions at nonces tx-sitter never allocated
+    pub pending_elsewhere: Vec<String>,
+}

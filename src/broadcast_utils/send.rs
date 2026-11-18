@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use alloy::primitives::keccak256;
@@ -7,6 +5,7 @@ use alloy::providers::{Provider, RootProvider};
 use alloy::transports::{RpcError, TransportError, TransportErrorKind};
 
 use crate::db::data::RelayerInfo;
+use crate::rate_limited_logs::RateLimitedLogs;
 use crate::task_runner::{with_jitter, TaskContext};
 
 /// How often [`send_raw_tx`] calls the node at most
@@ -209,38 +208,6 @@ pub async fn send_raw_tx(
         }
 
         return SendOutcome::Failed(failure);
-    }
-}
-
-/// Limits the logs of each transaction to one per [`Self::PERIOD`].
-struct RateLimitedLogs {
-    last_logged: Mutex<BTreeMap<String, Instant>>,
-}
-
-impl RateLimitedLogs {
-    const PERIOD: Duration = Duration::from_secs(10 * 60);
-
-    const fn new() -> Self {
-        Self {
-            last_logged: Mutex::new(BTreeMap::new()),
-        }
-    }
-
-    /// Returns `true`, and records `now`, unless `tx_id` was logged less than
-    /// [`Self::PERIOD`] before `now`.
-    fn should_log(&self, tx_id: &str, now: Instant) -> bool {
-        let mut last_logged = self
-            .last_logged
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        last_logged.retain(|_, logged_at| now - *logged_at < Self::PERIOD);
-
-        if last_logged.contains_key(tx_id) {
-            return false;
-        }
-
-        last_logged.insert(tx_id.to_string(), now);
-        true
     }
 }
 
@@ -531,19 +498,6 @@ mod tests {
         assert_eq!(rpc.calls(), 1);
 
         Ok(())
-    }
-
-    #[test]
-    fn logs_each_tx_once_per_period() {
-        let logs = RateLimitedLogs::new();
-        let start = Instant::now();
-        let half_period = start + RateLimitedLogs::PERIOD / 2;
-
-        assert!(logs.should_log("tx_1", start));
-        assert!(!logs.should_log("tx_1", half_period));
-        assert!(logs.should_log("tx_2", half_period));
-        assert!(logs.should_log("tx_1", start + RateLimitedLogs::PERIOD));
-        assert!(!logs.should_log("tx_2", start + RateLimitedLogs::PERIOD));
     }
 
     fn node_error(code: i64, message: &str) -> TransportError {

@@ -25,8 +25,10 @@ impl Service {
     ///
     /// Before that it validates the config, checks the relayer keys and
     /// writes the networks, relayers and API keys into the database, see
-    /// [`static_config::apply`]. The service runs until `shutdown` is
-    /// cancelled, see [`Service::wait`].
+    /// [`static_config::apply`]. A role that runs the background tasks syncs
+    /// the relayers' nonces from their chains before it starts them, see
+    /// [`tasks::index::sync_relayer_nonces_at_startup`]. The service runs
+    /// until `shutdown` is cancelled, see [`Service::wait`].
     pub async fn new(
         config: Config,
         shutdown: CancellationToken,
@@ -65,6 +67,8 @@ impl Service {
         }
 
         if app.config.service.role.runs_tasks() {
+            tasks::index::sync_relayer_nonces_at_startup(&app).await;
+
             tracing::info!("Spawning tasks");
             add_background_tasks(&task_runner, &app);
         }

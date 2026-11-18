@@ -24,6 +24,7 @@ async fn api_role_runs_no_background_tasks() -> eyre::Result<()> {
         .role(ServiceRole::Api)
         .build(&anvil, &db_url)
         .await?;
+    sync_relayer_nonces(&db_url, &anvil, &[DEFAULT_ANVIL_ACCOUNT]).await?;
     let api_key = DEFAULT_API_KEY.to_string();
 
     let value: U256 = parse_units("1", "ether")?.into();

@@ -80,7 +80,8 @@ ws_rpc = "${WORLDCHAIN_WS_URL}"
 id = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29"
 name = "wc_enableSafe4337Module_1"
 chain_id = 480
-# A KMS key id, ARN or alias with keys.kind = "kms", or { local = "<hex private key>" } with keys.kind = "local"
+# A KMS key id or key ARN with keys.kind = "kms", or { local = "<hex private key>" } with keys.kind = "local".
+# A key of another AWS account needs its key ARN. Aliases are refused, because they can be pointed at another key.
 key = { kms = "arn:aws:kms:eu-central-1:123456789012:key/0b3e2a5c-..." }
 # The address the key must derive, checked at startup
 address = "0x1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
@@ -105,6 +106,9 @@ At startup every process:
    - a relayer that is in the database but not in the config is disabled, not deleted, and loses its API keys;
    - every configured relayer accepts exactly the API keys in its `api_key_hashes`;
    - a config without relayers fails while the database has enabled relayers, which protects a database whose relayers were never moved to the config.
+5. With `service.role` `all` or `worker`, syncs every relayer's nonce from its chain before it starts the background tasks. A chain whose RPCs fail is logged and left to indexing, which syncs nonces with every block.
+
+A relayer whose nonce isn't synced answers sends with 503 (`relayer_not_ready`) and allocates no nonce: a new relayer, one that was enabled again, and one whose `chain_id` or `address` changed. Only an enabled relayer syncs. Its first sync moves its nonce up to the chain's, so a key that already sent transactions elsewhere continues from there, and is refused while the address has pending transactions above both nonces, which another signer still sends.
 
 A disabled relayer answers every request with 403, including reads, the event feed and the RPC proxy, and broadcasts nothing. Only a v2 send that repeats a stored one still gets its `txId`, as the v2 API promises. Its unsent and in-flight transactions are logged at warn when a process applies the config.
 
@@ -133,6 +137,40 @@ Every change below is a config change followed by a deploy.
 - **Add or rotate an API key.** Run `tx-sitter --config <the service's config> api-key new --relayer-id <id>`, add the printed hash to the relayer's `api_key_hashes` and give the printed key to the caller. The key can't be recovered later. To revoke a key, remove its hash.
 - **Disable a relayer.** Set `enabled = false`, or remove the relayer from the config, which also revokes its API keys.
 - **Reset a stuck relayer.** Run `tx-sitter --config <the service's config> relayer reset --relayer-id <id>`. It deletes the relayer's unsent transactions and moves its nonce back to the first one no remaining transaction holds, never below a nonce the chain or a sent transaction used. It needs the database schema of its own version, so run the image that is deployed.
+
+### Import a key from tx-sitter-aws
+
+A tx-sitter-aws relayer signs with a KMS key in a tx-sitter-aws account, and contracts whitelist its address, so it moves to this service with its key. A key must never sign in both services at once, because both would use the same nonces. The service can't prevent that, so hand a key over only once tx-sitter-aws has stopped using it.
+
+Before the first import:
+
+- **Run this version everywhere.** Import a key only after this image runs on every API and worker pod, never in the deploy that introduces it. Older pods don't check whether a relayer's nonce was synced, and would give an imported relayer nonces from 0.
+- **Grant the key.** In the AWS account that owns the key, append a statement to the key's key policy that lets the service's pod role use it. `aws kms put-key-policy` replaces the whole policy, so start from `aws kms get-key-policy` and add to it. In a key policy, `"Resource": "*"` is the key itself.
+
+  ```json
+  {
+    "Sid": "AllowTxSitterMonolith",
+    "Effect": "Allow",
+    "Principal": { "AWS": "arn:aws:iam::<the service's account id>:role/<the service's pod role>" },
+    "Action": ["kms:GetPublicKey", "kms:Sign"],
+    "Resource": "*"
+  }
+  ```
+
+- **Allow the key on the service's side.** A key of another account also needs the service's IAM policy to allow it: add the key ARN to the KMS statement of the service's role in the infrastructure repo (`crypto/<env>/us-east-1/tx-sitter-monolith.tf`).
+
+tx-sitter-aws marks the queued transactions of a disabled relayer `Dropped`, and its broadcast Lambda and the cron of the network's other relayers work from snapshots that can still send them. So drain the relayer before disabling it:
+
+1. **Pause the relayer's callers.**
+2. **Drain tx-sitter-aws.** With the relayer still enabled there, wait until DynamoDB holds no `Queued` or `Pending` transactions of the relayer.
+3. **Disable the relayer in tx-sitter-aws**, and wait for the Lambda timeout, so that invocations that started before are done.
+4. **Check the chain.** On every RPC of the network in the config, `cast nonce --block pending <address>` equals `cast nonce --block latest <address>`.
+5. **Add the relayer to the config** with a new id, `key = { kms = "<the key ARN>" }` and the key's `address`. Never reuse an id, also not when importing a key again. KMS looks up key ids in the service's own account, so use the full key ARN; aliases are refused, because they can be pointed at another key. The key must be in the service's region.
+6. **Deploy, and confirm the first sync.** Startup fails, naming the relayer, while the key can't be read or derives another address than `address`. Then the worker logs `Synced the relayer's nonce from its chain for the first time` with the relayer id and `chain_nonce`, which should equal the address's transaction count. Until then sends to the relayer return 503. While the address has pending transactions that tx-sitter didn't send, the first sync is refused, logs `the key has pending transactions tx-sitter did not send` at error and is retried with every block: check steps 2 to 4 again.
+7. **Check that the pod role can sign.** The startup check only reads the public key. Sign a test digest with the pod role's credentials, for example with `aws kms sign --key-id <the key ARN> --message-type DIGEST --signing-algorithm ECDSA_SHA_256 --message <a 32-byte digest, base64>`.
+8. **Switch the callers** to the service with the relayer's API key, and resume them. The relayer's first transaction takes the chain's nonce.
+
+To roll back, run the steps the other way around: pause the callers, wait with the relayer still enabled here until it has no unsent or pending transactions (`GET /1/api/<api key>/txs?unsent=true` and `?status=pending` return none), disable it in the config and deploy, check that `pending` equals `latest` on every RPC, then enable the relayer in tx-sitter-aws and switch the callers back. To import the key again later, add it with another new id.
 
 ### Migrating from the admin API
 

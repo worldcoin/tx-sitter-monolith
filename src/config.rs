@@ -10,6 +10,7 @@ use eyre::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::keys::local_keys::signing_key_from_hex;
+use crate::keys::KmsKeyId;
 use crate::types::secret_string::SecretString;
 use crate::types::secret_url::SecretUrl;
 
@@ -328,15 +329,19 @@ pub struct NetworkConfig {
     pub ws_rpc: SecretUrl,
 }
 
+/// A relayer of the config.
+///
+/// `K` is the type of its key, which only `config dump` changes, to write
+/// the stored key ids as they are, see [`crate::config_dump`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct RelayerConfig {
+pub struct RelayerConfig<K = RelayerKey> {
     /// A lowercase hyphenated UUID. API keys embed it, so it must never
     /// change.
     pub id: String,
     pub name: String,
     pub chain_id: u64,
-    pub key: RelayerKey,
+    pub key: K,
 
     /// The address `key` must derive, checked at startup
     #[serde(serialize_with = "serialize_checksummed")]
@@ -378,8 +383,9 @@ fn serialize_checksummed<S: serde::Serializer>(
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RelayerKey {
-    /// A KMS key id, key ARN or alias, for `keys.kind = "kms"`
-    Kms(String),
+    /// A KMS key id or key ARN, for `keys.kind = "kms"`. A key of another
+    /// AWS account needs its key ARN. Aliases are refused, see [`KmsKeyId`].
+    Kms(KmsKeyId),
     /// A hex-encoded secp256k1 private key, for `keys.kind = "local"`
     Local(SecretString),
 }
@@ -388,7 +394,7 @@ impl RelayerKey {
     /// Returns the id the keys source loads the key by.
     pub fn key_id(&self) -> &str {
         match self {
-            Self::Kms(key_id) => key_id,
+            Self::Kms(key_id) => key_id.as_str(),
             Self::Local(private_key) => private_key.expose(),
         }
     }
@@ -903,7 +909,8 @@ mod tests {
                     chain_id: 480,
                     key: RelayerKey::Kms(
                         "arn:aws:kms:eu-central-1:123456789012:key/0b3e2a5c"
-                            .to_string()
+                            .parse()
+                            .unwrap()
                     ),
                     address: alloy::primitives::address!(
                         "1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"
@@ -926,7 +933,7 @@ mod tests {
                     name: "defaults".to_string(),
                     chain_id: 480,
                     key: RelayerKey::Kms(
-                        "0b3e2a5c-0000-4000-8000-000000000000".to_string()
+                        "0b3e2a5c-0000-4000-8000-000000000000".parse().unwrap()
                     ),
                     address: alloy::primitives::address!(
                         "f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
@@ -981,7 +988,11 @@ mod tests {
 
     #[test]
     fn debug_output_hides_relayer_keys() {
-        let kms = RelayerKey::Kms("arn:aws:kms:key/0b3e2a5c".to_string());
+        let kms = RelayerKey::Kms(
+            "arn:aws:kms:eu-central-1:123456789012:key/0b3e2a5c"
+                .parse()
+                .unwrap(),
+        );
         let local = RelayerKey::Local(SecretString::new(LOCAL_KEY.to_string()));
 
         assert_eq!(format!("{kms:?}"), r#"Kms("********")"#);
@@ -1048,6 +1059,16 @@ mod tests {
         "key = { hsm = \"a\" }",
         "relayers[0].key: enum RelayerKey does not have variant constructor hsm" ;
         "unknown key kind"
+    )]
+    #[test_case(
+        "key = { kms = \"arn:aws:kms:us-east-1:key/0b3e2a5c\" }",
+        "relayers[0].key.kms: not a KMS key id or key ARN: an ARN has six parts separated by ':'" ;
+        "kms key ARN without an account"
+    )]
+    #[test_case(
+        "key = { kms = \"alias/relayer\" }",
+        "relayers[0].key.kms: not a KMS key id or key ARN: aliases are refused, because they can be pointed at another key" ;
+        "kms alias"
     )]
     #[test_case(
         "key = { kms = \"a\", local = \"b\" }",
@@ -1214,7 +1235,7 @@ mod tests {
     )]
     #[test_case(
         vec![network(1)],
-        vec![RelayerConfig { key: RelayerKey::Kms("key-id".to_string()), ..relayer(RELAYER_ID, 1) }],
+        vec![RelayerConfig { key: RelayerKey::Kms("key-id".parse().unwrap()), ..relayer(RELAYER_ID, 1) }],
         "relayers[0] (6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29): key.kms requires keys.kind = \"kms\"" ;
         "kms key with local keys"
     )]

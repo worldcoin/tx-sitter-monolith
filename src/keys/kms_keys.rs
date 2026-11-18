@@ -97,16 +97,184 @@ pub fn is_transient_error(err: &eyre::Report) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
+    use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy::eips::eip2718::Decodable2718;
+    use alloy::primitives::{Address, TxKind, U256};
+    use alloy::signers::k256::ecdsa::signature::hazmat::PrehashSigner;
+    use alloy::signers::k256::ecdsa::{Signature, SigningKey};
     use aws_sdk_kms::config::retry::RetryConfig;
     use aws_sdk_kms::config::{Credentials, Region, SharedCredentialsProvider};
+    use base64::Engine;
+    use eyre::ContextCompat;
     use poem::http::StatusCode;
     use poem::listener::{Acceptor, Listener};
+    use serde_json::{json, Value};
     use test_case::test_case;
 
     use super::*;
+    use crate::keys::KmsKeyId;
     use crate::test_utils::UnresponsiveServer;
+
+    /// A key ARN of another AWS account, the form imported relayer keys take
+    const CROSS_ACCOUNT_KEY_ARN: &str =
+        "arn:aws:kms:us-east-1:592080917095:key/1234abcd-12ab-34cd-56ef-1234567890ab";
+
+    /// The KMS key id passes unchanged to `GetPublicKey` and `Sign`, so a key
+    /// of another account works through its ARN.
+    #[tokio::test]
+    async fn signs_with_the_key_it_was_loaded_by() -> eyre::Result<()> {
+        let signing_key = SigningKey::random(&mut rand::rngs::OsRng);
+        let kms = StubKms::spawn(signing_key.clone()).await?;
+        let keys = KmsKeys::from_aws_config(
+            &aws_config_for(&kms.url, 1),
+            &KmsKeysConfig {
+                kms_timeout: Duration::from_secs(5),
+            },
+        );
+        let key_id: KmsKeyId = CROSS_ACCOUNT_KEY_ARN.parse()?;
+
+        let signer = keys.load_signer(key_id.as_str().to_string()).await?;
+        let raw_tx = signer
+            .raw_signed_tx(TxEip1559 {
+                chain_id: 480,
+                nonce: 7,
+                gas_limit: 21_000,
+                max_fee_per_gas: 2,
+                max_priority_fee_per_gas: 1,
+                to: TxKind::Call(Address::ZERO),
+                value: U256::from(1),
+                ..Default::default()
+            })
+            .await?;
+
+        let expected_address =
+            Address::from_public_key(signing_key.verifying_key());
+        let tx = TxEnvelope::decode_2718(&mut raw_tx.as_ref())?;
+        let tx = tx.as_eip1559().context("Not an EIP-1559 transaction")?;
+        let recovered = tx
+            .signature()
+            .recover_address_from_prehash(&tx.tx().signature_hash())?;
+        assert_eq!(signer.address(), expected_address);
+        assert_eq!(recovered, expected_address);
+        let requests = kms.requests();
+        let operations: Vec<&str> = requests
+            .iter()
+            .map(|(operation, _)| operation.as_str())
+            .collect();
+        assert_eq!(
+            operations,
+            ["TrentService.GetPublicKey", "TrentService.Sign"]
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|(_, key_id)| key_id == CROSS_ACCOUNT_KEY_ARN),
+            "{requests:?}"
+        );
+
+        Ok(())
+    }
+
+    /// A KMS endpoint that holds one secp256k1 key, answers `GetPublicKey`
+    /// and `Sign` for any key id, and records each request's operation and
+    /// key id
+    struct StubKms {
+        url: String,
+        requests: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl StubKms {
+        async fn spawn(signing_key: SigningKey) -> eyre::Result<Self> {
+            let requests = Arc::new(Mutex::new(vec![]));
+            let recorded = requests.clone();
+
+            let endpoint = poem::endpoint::make(move |req: poem::Request| {
+                let signing_key = signing_key.clone();
+                let recorded = recorded.clone();
+
+                async move {
+                    let operation = req
+                        .header("x-amz-target")
+                        .unwrap_or_default()
+                        .to_string();
+                    let body: Value = serde_json::from_slice(
+                        &req.into_body().into_vec().await.unwrap(),
+                    )
+                    .unwrap();
+                    let key_id = body["KeyId"].as_str().unwrap().to_string();
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push((operation.clone(), key_id.clone()));
+
+                    let response = match operation.as_str() {
+                        "TrentService.GetPublicKey" => json!({
+                            "KeyId": key_id,
+                            "PublicKey": base64(&public_key_der(&signing_key)),
+                            "KeySpec": "ECC_SECG_P256K1",
+                            "KeyUsage": "SIGN_VERIFY",
+                        }),
+                        "TrentService.Sign" => {
+                            let digest =
+                                base64::engine::general_purpose::STANDARD
+                                    .decode(body["Message"].as_str().unwrap())
+                                    .unwrap();
+                            let signature: Signature =
+                                signing_key.sign_prehash(&digest).unwrap();
+
+                            json!({
+                                "KeyId": key_id,
+                                "Signature": base64(signature.to_der().as_bytes()),
+                                "SigningAlgorithm": "ECDSA_SHA_256",
+                            })
+                        }
+                        _ => panic!("Unexpected KMS operation {operation}"),
+                    };
+
+                    poem::Response::builder()
+                        .content_type("application/x-amz-json-1.1")
+                        .body(response.to_string())
+                }
+            });
+            let acceptor = poem::listener::TcpListener::bind("127.0.0.1:0")
+                .into_acceptor()
+                .await?;
+            let addr = acceptor.local_addr()[0]
+                .as_socket_addr()
+                .copied()
+                .ok_or_else(|| eyre::eyre!("Stub KMS has no socket address"))?;
+            tokio::spawn(
+                poem::Server::new_with_acceptor(acceptor).run(endpoint),
+            );
+
+            Ok(Self {
+                url: format!("http://{addr}"),
+                requests,
+            })
+        }
+
+        fn requests(&self) -> Vec<(String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    /// Encodes the public key of `signing_key` as the DER SubjectPublicKeyInfo
+    /// that KMS returns.
+    fn public_key_der(signing_key: &SigningKey) -> Vec<u8> {
+        // The SubjectPublicKeyInfo header of an uncompressed secp256k1 key
+        const SPKI_PREFIX: [u8; 23] =
+            hex_literal::hex!("3056301006072a8648ce3d020106052b8104000a034200");
+        let point = signing_key.verifying_key().to_encoded_point(false);
+
+        [&SPKI_PREFIX[..], point.as_bytes()].concat()
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
 
     #[tokio::test]
     async fn kms_requests_follow_the_resolved_retry_config() -> eyre::Result<()>

@@ -4,12 +4,9 @@ use alloy::primitives::B256;
 use eyre::Context;
 use serde::Serialize;
 
-use crate::config::{
-    GasPriceLimitConfig, KeysConfig, RelayerConfig, RelayerKey,
-};
+use crate::config::{GasPriceLimitConfig, KeysConfig, RelayerConfig};
 use crate::db::data::{NetworkInfo, RelayerInfo};
 use crate::db::Database;
-use crate::types::secret_string::SecretString;
 
 /// The networks, relayers and API keys of a database in the static config
 /// format, see [`dump`].
@@ -55,12 +52,25 @@ struct DumpedNetwork {
     ws_rpc: String,
 }
 
+/// A relayer's key as it appears in the dumped config, in the format of
+/// [`RelayerKey`](crate::config::RelayerKey).
+///
+/// A KMS key id is written as the database stores it, even when loading the
+/// config would refuse it, such as an alias: loading then names the relayer,
+/// instead of the dump failing for every relayer.
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DumpedKey {
+    Kms(String),
+    Local(String),
+}
+
 #[derive(Serialize)]
 struct DumpedConfig {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     networks: Vec<DumpedNetwork>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    relayers: Vec<RelayerConfig>,
+    relayers: Vec<RelayerConfig<DumpedKey>>,
 }
 
 fn to_static_config(
@@ -110,14 +120,14 @@ fn to_static_config(
         .into_iter()
         .map(|relayer| {
             let key = match keys {
-                KeysConfig::Kms(_) => RelayerKey::Kms(relayer.key_id),
+                KeysConfig::Kms(_) => DumpedKey::Kms(relayer.key_id),
                 KeysConfig::Local(_) => {
                     let name = format!(
                         "RELAYER_KEY_{}",
                         relayer.id.to_uppercase().replace('-', "_")
                     );
 
-                    RelayerKey::Local(SecretString::new(secret(name, relayer.key_id)))
+                    DumpedKey::Local(secret(name, relayer.key_id))
                 }
             };
 
@@ -167,7 +177,7 @@ mod tests {
     use indoc::indoc;
 
     use super::*;
-    use crate::config::{load_config, KmsKeysConfig, LocalKeysConfig};
+    use crate::config::{load_config, Config, KmsKeysConfig, LocalKeysConfig};
     use crate::db::data::{Reconciliation, RelayerGasPriceLimit};
     use crate::db::wrappers::address::AddressWrapper;
     use crate::test_utils::setup_app;
@@ -362,24 +372,9 @@ mod tests {
         Ok(path)
     }
 
-    /// Loads the dump after a base config, as the README tells operators to
-    #[tokio::test]
-    async fn applying_a_dump_leaves_the_database_as_it_is() -> eyre::Result<()>
-    {
-        let (app, _db_container) =
-            setup_app("http://127.0.0.1:1", "ws://127.0.0.1:1").await?;
-        let db = &app.db;
-        insert_admin_api_state(db).await?;
-        let relayers_before = db.get_relayers().await?;
-        let networks_before = db.get_networks().await?;
-        let api_key_hashes_before = db.get_api_key_hashes().await?;
-
-        let read_only_db =
-            Database::connect_read_only(&app.config.database).await?;
-        let dump = dump(&read_only_db, &kms_keys()).await?;
-        for (name, value) in &dump.secrets {
-            std::env::set_var(name, value);
-        }
+    /// Loads `dump` after a base config with KMS keys, as the README tells
+    /// operators to
+    fn load_dump(dump: &ConfigDump) -> eyre::Result<Config> {
         let base_path = temp_config_file(indoc! {r#"
             [service]
             escalation_interval = "1m"
@@ -399,7 +394,59 @@ mod tests {
             load_config([base_path.as_path(), dump_path.as_path()].into_iter());
         std::fs::remove_file(&base_path)?;
         std::fs::remove_file(&dump_path)?;
-        let config = config?;
+
+        config
+    }
+
+    /// A key id that the config refuses, such as an alias an older version
+    /// accepted, doesn't stop the dump, and loading the dump names it
+    #[test]
+    fn dumps_refused_kms_key_ids_as_they_are() -> eyre::Result<()> {
+        let dump = to_static_config(
+            vec![],
+            vec![RelayerInfo {
+                key_id: "alias/relayer".to_string(),
+                ..relayer(RELAYER_ID, 480, "a")
+            }],
+            vec![],
+            &kms_keys(),
+        )?;
+
+        assert!(
+            dump.toml
+                .contains("[relayers.key]\nkms = \"alias/relayer\""),
+            "{}",
+            dump.toml
+        );
+        let err = load_dump(&dump).unwrap_err();
+        assert!(
+            format!("{err:#}").contains(
+                "relayers[0].key.kms: not a KMS key id or key ARN: aliases are refused"
+            ),
+            "{err:#}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn applying_a_dump_leaves_the_database_as_it_is() -> eyre::Result<()>
+    {
+        let (app, _db_container) =
+            setup_app("http://127.0.0.1:1", "ws://127.0.0.1:1").await?;
+        let db = &app.db;
+        insert_admin_api_state(db).await?;
+        let relayers_before = db.get_relayers().await?;
+        let networks_before = db.get_networks().await?;
+        let api_key_hashes_before = db.get_api_key_hashes().await?;
+
+        let read_only_db =
+            Database::connect_read_only(&app.config.database).await?;
+        let dump = dump(&read_only_db, &kms_keys()).await?;
+        for (name, value) in &dump.secrets {
+            std::env::set_var(name, value);
+        }
+        let config = load_dump(&dump)?;
         config.validate()?;
 
         let reconciliation = db

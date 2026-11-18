@@ -1,6 +1,6 @@
 use std::future::IntoFuture;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::U256;
@@ -10,12 +10,14 @@ use chrono::{DateTime, Utc};
 use eyre::{Context, ContextCompat};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use tokio::time::timeout;
 
 use crate::app::App;
 use crate::broadcast_utils::gas_estimation::{
     estimate_percentile_fees, FeesEstimate,
 };
-use crate::db::data::RelayerInfo;
+use crate::db::data::{ChainNonces, RelayerNonces};
+use crate::rate_limited_logs::RateLimitedLogs;
 use crate::task_runner::{TaskContext, Wait};
 
 const BLOCK_FEE_HISTORY_SIZE: u64 = 10;
@@ -25,6 +27,11 @@ const TIME_BETWEEN_FEE_ESTIMATION_SECONDS: u64 = 30;
 const GAS_PRICE_FOR_METRICS_FACTOR: f64 = 1e-9;
 
 const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
+
+/// Max amount of time the nonce sync of one chain may take at worker startup
+const STARTUP_NONCE_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+
+static REFUSED_FIRST_SYNC_LOGS: RateLimitedLogs = RateLimitedLogs::new();
 
 /// Indexes the blocks of `chain_id` as they arrive on its block stream.
 ///
@@ -187,9 +194,7 @@ pub async fn backfill_to_block(
     // Index the latest block after backfilling
     index_block(app.clone(), chain_id, rpc, latest_block).await?;
 
-    let relayers = app.db.get_relayers_by_chain_id(chain_id).await?;
-
-    update_relayer_nonces(&relayers, &app, rpc, chain_id, latest_block_number)
+    sync_relayer_nonces(&app, rpc, chain_id, latest_block_number.into())
         .await?;
 
     Ok(())
@@ -269,23 +274,70 @@ pub async fn estimate_gas(
     Ok(())
 }
 
-async fn update_relayer_nonces(
-    relayers: &[RelayerInfo],
+/// Syncs the nonce of every relayer on a configured chain from its chain, as
+/// indexing does with every block.
+///
+/// The worker runs this before it starts broadcasting, so that broadcasting
+/// starts from the chains' nonces, and new relayers accept transactions
+/// without waiting for each chain's next block. The API is already serving by
+/// then: until a relayer's first sync it refuses the relayer's transactions,
+/// see [`Database::create_transaction`].
+///
+/// Like indexing, it reads the nonces as of the chain's latest indexed block,
+/// see [`backfill_to_block`], or as of its newest block while it has none.
+/// Chains are synced concurrently, each within
+/// [`STARTUP_NONCE_SYNC_TIMEOUT`]. A chain that fails is logged and left to
+/// indexing, so that one unavailable chain doesn't hold up the others.
+///
+/// [`Database::create_transaction`]: crate::db::Database::create_transaction
+pub async fn sync_relayer_nonces_at_startup(app: &App) {
+    let syncs = app.config.networks.iter().map(|network| async move {
+        let chain_id = network.chain_id;
+        let sync = async {
+            let rpc = app.http_provider(chain_id).await?;
+            let block = match app.db.get_latest_block_number(chain_id).await? {
+                Some(block_number) => block_number.into(),
+                None => BlockNumberOrTag::Latest,
+            };
+
+            sync_relayer_nonces(app, &rpc, chain_id, block).await
+        };
+
+        let result = timeout(STARTUP_NONCE_SYNC_TIMEOUT, sync)
+            .await
+            .unwrap_or_else(|_| {
+                Err(eyre::eyre!(
+                    "Timed out after {STARTUP_NONCE_SYNC_TIMEOUT:?}"
+                ))
+            });
+        if let Err(err) = result {
+            tracing::error!(
+                chain_id,
+                error = ?err,
+                "Syncing relayer nonces at startup failed, indexing will sync them"
+            );
+        }
+    });
+
+    futures::future::join_all(syncs).await;
+}
+
+/// Syncs the nonce of every relayer on `chain_id` from the chain, see
+/// [`Database::update_relayer_nonce`].
+///
+/// [`Database::update_relayer_nonce`]: crate::db::Database::update_relayer_nonce
+async fn sync_relayer_nonces(
     app: &App,
     rpc: &RootProvider,
     chain_id: u64,
-    block_number: u64,
-) -> Result<(), eyre::Error> {
+    block: BlockNumberOrTag,
+) -> eyre::Result<()> {
+    let relayers = app.db.get_relayer_nonces(chain_id).await?;
+
     let mut futures = FuturesUnordered::new();
 
-    for relayer in relayers {
-        futures.push(update_relayer_nonce(
-            app,
-            rpc,
-            relayer,
-            chain_id,
-            block_number,
-        ));
+    for relayer in &relayers {
+        futures.push(update_relayer_nonce(app, rpc, relayer, chain_id, block));
     }
 
     while let Some(result) = futures.next().await {
@@ -299,18 +351,30 @@ async fn update_relayer_nonces(
 async fn update_relayer_nonce(
     app: &App,
     rpc: &RootProvider,
-    relayer: &RelayerInfo,
+    relayer: &RelayerNonces,
     chain_id: u64,
-    block_number: u64,
+    block: BlockNumberOrTag,
 ) -> eyre::Result<()> {
+    let relayer_address = relayer.address.0;
     let tx_count = rpc
-        .get_transaction_count(relayer.address.0)
-        .number(block_number)
+        .get_transaction_count(relayer_address)
+        .block_id(block.into())
         .await?;
 
-    if tx_count == relayer.current_nonce && tx_count <= relayer.nonce {
+    if tx_count == relayer.current_nonce
+        && tx_count <= relayer.nonce
+        && !relayer.awaits_first_sync()
+    {
         return Ok(());
     }
+
+    // Only a first sync checks for transactions another signer still has in
+    // flight, see `Database::update_relayer_nonce`
+    let pending_tx_count = if relayer.awaits_first_sync() {
+        Some(rpc.get_transaction_count(relayer_address).pending().await?)
+    } else {
+        None
+    };
 
     tracing::info!(
         relayer_id = relayer.id,
@@ -321,22 +385,59 @@ async fn update_relayer_nonce(
         "Updating relayer nonce"
     );
 
-    let relayers_behind = app
+    let nonces = ChainNonces {
+        latest: tx_count,
+        pending: pending_tx_count,
+    };
+    let sync = app
         .db
-        .update_relayer_nonce(chain_id, relayer.address.0, tx_count)
+        .update_relayer_nonce(chain_id, relayer_address, nonces)
         .await?;
 
-    for (relayer_id, local_nonce) in relayers_behind {
+    for (relayer_id, local_nonce) in sync.behind_chain {
         tracing::error!(
             relayer_id,
             chain_id,
             relayer_address = %relayer.address,
             local_nonce,
             chain_nonce = tx_count,
-            "Relayer key sent transactions outside tx-sitter, moved its nonce up to the chain's"
+            "Relayer key sent transactions outside tx-sitter and may be in use elsewhere, moved its nonce up to the chain's"
         );
         metrics::counter!(
             "relayer_nonce_behind_chain",
+            &[
+                ("chain_id", chain_id.to_string()),
+                ("relayer_id", relayer_id)
+            ]
+        )
+        .increment(1);
+    }
+
+    for relayer_id in sync.first_synced {
+        tracing::warn!(
+            relayer_id,
+            chain_id,
+            relayer_address = %relayer.address,
+            chain_nonce = tx_count,
+            "Synced the relayer's nonce from its chain for the first time"
+        );
+    }
+
+    for relayer_id in sync.pending_elsewhere {
+        // Refused again on every block until the other signer's transactions
+        // are mined, so log it once per period and count every refusal
+        if REFUSED_FIRST_SYNC_LOGS.should_log(&relayer_id, Instant::now()) {
+            tracing::error!(
+                relayer_id,
+                chain_id,
+                relayer_address = %relayer.address,
+                chain_nonce = tx_count,
+                pending_nonce = pending_tx_count,
+                "Relayer not synced: the key has pending transactions tx-sitter did not send"
+            );
+        }
+        metrics::counter!(
+            "relayer_first_sync_refused",
             &[
                 ("chain_id", chain_id.to_string()),
                 ("relayer_id", relayer_id)
