@@ -80,8 +80,8 @@ ws_rpc = "${WORLDCHAIN_WS_URL}"
 id = "6b0b6d1c-7b0e-4c2a-9d3e-2f1a5c4b3a29"
 name = "wc_enableSafe4337Module_1"
 chain_id = 480
-# A KMS key id, key ARN, alias or alias ARN with keys.kind = "kms", or { local = "<hex private key>" } with keys.kind = "local".
-# A key of another AWS account needs its ARN.
+# A KMS key id or key ARN with keys.kind = "kms", or { local = "<hex private key>" } with keys.kind = "local".
+# A key of another AWS account needs its key ARN. Aliases are refused, because they can be pointed at another key.
 key = { kms = "arn:aws:kms:eu-central-1:123456789012:key/0b3e2a5c-..." }
 # The address the key must derive, checked at startup
 address = "0x1Ed53d680B8890DAe2a63f673a85fFDE1FD5C7a2"

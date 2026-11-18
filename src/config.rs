@@ -379,9 +379,8 @@ fn serialize_checksummed<S: serde::Serializer>(
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RelayerKey {
-    /// A KMS key id, key ARN, alias name or alias ARN, for
-    /// `keys.kind = "kms"`. A key of another AWS account needs its key ARN
-    /// or alias ARN.
+    /// A KMS key id or key ARN, for `keys.kind = "kms"`. A key of another
+    /// AWS account needs its key ARN. Aliases are refused, see [`KmsKeyId`].
     Kms(KmsKeyId),
     /// A hex-encoded secp256k1 private key, for `keys.kind = "local"`
     Local(SecretString),
@@ -1059,8 +1058,13 @@ mod tests {
     )]
     #[test_case(
         "key = { kms = \"arn:aws:kms:us-east-1:key/0b3e2a5c\" }",
-        "relayers[0].key.kms: not a KMS key id, key ARN, alias name or alias ARN: an ARN has six parts separated by ':'" ;
+        "relayers[0].key.kms: not a KMS key id or key ARN: an ARN has six parts separated by ':'" ;
         "kms key ARN without an account"
+    )]
+    #[test_case(
+        "key = { kms = \"alias/relayer\" }",
+        "relayers[0].key.kms: not a KMS key id or key ARN: aliases are refused, because they can be pointed at another key" ;
+        "kms alias"
     )]
     #[test_case(
         "key = { kms = \"a\", local = \"b\" }",

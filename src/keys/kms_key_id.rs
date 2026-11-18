@@ -2,15 +2,18 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// A KMS key in one of the forms the KMS API takes: a key id, a key ARN, an
-/// alias name or an alias ARN.
+/// A KMS key, as a key id or a key ARN.
 ///
-/// KMS resolves key ids and alias names in the caller's AWS account, so only
-/// an ARN identifies a key of another account, such as a relayer key created
-/// by tx-sitter-aws. Every form identifies a key in the region of the KMS
-/// client.
+/// KMS resolves key ids in the caller's AWS account, so only a key ARN
+/// identifies a key of another account, such as a relayer key created by
+/// tx-sitter-aws. Both forms identify a key in the region of the KMS client.
 ///
-/// Parsing checks the form, not that the key exists:
+/// Aliases, as alias names or alias ARNs, are refused: an alias can be
+/// pointed at another key, and the service would then sign with a key whose
+/// address it never checked.
+///
+/// Parsing checks the form only, not that the key exists or that the service
+/// may use it:
 ///
 /// ```
 /// use tx_sitter::keys::KmsKeyId;
@@ -19,7 +22,7 @@ use serde::{Deserialize, Serialize};
 ///     "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 ///         .parse()
 ///         .unwrap();
-/// assert!("alias/relayer".parse::<KmsKeyId>().is_ok());
+/// assert!("alias/relayer".parse::<KmsKeyId>().is_err());
 /// assert!("arn:aws:kms:us-east-1:key/1234abcd".parse::<KmsKeyId>().is_err());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,11 +46,7 @@ pub struct InvalidKmsKeyId(&'static str);
 
 impl std::fmt::Display for InvalidKmsKeyId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "not a KMS key id, key ARN, alias name or alias ARN: {}",
-            self.0
-        )
+        write!(f, "not a KMS key id or key ARN: {}", self.0)
     }
 }
 
@@ -59,8 +58,8 @@ impl FromStr for KmsKeyId {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value.starts_with("arn:") {
             check_arn(value)?;
-        } else if let Some(alias) = value.strip_prefix("alias/") {
-            check_alias_name(alias)?;
+        } else if value.starts_with("alias/") {
+            return Err(ALIAS_REFUSED);
         } else {
             check_key_id(value)?;
         }
@@ -83,8 +82,11 @@ impl From<KmsKeyId> for String {
     }
 }
 
-/// Checks `arn:<partition>:kms:<region>:<account id>:<resource>`, where the
-/// resource is `key/<key id>` or `alias/<alias name>`.
+const ALIAS_REFUSED: InvalidKmsKeyId = InvalidKmsKeyId(
+    "aliases are refused, because they can be pointed at another key",
+);
+
+/// Checks `arn:<partition>:kms:<region>:<account id>:key/<key id>`.
 fn check_arn(arn: &str) -> Result<(), InvalidKmsKeyId> {
     let parts: Vec<&str> = arn.splitn(6, ':').collect();
     let [_, partition, service, region, account_id, resource] = parts[..]
@@ -111,12 +113,10 @@ fn check_arn(arn: &str) -> Result<(), InvalidKmsKeyId> {
 
     if let Some(key_id) = resource.strip_prefix("key/") {
         check_key_id(key_id)
-    } else if let Some(alias) = resource.strip_prefix("alias/") {
-        check_alias_name(alias)
+    } else if resource.starts_with("alias/") {
+        Err(ALIAS_REFUSED)
     } else {
-        Err(InvalidKmsKeyId(
-            "the ARN's resource is neither key/ nor alias/",
-        ))
+        Err(InvalidKmsKeyId("the ARN's resource is not key/"))
     }
 }
 
@@ -129,21 +129,6 @@ fn check_key_id(key_id: &str) -> Result<(), InvalidKmsKeyId> {
     if !is_valid {
         return Err(InvalidKmsKeyId(
             "a key id has only letters, digits and '-'",
-        ));
-    }
-
-    Ok(())
-}
-
-fn check_alias_name(alias: &str) -> Result<(), InvalidKmsKeyId> {
-    let is_valid = !alias.is_empty()
-        && alias.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-')
-        });
-
-    if !is_valid {
-        return Err(InvalidKmsKeyId(
-            "an alias name has only letters, digits, '/', '_' and '-'",
         ));
     }
 
@@ -173,11 +158,6 @@ mod tests {
         "arn:aws-us-gov:kms:us-gov-west-1:111122223333:key/mrk-1234abcd12ab34cd56ef1234567890ab" ;
         "multi-region key ARN in another partition"
     )]
-    #[test_case("alias/tx-sitter/relayer_1" ; "alias name")]
-    #[test_case(
-        "arn:aws:kms:us-east-1:111122223333:alias/relayer" ;
-        "alias ARN"
-    )]
     fn parses(key: &str) {
         let parsed: KmsKeyId = key.parse().unwrap();
 
@@ -190,7 +170,16 @@ mod tests {
         "a key id has only letters, digits and '-'" ;
         "padded key id"
     )]
-    #[test_case("alias/", "an alias name has only letters, digits, '/', '_' and '-'" ; "empty alias")]
+    #[test_case(
+        "alias/tx-sitter/relayer_1",
+        "aliases are refused, because they can be pointed at another key" ;
+        "alias name"
+    )]
+    #[test_case(
+        "arn:aws:kms:us-east-1:111122223333:alias/relayer",
+        "aliases are refused, because they can be pointed at another key" ;
+        "alias ARN"
+    )]
     #[test_case(
         "arn:aws:kms:us-east-1:key/1234abcd",
         "an ARN has six parts separated by ':'" ;
@@ -218,7 +207,7 @@ mod tests {
     )]
     #[test_case(
         "arn:aws:kms:us-east-1:111122223333:1234abcd",
-        "the ARN's resource is neither key/ nor alias/" ;
+        "the ARN's resource is not key/" ;
         "ARN without a resource type"
     )]
     #[test_case(
@@ -236,9 +225,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            format!(
-                "not a KMS key id, key ARN, alias name or alias ARN: {reason}"
-            )
+            format!("not a KMS key id or key ARN: {reason}")
         );
     }
 
