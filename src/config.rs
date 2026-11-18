@@ -329,15 +329,19 @@ pub struct NetworkConfig {
     pub ws_rpc: SecretUrl,
 }
 
+/// A relayer of the config.
+///
+/// `K` is the type of its key, which only `config dump` changes, to write
+/// the stored key ids as they are, see [`crate::config_dump`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct RelayerConfig {
+pub struct RelayerConfig<K = RelayerKey> {
     /// A lowercase hyphenated UUID. API keys embed it, so it must never
     /// change.
     pub id: String,
     pub name: String,
     pub chain_id: u64,
-    pub key: RelayerKey,
+    pub key: K,
 
     /// The address `key` must derive, checked at startup
     #[serde(serialize_with = "serialize_checksummed")]
