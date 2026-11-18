@@ -106,6 +106,9 @@ At startup every process:
    - a relayer that is in the database but not in the config is disabled, not deleted, and loses its API keys;
    - every configured relayer accepts exactly the API keys in its `api_key_hashes`;
    - a config without relayers fails while the database has enabled relayers, which protects a database whose relayers were never moved to the config.
+5. With `service.role` `all` or `worker`, syncs every relayer's nonce from its chain before it starts the background tasks. A chain whose RPCs fail is logged and left to indexing, which syncs nonces with every block.
+
+A relayer whose nonce was never synced, such as a new one, answers sends with 503 (`relayer_not_ready`) and allocates no nonce. Its first sync moves its nonce up to the chain's, so a key that already sent transactions elsewhere continues from there.
 
 A disabled relayer answers every request with 403, including reads, the event feed and the RPC proxy, and broadcasts nothing. Only a v2 send that repeats a stored one still gets its `txId`, as the v2 API promises. Its unsent and in-flight transactions are logged at warn when a process applies the config.
 

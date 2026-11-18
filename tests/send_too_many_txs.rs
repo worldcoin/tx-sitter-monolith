@@ -28,6 +28,7 @@ async fn send_too_many_txs() -> eyre::Result<()> {
     };
     let (_api_1, client_1) = api_service().build(&anvil, &db_url).await?;
     let (_api_2, client_2) = api_service().build(&anvil, &db_url).await?;
+    sync_relayer_nonces(&db_url, &anvil, &[DEFAULT_ANVIL_ACCOUNT]).await?;
     let api_key = DEFAULT_API_KEY.to_string();
 
     let sends: FuturesUnordered<_> = [&client_1, &client_2]

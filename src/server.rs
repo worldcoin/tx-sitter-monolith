@@ -109,6 +109,9 @@ impl RelayerApi {
                     SendTxError::nonce_taken(&relayer, &tx_id, nonce).into()
                 )
             }
+            CreateResult::NonceNotSynced => {
+                return Err(SendTxError::nonce_not_synced(&relayer).into())
+            }
         }
 
         tracing::info!(
@@ -306,6 +309,9 @@ enum SendTxError {
     /// Another transaction of the relayer holds its next nonce, which a
     /// relayer reset repairs
     NonceTaken,
+    /// The relayer's nonce was never synced from its chain, so it can't
+    /// allocate one yet
+    NonceNotSynced,
     /// The RPC didn't return the relayer's balance
     BalanceUnavailable(eyre::Report),
     Internal(eyre::Report),
@@ -325,6 +331,18 @@ impl SendTxError {
         );
 
         Self::NonceTaken
+    }
+
+    /// Reports that `create_transaction` refused `relayer` a nonce, because
+    /// its nonce was never synced from its chain.
+    fn nonce_not_synced(relayer: &RelayerInfo) -> Self {
+        metrics::counter!(
+            "relayer_not_ready_tx_sends",
+            "relayer_id" => relayer.id.clone()
+        )
+        .increment(1);
+
+        Self::NonceNotSynced
     }
 }
 
@@ -363,6 +381,14 @@ impl From<SendTxError> for poem::Error {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "relayer_nonce_taken",
                     "The relayer's next nonce is taken by another of its transactions. Resetting the relayer repairs it.",
+                )
+                .into_response(),
+            ),
+            SendTxError::NonceNotSynced => poem::Error::from_response(
+                ErrorResponse::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "relayer_not_ready",
+                    "Relayer not ready: nonce not synced, retry later",
                 )
                 .into_response(),
             ),

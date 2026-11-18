@@ -277,3 +277,19 @@ pub struct RelayerInfo {
     pub gas_price_limits: Vec<RelayerGasPriceLimit>,
     pub enabled: bool,
 }
+
+/// A relayer's nonces, which indexing syncs from its chain
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct RelayerNonces {
+    pub id: String,
+    pub address: AddressWrapper,
+    /// The nonce the relayer gives its next transaction
+    #[sqlx(try_from = "i64")]
+    pub nonce: u64,
+    /// The relayer's transaction count on its chain when it was last synced
+    #[sqlx(try_from = "i64")]
+    pub current_nonce: u64,
+    /// Whether its nonce was ever synced from its chain. Until then the
+    /// relayer allocates no nonces.
+    pub is_nonce_synced: bool,
+}

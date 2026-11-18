@@ -31,6 +31,7 @@ async fn key_used_outside_tx_sitter_moves_nonce_forward() -> eyre::Result<()> {
         .role(ServiceRole::Api)
         .build(&anvil, &db_url)
         .await?;
+    sync_relayer_nonces(&db_url, &anvil, &[DEFAULT_ANVIL_ACCOUNT]).await?;
     let api_key = DEFAULT_API_KEY.to_string();
     let db = connect_db(&db_url).await?;
 

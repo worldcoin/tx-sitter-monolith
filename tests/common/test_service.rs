@@ -16,8 +16,9 @@ use tx_sitter_client::models::{
 };
 
 use super::{
-    connect_db, setup_db, AnvilBuilder, ServiceBuilder, TestRelayer,
-    DEFAULT_ANVIL_CHAIN_ID, DEFAULT_API_KEY, DEFAULT_RELAYER_ID,
+    connect_db, setup_db, sync_relayer_nonces, AnvilBuilder, ServiceBuilder,
+    TestRelayer, DEFAULT_ANVIL_ACCOUNT, DEFAULT_ANVIL_CHAIN_ID,
+    DEFAULT_API_KEY, DEFAULT_RELAYER_ID,
 };
 
 /// A service on its own database and anvil chain, with the default anvil
@@ -46,6 +47,12 @@ impl TestService {
             .relayer(other_relayer.config.clone())
             .build(&anvil, &db_url)
             .await?;
+        sync_relayer_nonces(
+            &db_url,
+            &anvil,
+            &[DEFAULT_ANVIL_ACCOUNT, other_relayer.config.address],
+        )
+        .await?;
         let db = connect_db(&db_url).await?;
 
         Ok(Self {

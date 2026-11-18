@@ -114,7 +114,13 @@ pub struct TestRelayer {
 impl TestRelayer {
     pub fn random(chain_id: u64) -> Self {
         let private_key = SigningKey::random(&mut rand::rngs::OsRng).to_bytes();
-        let config = relayer_with_key(chain_id, &private_key);
+
+        Self::with_key(chain_id, &private_key)
+    }
+
+    /// A relayer with a random id and API key that signs with `private_key`.
+    pub fn with_key(chain_id: u64, private_key: &[u8]) -> Self {
+        let config = relayer_with_key(chain_id, private_key);
         let api_key = ApiKey::random(&config.id)
             .reveal()
             .expect("Relayer id is a UUID");
@@ -329,6 +335,25 @@ pub async fn await_estimates(
 /// without going through a service.
 pub async fn connect_db(db_url: &str) -> eyre::Result<Database> {
     Database::new(&DatabaseConfig::connection_string(db_url)).await
+}
+
+/// Syncs the nonces of the anvil relayers with `addresses` from `anvil`, as
+/// a worker does at startup, for tests without a worker.
+pub async fn sync_relayer_nonces(
+    db_url: &str,
+    anvil: &AnvilInstance,
+    addresses: &[Address],
+) -> eyre::Result<()> {
+    let db = connect_db(db_url).await?;
+    let provider = setup_provider(anvil.endpoint()).await?;
+
+    for &address in addresses {
+        let chain_nonce = provider.get_transaction_count(address).await?;
+        db.update_relayer_nonce(DEFAULT_ANVIL_CHAIN_ID, address, chain_nonce)
+            .await?;
+    }
+
+    Ok(())
 }
 
 /// Sends `GET path` to the service at `addr` and returns the response status

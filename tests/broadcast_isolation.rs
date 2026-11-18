@@ -3,7 +3,7 @@ mod common;
 use std::time::Instant;
 
 use tx_sitter::broadcast_utils::gas_estimation::FeesEstimate;
-use tx_sitter::db::Database;
+use tx_sitter::db::{CreateResult, Database};
 use tx_sitter::types::TransactionPriority;
 
 use crate::common::prelude::*;
@@ -32,7 +32,7 @@ async fn unresponsive_chain_does_not_delay_other_relayers() -> eyre::Result<()>
     let db = connect_db(&db_url).await?;
 
     let stuck_tx_id =
-        create_tx_on_unresponsive_chain(&db, &unresponsive_relayer.id).await?;
+        create_tx_on_unresponsive_chain(&db, &unresponsive_relayer).await?;
     await_stored_broadcast(&db, &stuck_tx_id).await?;
 
     let started = Instant::now();
@@ -48,13 +48,15 @@ async fn unresponsive_chain_does_not_delay_other_relayers() -> eyre::Result<()>
     Ok(())
 }
 
-/// Creates a transaction of `relayer_id`, a relayer on the chain whose RPC
-/// never answers, with fee estimates so that broadcast signs it and then
-/// waits for the send.
+/// Creates a transaction of `relayer`, a relayer on the chain whose RPC
+/// never answers, with the nonce sync and fee estimates the worker can't get
+/// from that chain, so that broadcast signs it and then waits for the send.
 async fn create_tx_on_unresponsive_chain(
     db: &Database,
-    relayer_id: &str,
+    relayer: &RelayerConfig,
 ) -> eyre::Result<String> {
+    db.update_relayer_nonce(UNRESPONSIVE_CHAIN_ID, relayer.address, 0)
+        .await?;
     let gwei: U256 = parse_units("1", "gwei")?.into();
     db.save_block(1, UNRESPONSIVE_CHAIN_ID, chrono::Utc::now(), &[])
         .await?;
@@ -70,19 +72,21 @@ async fn create_tx_on_unresponsive_chain(
     .await?;
 
     let tx_id = "stuck".to_string();
-    db.create_transaction(
-        &tx_id,
-        ARBITRARY_ADDRESS,
-        &[],
-        U256::from(1),
-        U256::from(21_000),
-        TransactionPriority::Regular,
-        None,
-        relayer_id,
-        None,
-        None,
-    )
-    .await?;
+    let result = db
+        .create_transaction(
+            &tx_id,
+            ARBITRARY_ADDRESS,
+            &[],
+            U256::from(1),
+            U256::from(21_000),
+            TransactionPriority::Regular,
+            None,
+            &relayer.id,
+            None,
+            None,
+        )
+        .await?;
+    assert_eq!(result, CreateResult::Created);
 
     Ok(tx_id)
 }

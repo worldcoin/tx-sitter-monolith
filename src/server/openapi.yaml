@@ -239,7 +239,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
         '503':
-          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later'
+          description: '`balance_unavailable` when the relayer''s balance couldn''t be checked, or `relayer_not_ready` until its nonce is synced from its chain; retry later'
           content:
             application/json; charset=utf-8:
               schema:
@@ -330,7 +330,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponseBody'
         '503':
-          description: '`balance_unavailable`: the relayer''s balance couldn''t be checked, retry later'
+          description: '`balance_unavailable` when the relayer''s balance couldn''t be checked, or `relayer_not_ready` until its nonce is synced from its chain; retry later'
           content:
             application/json; charset=utf-8:
               schema:

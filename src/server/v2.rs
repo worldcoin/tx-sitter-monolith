@@ -114,6 +114,9 @@ impl RelayerApiV2 {
             CreateResult::NonceTaken { nonce } => {
                 Err(SendTxError::nonce_taken(&relayer, &tx_id, nonce).into())
             }
+            CreateResult::NonceNotSynced => {
+                Err(SendTxError::nonce_not_synced(&relayer).into())
+            }
         }
     }
 
@@ -378,6 +381,11 @@ impl From<SendTxError> for ApiError {
                 "relayer_nonce_taken",
                 "The relayer's next nonce is taken by another of its transactions. Resetting the relayer repairs it.",
             ),
+            SendTxError::NonceNotSynced => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "relayer_not_ready",
+                "Relayer not ready: nonce not synced, retry later",
+            ),
             SendTxError::BalanceUnavailable(cause) => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "balance_unavailable",
@@ -520,7 +528,7 @@ const ERROR_RESPONSES: &[(StatusCode, &str)] = &[
     ),
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        "`balance_unavailable`: the relayer's balance couldn't be checked, retry later",
+        "`balance_unavailable` when the relayer's balance couldn't be checked, or `relayer_not_ready` until its nonce is synced from its chain; retry later",
     ),
 ];
 
