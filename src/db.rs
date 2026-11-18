@@ -4616,7 +4616,9 @@ mod tests {
             id: uuid(),
             name: format!("relayer {address_byte}"),
             chain_id,
-            key: RelayerKey::Kms(format!("key-{address_byte}")),
+            key: RelayerKey::Kms(
+                format!("key-{address_byte}").parse().unwrap(),
+            ),
             address: Address::with_last_byte(address_byte),
             max_inflight_txs: 5,
             max_queued_txs: 20,
@@ -4681,7 +4683,9 @@ mod tests {
 
         let updated = RelayerConfig {
             name: "renamed".to_string(),
-            key: RelayerKey::Kms("arn:aws:kms:key/1".to_string()),
+            key: RelayerKey::Kms(
+                "arn:aws:kms:us-east-1:111122223333:key/1".parse().unwrap(),
+            ),
             max_inflight_txs: 10,
             max_queued_txs: 30,
             gas_price_limits: vec![GasPriceLimitConfig {
@@ -4697,7 +4701,7 @@ mod tests {
             db.get_relayer(&relayer.id).await?.context("No relayer")?;
         assert_eq!(stored.name, "renamed");
         assert_eq!(stored.chain_id, 1);
-        assert_eq!(stored.key_id, "arn:aws:kms:key/1");
+        assert_eq!(stored.key_id, "arn:aws:kms:us-east-1:111122223333:key/1");
         assert_eq!(stored.address.0, relayer.address);
         assert_eq!(stored.nonce, 7);
         assert_eq!(stored.current_nonce, 5);

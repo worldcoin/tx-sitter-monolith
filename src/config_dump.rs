@@ -110,7 +110,11 @@ fn to_static_config(
         .into_iter()
         .map(|relayer| {
             let key = match keys {
-                KeysConfig::Kms(_) => RelayerKey::Kms(relayer.key_id),
+                KeysConfig::Kms(_) => {
+                    RelayerKey::Kms(relayer.key_id.parse().with_context(
+                        || format!("Relayer {} has an invalid key id", relayer.id),
+                    )?)
+                }
                 KeysConfig::Local(_) => {
                     let name = format!(
                         "RELAYER_KEY_{}",

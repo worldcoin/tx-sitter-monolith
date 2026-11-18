@@ -1,7 +1,9 @@
+pub mod kms_key_id;
 pub mod kms_keys;
 pub mod local_keys;
 pub mod universal_signer;
 
+pub use kms_key_id::KmsKeyId;
 pub use kms_keys::KmsKeys;
 pub use local_keys::LocalKeys;
 pub use universal_signer::UniversalSigner;
