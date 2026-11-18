@@ -7,7 +7,7 @@ use futures::stream::{self, StreamExt};
 use sha3::{Digest, Sha3_256};
 
 use crate::app::App;
-use crate::config::{NetworkConfig, RelayerConfig};
+use crate::config::{NetworkConfig, OpStackConfig, RelayerConfig};
 use crate::db::data::{ConfigChange, Reconciliation};
 use crate::keys::kms_keys::is_transient_error;
 use crate::keys::{KeysSource, UniversalSigner};
@@ -37,19 +37,22 @@ impl ConfigVersion {
     /// Hashes `networks` and `relayers`, ignoring their order and the order
     /// of each relayer's API keys.
     ///
-    /// The hash leaves out RPC URLs, because they come from secrets that may
-    /// rotate without a deploy, and every process sends requests to the RPCs
-    /// of its own config.
+    /// Of a network it covers the chain id, the name and the `op_stack`
+    /// section. It leaves out RPC URLs, because they come from secrets that
+    /// may rotate without a deploy, and every process sends requests to the
+    /// RPCs of its own config.
     pub fn new(
         revision: u64,
         networks: &[NetworkConfig],
         relayers: &[RelayerConfig],
     ) -> Self {
-        let mut networks: Vec<(u64, &str)> = networks
+        let mut networks: Vec<(u64, &str, &Option<OpStackConfig>)> = networks
             .iter()
-            .map(|network| (network.chain_id, network.name.as_str()))
+            .map(|network| {
+                (network.chain_id, network.name.as_str(), &network.op_stack)
+            })
             .collect();
-        networks.sort();
+        networks.sort_by_key(|(chain_id, name, _)| (*chain_id, *name));
 
         let mut relayers = relayers.to_vec();
         relayers.sort_by(|a, b| a.id.cmp(&b.id));
@@ -308,9 +311,10 @@ async fn load_signer_with_retries(
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
-    use alloy::primitives::Address;
+    use alloy::primitives::{Address, U256};
     use alloy::signers::aws::AwsSignerError;
     use aws_smithy_runtime_api::client::result::SdkError;
+    use base_api_types::DecimalU256;
     use test_case::test_case;
 
     use super::*;
@@ -393,6 +397,44 @@ mod tests {
         ];
         for changed in changes {
             assert_ne!(version, ConfigVersion::new(1, &networks, &[changed]));
+        }
+    }
+
+    #[test]
+    fn version_covers_op_stack_settings() {
+        let caps = OpStackConfig {
+            max_l1_base_fee: DecimalU256(U256::from(200_000_000)),
+            max_blob_base_fee: DecimalU256(U256::from(20_000_000)),
+            max_fee_age: Duration::from_secs(120),
+        };
+        let op_stack_network = |op_stack| NetworkConfig {
+            op_stack: Some(op_stack),
+            ..network(480, "https://a.example.com")
+        };
+        let version =
+            |networks: &[NetworkConfig]| ConfigVersion::new(1, networks, &[]);
+
+        let versions = [
+            version(&[network(480, "https://a.example.com")]),
+            version(&[op_stack_network(caps.clone())]),
+            version(&[op_stack_network(OpStackConfig {
+                max_l1_base_fee: DecimalU256(U256::from(200_000_001)),
+                ..caps.clone()
+            })]),
+            version(&[op_stack_network(OpStackConfig {
+                max_blob_base_fee: DecimalU256(U256::from(20_000_001)),
+                ..caps.clone()
+            })]),
+            version(&[op_stack_network(OpStackConfig {
+                max_fee_age: Duration::from_secs(121),
+                ..caps.clone()
+            })]),
+        ];
+
+        for (index, version) in versions.iter().enumerate() {
+            for other in &versions[index + 1..] {
+                assert_ne!(version, other);
+            }
         }
     }
 
