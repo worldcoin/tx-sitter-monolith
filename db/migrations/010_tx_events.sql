@@ -21,3 +21,15 @@ CREATE TABLE IF NOT EXISTS tx_events (
 
 -- A relayer's feed
 CREATE INDEX IF NOT EXISTS tx_events_relayer_cursor ON tx_events (relayer_id, tx_xid, id);
+-- The events the feed holds back, which the feed lag gauge reads
+CREATE INDEX IF NOT EXISTS tx_events_tx_xid ON tx_events (tx_xid);
+-- Pruning
+CREATE INDEX IF NOT EXISTS tx_events_created_at ON tx_events (created_at);
+
+-- The greatest (tx_xid, id) pruning deleted. A cursor below it may have missed
+-- events, so the feed refuses it.
+CREATE TABLE IF NOT EXISTS tx_events_pruned (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    tx_xid    xid8 NOT NULL,
+    id        BIGINT NOT NULL
+);

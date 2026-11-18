@@ -115,6 +115,7 @@ fn add_background_tasks(task_runner: &Arc<TaskRunner<App>>, app: &App) {
     task_runner.add_task("escalate_txs", tasks::escalate_txs_task);
     task_runner.add_task("prune_blocks", tasks::prune_blocks);
     task_runner.add_task("prune_txs", tasks::prune_txs);
+    task_runner.add_task("prune_tx_events", tasks::prune_tx_events);
     task_runner.add_task("finalize_txs", tasks::finalize_txs);
     task_runner.add_task("handle_soft_reorgs", tasks::handle_soft_reorgs);
     task_runner.add_task("handle_hard_reorgs", tasks::handle_hard_reorgs);

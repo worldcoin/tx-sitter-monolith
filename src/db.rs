@@ -24,7 +24,7 @@ pub mod wrappers;
 
 use self::data::{
     BlockFees, NetworkStats, ReadTxData, RelayerStaleTxs,
-    RelayerTxsAtMaxEscalations, RpcKind,
+    RelayerTxsAtMaxEscalations, RpcKind, TxEventsLag,
 };
 pub use self::data::{TxForEscalation, UnsentTx};
 
@@ -45,6 +45,9 @@ const STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a connection of [`Database::pool`] may sit in an open transaction
 /// without running a statement before Postgres closes it.
+///
+/// An open transaction holds back the event feed, see
+/// [`Database::get_tx_events_lag`].
 const IDLE_IN_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The settings every connection of [`Database::pool`] asks for
@@ -1376,6 +1379,77 @@ impl Database {
         Ok(pruned.rows_affected())
     }
 
+    /// Deletes up to `batch_size` of the events stored before `timestamp`,
+    /// and returns how many it deleted.
+    ///
+    /// It records the last position in the feed it deleted, in `(tx_xid, id)`
+    /// order, so that the feed can tell a cursor before it may have missed
+    /// events.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn prune_tx_events(
+        &self,
+        timestamp: DateTime<Utc>,
+        batch_size: u64,
+    ) -> eyre::Result<u64> {
+        let (pruned,): (i64,) = sqlx::query_as(
+            r#"
+            WITH pruned AS (
+                DELETE FROM tx_events
+                WHERE  id IN (
+                           SELECT id
+                           FROM   tx_events
+                           WHERE  created_at < $1
+                           LIMIT  $2
+                       )
+                RETURNING tx_xid, id
+            ),
+            last_pruned AS (
+                INSERT INTO tx_events_pruned (tx_xid, id)
+                SELECT tx_xid, id
+                FROM   (
+                           SELECT   tx_xid, id
+                           FROM     pruned
+                           ORDER BY tx_xid DESC, id DESC
+                           LIMIT    1
+                       ) last
+                ON CONFLICT (singleton) DO UPDATE
+                SET    tx_xid = EXCLUDED.tx_xid,
+                       id = EXCLUDED.id
+                WHERE  (tx_events_pruned.tx_xid, tx_events_pruned.id)
+                     < (EXCLUDED.tx_xid, EXCLUDED.id)
+            )
+            SELECT COUNT(*) FROM pruned
+            "#,
+        )
+        .bind(timestamp)
+        .bind(batch_size as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(pruned as u64)
+    }
+
+    /// Returns how far the event feed is behind, see [`TxEventsLag`].
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_tx_events_lag(&self) -> eyre::Result<TxEventsLag> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT COALESCE(
+                       (
+                           SELECT   EXTRACT(EPOCH FROM now() - created_at)::FLOAT8
+                           FROM     tx_events
+                           WHERE    tx_xid >= (SELECT pg_snapshot_xmin(pg_current_snapshot()))
+                           ORDER BY tx_xid
+                           LIMIT    1
+                       ),
+                       0
+                   ) AS held_back_seconds
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     #[instrument(skip(self), level = "debug")]
     pub async fn upsert_network(
         &self,
@@ -1798,6 +1872,7 @@ mod tests {
     use crate::db::data::RelayerGasPriceLimit;
     use crate::db::wrappers::address::AddressWrapper;
     use crate::db::wrappers::decimal_u256::DecimalU256Wrapper;
+    use crate::db::wrappers::xid8::Xid8;
     use crate::types::{RelayerGasPriceLimitResponse, RelayerUpdateRequest};
 
     const ADDRESS: [u8; 20] = hex!("1ed53d680b8890dae2a63f673a85ffde1fd5c7a2");
@@ -2738,6 +2813,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lag_shows_events_held_back_by_an_open_transaction(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        for tx_id in ["a", "b"] {
+            create_tx(&db, &relayer_id, tx_id).await?;
+        }
+        assert_eq!(db.get_tx_events_lag().await?.held_back_seconds, 0.0);
+
+        // B commits while the older A is still open
+        let mut a = db.pool.begin().await?;
+        insert_pending_tx_event(a.as_mut(), "a", B256::with_last_byte(1))
+            .await?;
+        insert_pending_tx_event(&db.pool, "b", B256::with_last_byte(2)).await?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let lag = db.get_tx_events_lag().await?;
+        assert!(lag.held_back_seconds >= 1.0, "{lag:?}");
+
+        a.commit().await?;
+        assert_eq!(db.get_tx_events_lag().await?.held_back_seconds, 0.0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pruning_records_the_last_position_it_deleted() -> eyre::Result<()>
+    {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        for i in 0..3 {
+            let tx_id = format!("tx_{i}");
+            create_tx(&db, &relayer_id, &tx_id).await?;
+            insert_pending_tx_event(&db.pool, &tx_id, B256::with_last_byte(i))
+                .await?;
+        }
+        let positions: Vec<(Xid8, i64)> = sqlx::query_as(
+            "SELECT tx_xid, id FROM tx_events ORDER BY tx_xid, id",
+        )
+        .fetch_all(&db.pool)
+        .await?;
+        sqlx::query("UPDATE tx_events SET created_at = now() - interval '2 days' WHERE tx_id <> 'tx_2'")
+            .execute(&db.pool)
+            .await?;
+
+        let prune_timestamp = Utc::now() - chrono::Duration::days(1);
+        assert_eq!(db.prune_tx_events(prune_timestamp, 1).await?, 1);
+        assert_eq!(db.prune_tx_events(prune_timestamp, 1).await?, 1);
+        assert_eq!(db.prune_tx_events(prune_timestamp, 1).await?, 0);
+
+        assert_eq!(tx_event_changes(&db, "tx_2").await?.len(), 1);
+        assert_eq!(last_pruned(&db).await?, positions[1]);
+
+        // The last pruned position never moves back
+        let later = (Xid8(i64::MAX as u64), 0);
+        sqlx::query("UPDATE tx_events_pruned SET tx_xid = $1, id = $2")
+            .bind(later.0)
+            .bind(later.1)
+            .execute(&db.pool)
+            .await?;
+        sqlx::query(
+            "UPDATE tx_events SET created_at = now() - interval '2 days'",
+        )
+        .execute(&db.pool)
+        .await?;
+        assert_eq!(db.prune_tx_events(prune_timestamp, 10).await?, 1);
+        assert_eq!(last_pruned(&db).await?, later);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn idle_transactions_are_closed() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let mut tx = db.pool.begin().await?;
@@ -3317,6 +3464,12 @@ mod tests {
             .into_iter()
             .map(|(status, tx_hash)| (status, tx_hash.map(|hash| hash.0)))
             .collect())
+    }
+
+    async fn last_pruned(db: &Database) -> eyre::Result<(Xid8, i64)> {
+        Ok(sqlx::query_as("SELECT tx_xid, id FROM tx_events_pruned")
+            .fetch_one(&db.pool)
+            .await?)
     }
 
     /// Returns the hashes stored for `tx_id`, oldest first.

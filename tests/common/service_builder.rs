@@ -144,6 +144,7 @@ impl ServiceBuilder {
                 rpc_timeout: self.rpc_timeout,
                 task_stall_timeout: self.task_stall_timeout,
                 tx_retention: self.tx_retention,
+                event_retention: Duration::from_secs(7 * 24 * 60 * 60),
                 telemetry: None,
                 predefined,
             },

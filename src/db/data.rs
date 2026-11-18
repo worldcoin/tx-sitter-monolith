@@ -101,6 +101,15 @@ pub struct ReadTxData {
     pub mined_at: Option<DateTime<Utc>>,
 }
 
+/// How far the event feed is behind the events stored.
+#[derive(Debug, Clone, FromRow, PartialEq)]
+pub struct TxEventsLag {
+    /// How long the first event the feed holds back has waited, `0` when it
+    /// holds back none. A database transaction that writes and stays open
+    /// holds back every event stored after its first write.
+    pub held_back_seconds: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct NetworkStats {
     pub pending_txs: u64,

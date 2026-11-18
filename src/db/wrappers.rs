@@ -4,6 +4,7 @@ use hex_u256::HexU256Wrapper;
 pub mod address;
 pub mod h256;
 pub mod hex_bytes;
+pub mod xid8;
 
 // TODO: Remove repeated code in these 2 modules
 pub mod decimal_u256;

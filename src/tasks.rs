@@ -16,4 +16,4 @@ pub use self::index::index_chain;
 pub use self::metrics::emit_metrics;
 pub use self::monitor_funds::monitor_funds;
 pub use self::monitor_nonces::monitor_nonces;
-pub use self::prune::{prune_blocks, prune_txs};
+pub use self::prune::{prune_blocks, prune_tx_events, prune_txs};

@@ -10,9 +10,10 @@ use crate::task_runner::TaskContext;
 
 const BLOCK_PRUNING_INTERVAL: Duration = Duration::from_secs(60);
 const TX_PRUNING_INTERVAL: Duration = Duration::from_secs(60);
+const TX_EVENT_PRUNING_INTERVAL: Duration = Duration::from_secs(60);
 
-/// How many blocks or transactions one statement deletes at most, so that a
-/// backlog doesn't turn into one statement too long to finish
+/// How many blocks, transactions or events one statement deletes at most, so
+/// that a backlog doesn't turn into one statement too long to finish
 const PRUNE_BATCH_SIZE: u64 = 1_000;
 
 const fn minutes(minutes: i64) -> i64 {
@@ -67,6 +68,30 @@ pub async fn prune_txs(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
         .await?;
 
         ctx.idle(TX_PRUNING_INTERVAL).await;
+    }
+
+    Ok(())
+}
+
+/// Deletes the events of the feed once they are `service.event_retention`
+/// old.
+pub async fn prune_tx_events(
+    app: Arc<App>,
+    ctx: TaskContext,
+) -> eyre::Result<()> {
+    let retention =
+        chrono::Duration::from_std(app.config.service.event_retention)
+            .context("service.event_retention is out of range")?;
+
+    while !ctx.is_shutting_down() {
+        let event_prune_timestamp = Utc::now() - retention;
+
+        prune_in_batches(&ctx, |batch_size| {
+            app.db.prune_tx_events(event_prune_timestamp, batch_size)
+        })
+        .await?;
+
+        ctx.idle(TX_EVENT_PRUNING_INTERVAL).await;
     }
 
     Ok(())

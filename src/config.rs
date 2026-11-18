@@ -95,6 +95,11 @@ pub struct TxSitterConfig {
     #[serde(with = "humantime_serde", default = "default::tx_retention")]
     pub tx_retention: Duration,
 
+    /// How long the status changes of transactions are kept for the event
+    /// feed
+    #[serde(with = "humantime_serde", default = "default::event_retention")]
+    pub event_retention: Duration,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predefined: Option<Predefined>,
 
@@ -315,6 +320,10 @@ mod default {
         Duration::from_secs(30 * 24 * 60 * 60)
     }
 
+    pub fn event_retention() -> Duration {
+        Duration::from_secs(7 * 24 * 60 * 60)
+    }
+
     pub fn max_escalations() -> usize {
         100
     }
@@ -355,6 +364,7 @@ mod tests {
         rpc_timeout = "10s"
         task_stall_timeout = "5m"
         tx_retention = "30days"
+        event_retention = "7days"
 
         [server]
         host = "127.0.0.1:3000"
@@ -379,6 +389,7 @@ mod tests {
         rpc_timeout = "10s"
         task_stall_timeout = "5m"
         tx_retention = "30days"
+        event_retention = "7days"
 
         [server]
         host = "127.0.0.1:3000"
@@ -409,6 +420,7 @@ mod tests {
                 rpc_timeout: default::rpc_timeout(),
                 task_stall_timeout: default::task_stall_timeout(),
                 tx_retention: default::tx_retention(),
+                event_retention: default::event_retention(),
                 predefined: None,
                 telemetry: None,
             },
@@ -444,6 +456,7 @@ mod tests {
                 rpc_timeout: default::rpc_timeout(),
                 task_stall_timeout: default::task_stall_timeout(),
                 tx_retention: default::tx_retention(),
+                event_retention: default::event_retention(),
                 predefined: None,
                 telemetry: None,
             },
@@ -497,6 +510,7 @@ mod tests {
         assert_eq!(config.service.escalation_interval, Duration::from_secs(60));
         assert_eq!(config.service.rpc_timeout, default::rpc_timeout());
         assert_eq!(config.service.tx_retention, default::tx_retention());
+        assert_eq!(config.service.event_retention, default::event_retention());
         let KeysConfig::Kms(kms_config) = &config.keys else {
             panic!("Expected KMS keys config");
         };
