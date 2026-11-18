@@ -28,7 +28,7 @@ async fn events_follow_a_tx_through_a_reorg() -> eyre::Result<()> {
         .hard_reorg_interval(Duration::from_secs(2))
         .build(&anvil, &db_url)
         .await?;
-    let api_key = create_api_key(&client).await?;
+    let api_key = DEFAULT_API_KEY.to_string();
     let base_url = format!("http://{}", service.local_addr());
     let value: U256 = parse_units("1", "ether")?.into();
     send_raw_tx_v2(&base_url, &api_key, "tx-1", value).await?;

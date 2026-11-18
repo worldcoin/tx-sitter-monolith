@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use alloy::signers::local::PrivateKeySigner;
 use eyre::Context;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -10,10 +9,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::App;
 use crate::config::Config;
-use crate::keys::local_keys::signing_key_from_hex;
 use crate::task_runner::{TaskContext, TaskRunner};
-use crate::tasks;
 use crate::tx_events::{self, EventNotifier};
+use crate::{static_config, tasks};
 
 const NETWORK_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -28,7 +26,10 @@ pub struct Service {
 impl Service {
     /// Starts the parts of the service that `config.service.role` selects.
     ///
-    /// The service runs until `shutdown` is cancelled, see [`Service::wait`].
+    /// Before that it validates the config, checks the relayer keys and
+    /// writes the networks, relayers and API keys into the database, see
+    /// [`static_config::apply`]. The service runs until `shutdown` is
+    /// cancelled, see [`Service::wait`].
     pub async fn new(
         config: Config,
         shutdown: CancellationToken,
@@ -36,7 +37,7 @@ impl Service {
         config.validate()?;
         let app = Arc::new(App::new(config).await?);
 
-        initialize_predefined_values(&app).await?;
+        static_config::apply(&app).await?;
 
         let task_runner = Arc::new(TaskRunner::new(
             app.clone(),
@@ -172,62 +173,6 @@ async fn reconcile_networks(
 
         ctx.idle(NETWORK_RECONCILIATION_INTERVAL).await;
     }
-
-    Ok(())
-}
-
-async fn initialize_predefined_values(
-    app: &Arc<App>,
-) -> Result<(), eyre::Error> {
-    if app.config.service.predefined.is_some() && !app.config.keys.is_local() {
-        eyre::bail!("Predefined relayers are only supported with local keys");
-    }
-
-    let Some(predefined) = app.config.service.predefined.as_ref() else {
-        return Ok(());
-    };
-
-    tracing::warn!("Running with predefined values is not recommended in a production environment");
-
-    if app
-        .db
-        .get_network(predefined.network.chain_id)
-        .await?
-        .is_none()
-    {
-        app.db
-            .upsert_network(
-                predefined.network.chain_id,
-                &predefined.network.name,
-                &predefined.network.http_rpc,
-                &predefined.network.ws_rpc,
-            )
-            .await?;
-    }
-
-    let secret_key = signing_key_from_hex(&predefined.relayer.key_id)?;
-
-    let signer = PrivateKeySigner::from(secret_key);
-    let address = signer.address();
-
-    if app.db.get_relayer(&predefined.relayer.id).await?.is_none() {
-        app.db
-            .create_relayer(
-                &predefined.relayer.id,
-                &predefined.relayer.name,
-                predefined.relayer.chain_id,
-                &predefined.relayer.key_id,
-                address,
-            )
-            .await?;
-    }
-
-    app.db
-        .upsert_api_key(
-            predefined.relayer.api_key.relayer_id(),
-            predefined.relayer.api_key.api_key_secret_hash(),
-        )
-        .await?;
 
     Ok(())
 }

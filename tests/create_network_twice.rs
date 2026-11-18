@@ -15,7 +15,7 @@ async fn network_created_twice_gets_one_set_of_tasks() -> eyre::Result<()> {
     let anvil = AnvilBuilder::default().spawn().await?;
 
     let (service, client) = ServiceBuilder::default()
-        .without_predefined_values()
+        .without_defaults()
         .build(&anvil, &db_url)
         .await?;
 

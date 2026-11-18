@@ -81,7 +81,7 @@ async fn unfunded_tx_mines_once_funded_after_max_escalations(
         .max_escalations(max_escalations)
         .build(&anvil, &db_url)
         .await?;
-    let api_key = create_api_key(&client).await?;
+    let api_key = DEFAULT_API_KEY.to_string();
     let provider = setup_provider(anvil.endpoint()).await?;
     let db = connect_db(&db_url).await?;
 

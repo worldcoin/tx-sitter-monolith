@@ -14,6 +14,7 @@ use crate::db::data::{
 use crate::tx_events::EventCursor;
 
 pub mod secret_string;
+pub mod secret_url;
 pub mod tx_metadata;
 
 pub use self::tx_metadata::TxMetadata;

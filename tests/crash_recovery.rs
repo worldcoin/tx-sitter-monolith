@@ -116,7 +116,7 @@ impl Setup {
             .role(ServiceRole::Api)
             .build(&anvil, &db_url)
             .await?;
-        let api_key = create_api_key(&client).await?;
+        let api_key = DEFAULT_API_KEY.to_string();
         let value = U256::from(1_000);
         let tx_id = send_transfer(&client, &api_key, value).await?;
 

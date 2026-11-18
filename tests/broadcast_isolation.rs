@@ -24,7 +24,7 @@ async fn unresponsive_chain_does_not_delay_other_relayers() -> eyre::Result<()>
         .rpc_timeout(RPC_TIMEOUT)
         .build(&anvil, &db_url)
         .await?;
-    let api_key = create_api_key(&client).await?;
+    let api_key = DEFAULT_API_KEY.to_string();
     let db = connect_db(&db_url).await?;
 
     let stuck_tx_id = create_tx_on_unresponsive_chain(&db).await?;
