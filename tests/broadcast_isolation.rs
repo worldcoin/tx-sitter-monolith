@@ -2,7 +2,6 @@ mod common;
 
 use std::time::Instant;
 
-use alloy::signers::local::PrivateKeySigner;
 use tx_sitter::broadcast_utils::gas_estimation::FeesEstimate;
 use tx_sitter::db::Database;
 use tx_sitter::types::TransactionPriority;
@@ -20,14 +19,20 @@ async fn unresponsive_chain_does_not_delay_other_relayers() -> eyre::Result<()>
 
     let (db_url, _db_container) = setup_db().await?;
     let anvil = AnvilBuilder::default().spawn().await?;
+    let unresponsive_rpc = UnresponsiveRpc::spawn().await?;
+    let unresponsive_relayer =
+        TestRelayer::random(UNRESPONSIVE_CHAIN_ID).config;
     let (_service, client) = ServiceBuilder::default()
         .rpc_timeout(RPC_TIMEOUT)
+        .network(unresponsive_rpc.network(UNRESPONSIVE_CHAIN_ID))
+        .relayer(unresponsive_relayer.clone())
         .build(&anvil, &db_url)
         .await?;
     let api_key = DEFAULT_API_KEY.to_string();
     let db = connect_db(&db_url).await?;
 
-    let stuck_tx_id = create_tx_on_unresponsive_chain(&db).await?;
+    let stuck_tx_id =
+        create_tx_on_unresponsive_chain(&db, &unresponsive_relayer.id).await?;
     await_stored_broadcast(&db, &stuck_tx_id).await?;
 
     let started = Instant::now();
@@ -43,32 +48,13 @@ async fn unresponsive_chain_does_not_delay_other_relayers() -> eyre::Result<()>
     Ok(())
 }
 
-/// Creates a transaction of a relayer on a chain whose RPC never answers,
-/// with fee estimates so that broadcast signs it and then waits for the
-/// send.
+/// Creates a transaction of `relayer_id`, a relayer on the chain whose RPC
+/// never answers, with fee estimates so that broadcast signs it and then
+/// waits for the send.
 async fn create_tx_on_unresponsive_chain(
     db: &Database,
+    relayer_id: &str,
 ) -> eyre::Result<String> {
-    let rpc = UnresponsiveRpc::spawn().await?.addr;
-    db.upsert_network(
-        UNRESPONSIVE_CHAIN_ID,
-        "unresponsive",
-        &format!("http://{rpc}"),
-        &format!("ws://{rpc}"),
-    )
-    .await?;
-
-    let relayer_id = uuid::Uuid::new_v4().to_string();
-    let key = PrivateKeySigner::from_slice(SECONDARY_ANVIL_PRIVATE_KEY)?;
-    db.create_relayer(
-        &relayer_id,
-        "unresponsive",
-        UNRESPONSIVE_CHAIN_ID,
-        &hex::encode(SECONDARY_ANVIL_PRIVATE_KEY),
-        key.address(),
-    )
-    .await?;
-
     let gwei: U256 = parse_units("1", "gwei")?.into();
     db.save_block(1, UNRESPONSIVE_CHAIN_ID, chrono::Utc::now(), &[])
         .await?;
@@ -92,7 +78,7 @@ async fn create_tx_on_unresponsive_chain(
         U256::from(21_000),
         TransactionPriority::Regular,
         None,
-        &relayer_id,
+        relayer_id,
         None,
         None,
     )

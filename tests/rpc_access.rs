@@ -1,7 +1,5 @@
 mod common;
 
-use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
-
 use crate::common::prelude::*;
 
 #[tokio::test]
@@ -11,17 +9,9 @@ async fn rpc_access() -> eyre::Result<()> {
     let (db_url, _db_container) = setup_db().await?;
     let anvil = AnvilBuilder::default().spawn().await?;
 
-    let (service, client) =
-        ServiceBuilder::default().build(&anvil, &db_url).await?;
+    let (service, _) = ServiceBuilder::default().build(&anvil, &db_url).await?;
 
-    let CreateApiKeyResponse { api_key } =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            &client,
-            RelayerCreateApiKeyParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
-        .await?;
+    let api_key = DEFAULT_API_KEY.to_string();
 
     let rpc_url =
         format!("http://{}/1/api/{}/rpc", service.local_addr(), api_key);

@@ -1,14 +1,16 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use alloy::providers::{ProviderBuilder, RootProvider, WsConnect};
 use alloy::rpc::client::RpcClient;
-use eyre::Context;
-use url::Url;
+use alloy::transports::utils::guess_local_url;
+use eyre::{Context, ContextCompat};
 
 use crate::api_key::ApiKey;
-use crate::config::{Config, KeysConfig};
-use crate::db::data::{ApiKeyStatus, RpcKind};
+use crate::config::{Config, KeysConfig, NetworkConfig};
+use crate::db::data::ApiKeyStatus;
 use crate::db::Database;
+use crate::failover_transport::FailoverTransport;
 use crate::keys::{KeysSource, KmsKeys, LocalKeys, UniversalSigner};
 
 const RPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -20,9 +22,9 @@ pub struct App {
 
     pub db: Database,
 
-    /// Client for HTTP RPC requests, shared by the providers and the RPC
-    /// proxy, with requests bounded by `service.rpc_timeout`
-    pub rpc_client: reqwest::Client,
+    /// The HTTP RPCs of every configured network by chain id, with requests
+    /// bounded by `service.rpc_timeout`
+    http_rpcs: HashMap<u64, FailoverTransport>,
 }
 
 impl App {
@@ -34,29 +36,44 @@ impl App {
         let db = Database::new(&config.database).await?;
 
         let rpc_client = rpc_http_client(config.service.rpc_timeout)?;
+        let http_rpcs = config
+            .networks
+            .iter()
+            .map(|network| {
+                let transport = FailoverTransport::new(
+                    network.chain_id,
+                    &network.http_rpcs,
+                    &rpc_client,
+                );
+
+                (network.chain_id, transport)
+            })
+            .collect();
 
         Ok(Self {
             config,
             keys_source,
             db,
-            rpc_client,
+            http_rpcs,
         })
     }
 
-    pub async fn http_rpc_url(&self, chain_id: u64) -> eyre::Result<Url> {
-        let url = self.db.get_network_rpc(chain_id, RpcKind::Http).await?;
-
-        url.parse().context("Invalid HTTP RPC URL")
-    }
-
+    /// Returns a provider that sends requests to the HTTP RPCs of `chain_id`,
+    /// failing over between them, see [`FailoverTransport`].
     pub async fn http_provider(
         &self,
         chain_id: u64,
     ) -> eyre::Result<RootProvider> {
-        let url = self.http_rpc_url(chain_id).await?;
+        let transport = self.http_rpcs.get(&chain_id).with_context(|| {
+            format!("Network {chain_id} is not in the config")
+        })?;
+        let is_local = self
+            .network(chain_id)?
+            .http_rpcs
+            .iter()
+            .all(|url| guess_local_url(url.expose()));
 
-        let client =
-            RpcClient::new_http_with_client(self.rpc_client.clone(), url);
+        let client = RpcClient::new(transport.clone(), is_local);
 
         Ok(RootProvider::new(client))
     }
@@ -69,12 +86,20 @@ impl App {
         &self,
         chain_id: u64,
     ) -> eyre::Result<RootProvider> {
-        let url = self.db.get_network_rpc(chain_id, RpcKind::Ws).await?;
+        let url = self.network(chain_id)?.ws_rpc.expose().to_string();
 
         ProviderBuilder::default()
             .connect_ws(WsConnect::new(url))
             .await
             .context("Connecting to WS provider")
+    }
+
+    fn network(&self, chain_id: u64) -> eyre::Result<&NetworkConfig> {
+        self.config
+            .networks
+            .iter()
+            .find(|network| network.chain_id == chain_id)
+            .with_context(|| format!("Network {chain_id} is not in the config"))
     }
 
     pub async fn load_signer(

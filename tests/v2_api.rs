@@ -2,7 +2,6 @@ mod common;
 
 use std::collections::HashMap;
 
-use alloy::signers::local::PrivateKeySigner;
 use serde_json::{json, Value};
 use tx_sitter::api_key::ApiKey;
 use tx_sitter::broadcast_utils::gas_estimation::FeesEstimate;
@@ -135,9 +134,9 @@ async fn v2_repeat_succeeds_while_its_relayer_refuses_sends() -> eyre::Result<()
     send_tx_v2(&client, request.clone()).await?;
 
     service
-        .update_relayer(RelayerUpdateRequest {
-            enabled: Some(false),
-            ..Default::default()
+        .update_relayer(&RelayerConfig {
+            enabled: false,
+            ..default_relayer()
         })
         .await?;
     send_tx_v2(&client, request.clone()).await?;
@@ -149,11 +148,10 @@ async fn v2_repeat_succeeds_while_its_relayer_refuses_sends() -> eyre::Result<()
 
     // Room for one more transaction than the one queued
     service
-        .update_relayer(RelayerUpdateRequest {
-            enabled: Some(true),
-            max_inflight_txs: Some(1),
-            max_queued_txs: Some(2),
-            ..Default::default()
+        .update_relayer(&RelayerConfig {
+            max_inflight_txs: 1,
+            max_queued_txs: 2,
+            ..default_relayer()
         })
         .await?;
     send_tx_v2(&client, send_tx_request(Some("tx-2"), None)).await?;
@@ -175,11 +173,10 @@ async fn v2_refuses_a_relayer_without_funds() -> eyre::Result<()> {
 
     // Fee estimates come from indexed blocks
     let service = TestService::spawn(ServiceBuilder::default()).await?;
-    let (_, api_key) = service.create_relayer_with_api_key().await?;
 
     let error = expect_v2_error(
         send_tx_v2(
-            &service.v2_client(&api_key),
+            &service.v2_client(&service.other_relayer.api_key),
             send_tx_request(Some("tx-1"), None),
         )
         .await,
@@ -194,11 +191,10 @@ async fn v2_refuses_a_relayer_without_funds() -> eyre::Result<()> {
 async fn v2_send_fails_with_503_while_the_rpc_is_down() -> eyre::Result<()> {
     setup_tracing();
 
-    let service =
-        TestService::spawn(api_service().rpc_timeout(Duration::from_secs(1)))
-            .await?;
-    let api_key =
-        create_relayer_on_unresponsive_chain(&service, "unresponsive").await?;
+    let (service, api_key) = spawn_with_relayer_on_unresponsive_chain(
+        api_service().rpc_timeout(Duration::from_secs(1)),
+    )
+    .await?;
     let client = service.v2_client(&api_key);
 
     let error = expect_v2_error(
@@ -218,11 +214,10 @@ async fn v2_send_fails_with_503_while_the_rpc_is_down() -> eyre::Result<()> {
 async fn v1_balance_check_error_hides_the_rpc_url() -> eyre::Result<()> {
     setup_tracing();
 
-    let service =
-        TestService::spawn(api_service().rpc_timeout(Duration::from_secs(1)))
-            .await?;
-    let api_key =
-        create_relayer_on_unresponsive_chain(&service, "unresponsive").await?;
+    let (service, api_key) = spawn_with_relayer_on_unresponsive_chain(
+        api_service().rpc_timeout(Duration::from_secs(1)),
+    )
+    .await?;
 
     let response = reqwest::Client::new()
         .post(format!("{}/1/api/{api_key}/tx", service.base_url()))
@@ -249,8 +244,7 @@ async fn v2_get_returns_only_the_relayers_transactions() -> eyre::Result<()> {
     let service = TestService::spawn(api_service()).await?;
     let client = service.v2_client(&service.api_key);
 
-    let (_, other_api_key) = service.create_relayer_with_api_key().await?;
-    let other_client = service.v2_client(&other_api_key);
+    let other_client = service.v2_client(&service.other_relayer.api_key);
 
     let sent_metadata = json!({
         "transactionType": "WorldIdVerification",
@@ -615,36 +609,25 @@ async fn send_v1_tx(
     .await
 }
 
-/// Creates a relayer on a chain whose RPC never answers, with fee estimates
-/// so that sends check its balance, and returns an API key for it
-async fn create_relayer_on_unresponsive_chain(
-    service: &TestService,
-    name: &str,
-) -> eyre::Result<String> {
+/// Spawns a service from `builder` with a relayer on a chain whose RPC never
+/// answers, and fee estimates for that chain so that sends check the
+/// relayer's balance. Returns the service and an API key of the relayer.
+async fn spawn_with_relayer_on_unresponsive_chain(
+    builder: ServiceBuilder,
+) -> eyre::Result<(TestService, String)> {
     const CHAIN_ID: u64 = 2;
 
-    let rpc = UnresponsiveRpc::spawn().await?.addr;
-    let db = &service.db;
-    db.upsert_network(
-        CHAIN_ID,
-        name,
-        &format!("http://{rpc}"),
-        &format!("ws://{rpc}"),
-    )
-    .await?;
-
-    let relayer_id = uuid::Uuid::new_v4().to_string();
-    let key = PrivateKeySigner::from_slice(SECONDARY_ANVIL_PRIVATE_KEY)?;
-    db.create_relayer(
-        &relayer_id,
-        name,
-        CHAIN_ID,
-        &hex::encode(SECONDARY_ANVIL_PRIVATE_KEY),
-        key.address(),
+    let rpc = UnresponsiveRpc::spawn().await?;
+    let relayer = TestRelayer::random(CHAIN_ID);
+    let service = TestService::spawn(
+        builder
+            .network(rpc.network(CHAIN_ID))
+            .relayer(relayer.config),
     )
     .await?;
 
     let gwei: U256 = parse_units("1", "gwei")?.into();
+    let db = &service.db;
     db.save_block(1, CHAIN_ID, chrono::Utc::now(), &[]).await?;
     db.save_block_fees(
         1,
@@ -657,7 +640,7 @@ async fn create_relayer_on_unresponsive_chain(
     )
     .await?;
 
-    service.create_api_key(&relayer_id).await
+    Ok((service, relayer.api_key))
 }
 
 async fn await_mined(

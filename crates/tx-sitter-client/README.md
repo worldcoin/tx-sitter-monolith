@@ -6,25 +6,12 @@
 A transaction relayer service!
 
 ## Operating a relayer
-Below is a guide on using this service. Note that steps 1 through 4 require authentication using HTTP Basic auth. Using swagger explorer make sure to click the authorize button and use the correct credentials. Default dev creds are `admin:admin`.
+Networks, relayers and API keys are defined in the service's config, see the README. A relayer accepts exactly the API keys whose hashes its config lists.
 
-### 1. Setup a network
-tx-sitter keeps track of supported networks in its internal database. In order to be able to create any relayers at least one network must be present. To add a network use the `POST /1/admin/networks/:chain_id` endpoint.
+## Using an API key
+The v2 endpoints take the API key as a bearer token, `Authorization: Bearer <api key>`. For example, `POST /2/tx` sends a transaction.
 
-To see the list of currently added networks use the `GET /1/admin/networks` endpoint.
-
-### 2. Create a relayer
-A relayer is an abstraction layer on top of a private key stored locally (for testing purposes only!) or using a secrets manager (currently only AWS KMS is supported).
-
-To create a relayer use the `POST /1/admin/relayer` endpoint. The data returned will contain a relayer id, make sure to copy it to the clipboard.
-
-### 3. Create an API key
-By itself a relayer is not very useful. In order to send transactions one must create an API key. To do that use the `POST /1/admin/relayer/:relayer_id/key` endpoint. **Make sure to copy the API key from the response. It's not possible to recover it!** But it's always possible to create a new one.
-
-### 4. Use the API key
-Once an API keys has been created it's possible to use the relayer api to, among other things, send transactions.
-
-You can use the `POST /1/api/:api_token/tx` endpoint to create a transaction.
+The v1 endpoints take it in the path instead, for example `POST /1/api/:api_token/tx`.
 
 
 
@@ -51,14 +38,6 @@ All URIs are relative to *http://localhost:8000*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
-*AdminV1Api* | [**create_network**](docs/AdminV1Api.md#create_network) | **POST** /1/admin/network/{chain_id} | Create Network
-*AdminV1Api* | [**create_relayer**](docs/AdminV1Api.md#create_relayer) | **POST** /1/admin/relayer | Create Relayer
-*AdminV1Api* | [**get_networks**](docs/AdminV1Api.md#get_networks) | **GET** /1/admin/networks | Get Networks
-*AdminV1Api* | [**get_relayer**](docs/AdminV1Api.md#get_relayer) | **GET** /1/admin/relayer/{relayer_id} | Get Relayer
-*AdminV1Api* | [**get_relayers**](docs/AdminV1Api.md#get_relayers) | **GET** /1/admin/relayers | Get Relayers
-*AdminV1Api* | [**relayer_create_api_key**](docs/AdminV1Api.md#relayer_create_api_key) | **POST** /1/admin/relayer/{relayer_id}/key | Create Relayer API Key
-*AdminV1Api* | [**reset_relayer**](docs/AdminV1Api.md#reset_relayer) | **POST** /1/admin/relayer/{relayer_id}/reset | Reset Relayer transactions
-*AdminV1Api* | [**update_relayer**](docs/AdminV1Api.md#update_relayer) | **POST** /1/admin/relayer/{relayer_id} | Update Relayer
 *RelayerV1Api* | [**call_rpc**](docs/RelayerV1Api.md#call_rpc) | **POST** /1/api/{api_token}/rpc | Relayer RPC
 *RelayerV1Api* | [**create_transaction**](docs/RelayerV1Api.md#create_transaction) | **POST** /1/api/{api_token}/tx | Send Transaction
 *RelayerV1Api* | [**get_transaction**](docs/RelayerV1Api.md#get_transaction) | **GET** /1/api/{api_token}/tx/{tx_id} | Get Transaction
@@ -73,19 +52,11 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
- - [CreateApiKeyResponse](docs/CreateApiKeyResponse.md)
- - [CreateNetworkRequest](docs/CreateNetworkRequest.md)
- - [CreateRelayerRequest](docs/CreateRelayerRequest.md)
- - [CreateRelayerResponse](docs/CreateRelayerResponse.md)
  - [ErrorResponseBody](docs/ErrorResponseBody.md)
  - [GetTxEventsResponse](docs/GetTxEventsResponse.md)
  - [GetTxResponse](docs/GetTxResponse.md)
  - [GetTxResponseV2](docs/GetTxResponseV2.md)
  - [JsonRpcVersion](docs/JsonRpcVersion.md)
- - [NetworkResponse](docs/NetworkResponse.md)
- - [RelayerGasPriceLimitResponse](docs/RelayerGasPriceLimitResponse.md)
- - [RelayerResponse](docs/RelayerResponse.md)
- - [RelayerUpdateRequest](docs/RelayerUpdateRequest.md)
  - [RpcRequest](docs/RpcRequest.md)
  - [SendTxRequest](docs/SendTxRequest.md)
  - [SendTxRequestV2](docs/SendTxRequestV2.md)

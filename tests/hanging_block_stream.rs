@@ -16,21 +16,17 @@ async fn hanging_block_stream_fails_neither_probe() -> eyre::Result<()> {
     let anvil = AnvilBuilder::default().spawn().await?;
     let hanging_ws = UnresponsiveRpc::spawn().await?;
 
-    let db = connect_db(&db_url).await?;
-    db.upsert_network(
-        DEFAULT_ANVIL_CHAIN_ID,
-        "Anvil",
-        &anvil.endpoint(),
-        &format!("ws://{}", hanging_ws.addr),
-    )
-    .await?;
-
     let (service, _) = ServiceBuilder::default()
         .without_defaults()
+        .network(NetworkConfig {
+            ws_rpc: rpc_url(&format!("ws://{}", hanging_ws.addr)),
+            ..anvil_network(&anvil)
+        })
         .rpc_timeout(RPC_TIMEOUT)
         .task_stall_timeout(TASK_STALL_TIMEOUT)
         .build(&anvil, &db_url)
         .await?;
+    let db = connect_db(&db_url).await?;
     let addr = service.local_addr();
 
     let deadline = tokio::time::Instant::now() + TASK_STALL_TIMEOUT * 3;

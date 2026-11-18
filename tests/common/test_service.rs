@@ -2,12 +2,9 @@ use std::fmt::Debug;
 
 use alloy::node_bindings::AnvilInstance;
 use postgres_docker_utils::DockerContainerGuard;
+use tx_sitter::config::RelayerConfig;
 use tx_sitter::db::Database;
 use tx_sitter::service::Service;
-use tx_sitter_client::apis::admin_v1_api::{
-    CreateRelayerParams, GetRelayerParams, RelayerCreateApiKeyParams,
-    UpdateRelayerParams,
-};
 use tx_sitter_client::apis::configuration::Configuration;
 use tx_sitter_client::apis::relayer_v2_api::{
     CreateTransactionV2Error, CreateTransactionV2Params, GetTransactionV2Error,
@@ -15,23 +12,24 @@ use tx_sitter_client::apis::relayer_v2_api::{
 };
 use tx_sitter_client::apis::Error;
 use tx_sitter_client::models::{
-    CreateApiKeyResponse, CreateRelayerRequest, CreateRelayerResponse,
-    ErrorResponseBody, GetTxResponseV2, RelayerUpdateRequest, SendTxRequestV2,
-    SendTxResponse,
+    ErrorResponseBody, GetTxResponseV2, SendTxRequestV2, SendTxResponse,
 };
 
 use super::{
-    connect_db, setup_db, AnvilBuilder, ServiceBuilder, DEFAULT_ANVIL_CHAIN_ID,
-    DEFAULT_API_KEY, DEFAULT_RELAYER_ID,
+    connect_db, setup_db, AnvilBuilder, ServiceBuilder, TestRelayer,
+    DEFAULT_ANVIL_CHAIN_ID, DEFAULT_API_KEY, DEFAULT_RELAYER_ID,
 };
 
-/// A service on its own database and anvil chain, with an API key for the
-/// default anvil relayer
+/// A service on its own database and anvil chain, with the default anvil
+/// relayer and another relayer on the anvil chain
 pub struct TestService {
     pub service: Service,
-    /// Client for the admin and v1 APIs
+    /// Client for the v1 API
     pub client: Configuration,
+    /// The API key of the default relayer
     pub api_key: String,
+    /// A relayer on the anvil chain with a key of its own and no funds
+    pub other_relayer: TestRelayer,
     pub anvil: AnvilInstance,
     pub db_url: String,
     pub db: Database,
@@ -42,14 +40,19 @@ impl TestService {
     pub async fn spawn(builder: ServiceBuilder) -> eyre::Result<Self> {
         let (db_url, db_container) = setup_db().await?;
         let anvil = AnvilBuilder::default().spawn().await?;
+        let other_relayer = TestRelayer::random(DEFAULT_ANVIL_CHAIN_ID);
 
-        let (service, client) = builder.build(&anvil, &db_url).await?;
+        let (service, client) = builder
+            .relayer(other_relayer.config.clone())
+            .build(&anvil, &db_url)
+            .await?;
         let db = connect_db(&db_url).await?;
 
         Ok(Self {
             service,
             client,
             api_key: DEFAULT_API_KEY.to_string(),
+            other_relayer,
             anvil,
             db_url,
             db,
@@ -69,70 +72,39 @@ impl TestService {
         }
     }
 
-    /// Creates another relayer on the anvil chain, with a key of its own and
-    /// no funds, and returns its id and an API key for it
-    pub async fn create_relayer_with_api_key(
-        &self,
-    ) -> eyre::Result<(String, String)> {
-        let CreateRelayerResponse { relayer_id, .. } =
-            tx_sitter_client::apis::admin_v1_api::create_relayer(
-                &self.client,
-                CreateRelayerParams {
-                    create_relayer_request: CreateRelayerRequest::new(
-                        "Other relayer".to_string(),
-                        DEFAULT_ANVIL_CHAIN_ID as i32,
-                    ),
-                },
-            )
-            .await?;
-
-        let api_key = self.create_api_key(&relayer_id).await?;
-
-        Ok((relayer_id, api_key))
-    }
-
-    pub async fn create_api_key(
-        &self,
-        relayer_id: &str,
-    ) -> eyre::Result<String> {
-        let CreateApiKeyResponse { api_key } =
-            tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-                &self.client,
-                RelayerCreateApiKeyParams {
-                    relayer_id: relayer_id.to_string(),
-                },
-            )
-            .await?;
-
-        Ok(api_key)
-    }
-
-    /// Updates the default relayer
+    /// Writes whether `relayer` is enabled and its queue limits into the
+    /// database, as a service that starts with a config that changed them
+    /// does.
     pub async fn update_relayer(
         &self,
-        update: RelayerUpdateRequest,
+        relayer: &RelayerConfig,
     ) -> eyre::Result<()> {
-        tx_sitter_client::apis::admin_v1_api::update_relayer(
-            &self.client,
-            UpdateRelayerParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-                relayer_update_request: update,
-            },
+        sqlx::query(
+            r#"
+            UPDATE relayers
+            SET    enabled = $2,
+                   max_inflight_txs = $3,
+                   max_queued_txs = $4
+            WHERE  id = $1
+            "#,
         )
+        .bind(&relayer.id)
+        .bind(relayer.enabled)
+        .bind(relayer.max_inflight_txs as i64)
+        .bind(relayer.max_queued_txs as i64)
+        .execute(&self.db.pool)
         .await?;
 
         Ok(())
     }
 
     /// Returns the nonce the default relayer gives its next transaction
-    pub async fn relayer_nonce(&self) -> eyre::Result<i32> {
-        let relayer = tx_sitter_client::apis::admin_v1_api::get_relayer(
-            &self.client,
-            GetRelayerParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
-        .await?;
+    pub async fn relayer_nonce(&self) -> eyre::Result<u64> {
+        let relayer = self
+            .db
+            .get_relayer(DEFAULT_RELAYER_ID)
+            .await?
+            .ok_or_else(|| eyre::eyre!("Missing default relayer"))?;
 
         Ok(relayer.nonce)
     }

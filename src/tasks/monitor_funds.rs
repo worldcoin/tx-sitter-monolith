@@ -21,9 +21,7 @@ pub async fn monitor_funds(
     let mut reporting_cache = HashMap::new();
 
     while !ctx.is_shutting_down() {
-        let relayers = app.db.get_relayers().await?;
-
-        for relayer in &relayers {
+        for relayer in &app.config.relayers {
             // skip if we already reported it in the previous hour
             if let Some(last_time_reported) = reporting_cache.get(&relayer.id) {
                 let diff = Instant::now() - *last_time_reported;
@@ -38,7 +36,7 @@ pub async fn monitor_funds(
 
             let provider = app.http_provider(relayer.chain_id).await?;
 
-            let balance = provider.get_balance(relayer.address.0).await?;
+            let balance = provider.get_balance(relayer.address).await?;
 
             let address = relayer.address.to_string();
             let labels = [

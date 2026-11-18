@@ -5,36 +5,18 @@ use super::universal_signer::UniversalSigner;
 use super::KeysSource;
 use crate::config::LocalKeysConfig;
 
-pub struct LocalKeys {
-    rng: rand::rngs::OsRng,
-}
+pub struct LocalKeys;
 
 impl LocalKeys {
     pub fn new(_config: &LocalKeysConfig) -> Self {
         tracing::info!("Initializing local keys source");
 
-        Self {
-            rng: rand::rngs::OsRng,
-        }
+        Self
     }
 }
 
 #[async_trait::async_trait]
 impl KeysSource for LocalKeys {
-    async fn new_signer(
-        &self,
-        _meta_name: &str,
-    ) -> eyre::Result<(String, UniversalSigner)> {
-        let signing_key = SigningKey::random(&mut self.rng.clone());
-
-        let key_id = signing_key.to_bytes().to_vec();
-        let key_id = hex::encode(key_id);
-
-        let signer = PrivateKeySigner::from(signing_key);
-
-        Ok((key_id, UniversalSigner::Local(signer)))
-    }
-
     async fn load_signer(&self, id: String) -> eyre::Result<UniversalSigner> {
         let signing_key = signing_key_from_hex(&id)?;
 
@@ -72,16 +54,15 @@ mod tests {
         "bf56bb679b7cacdc7cb910594d3f4775d47ffff7984a1876f1789cd6014209b1";
 
     #[tokio::test]
-    async fn local_roundtrip() -> eyre::Result<()> {
+    async fn local_signer_derives_the_address_of_its_key() -> eyre::Result<()> {
         let keys_source = LocalKeys::new(&LocalKeysConfig::default());
 
-        let (id, signer) = keys_source.new_signer("meta name").await?;
+        let signer = keys_source.load_signer(PRIVATE_KEY_HEX.into()).await?;
 
-        let address = signer.address();
-
-        let signer = keys_source.load_signer(id).await?;
-
-        assert_eq!(address, signer.address());
+        assert_eq!(
+            signer.address(),
+            address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
+        );
 
         Ok(())
     }

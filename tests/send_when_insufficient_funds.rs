@@ -1,7 +1,6 @@
 mod common;
 
 use poem::http;
-use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
 use tx_sitter_client::apis::relayer_v1_api::CreateTransactionParams;
 use tx_sitter_client::apis::Error;
 
@@ -25,14 +24,7 @@ async fn send_when_insufficient_funds() -> eyre::Result<()> {
         .build(&anvil, &db_url)
         .await?;
 
-    let CreateApiKeyResponse { api_key } =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            &client,
-            RelayerCreateApiKeyParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
-        .await?;
+    let api_key = DEFAULT_API_KEY.to_string();
 
     let provider = setup_provider(anvil.endpoint()).await?;
 

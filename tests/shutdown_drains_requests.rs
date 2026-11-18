@@ -7,9 +7,6 @@ use poem::web::{Data, Json};
 use poem::{EndpointExt, Route};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
-use tx_sitter_client::apis::admin_v1_api::{
-    CreateNetworkParams, RelayerCreateApiKeyParams,
-};
 
 use crate::common::prelude::*;
 
@@ -58,7 +55,7 @@ async fn shutdown_lets_in_flight_requests_finish() -> eyre::Result<()> {
     let rpc_acceptor = poem::listener::TcpListener::bind("127.0.0.1:0")
         .into_acceptor()
         .await?;
-    let rpc_url = format!(
+    let held_rpc_url = format!(
         "http://{}",
         rpc_acceptor.local_addr()[0]
             .as_socket_addr()
@@ -70,34 +67,20 @@ async fn shutdown_lets_in_flight_requests_finish() -> eyre::Result<()> {
     );
 
     let shutdown = CancellationToken::new();
-    let (service, client) = ServiceBuilder::default()
+    let (service, _) = ServiceBuilder::default()
         .role(ServiceRole::Api)
         .shutdown_timeout(SHUTDOWN_TIMEOUT)
         .shutdown(shutdown.clone())
+        .without_defaults()
+        .network(NetworkConfig {
+            http_rpcs: vec![rpc_url(&held_rpc_url)],
+            ..anvil_network(&anvil)
+        })
+        .relayer(default_relayer())
         .build(&anvil, &db_url)
         .await?;
     let addr = service.local_addr();
-
-    tx_sitter_client::apis::admin_v1_api::create_network(
-        &client,
-        CreateNetworkParams {
-            chain_id: DEFAULT_ANVIL_CHAIN_ID as i32,
-            create_network_request: CreateNetworkRequest::new(
-                "Anvil".to_string(),
-                rpc_url,
-                anvil.ws_endpoint(),
-            ),
-        },
-    )
-    .await?;
-    let CreateApiKeyResponse { api_key } =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            &client,
-            RelayerCreateApiKeyParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
-        .await?;
+    let api_key = DEFAULT_API_KEY;
 
     let in_flight = tokio::spawn(
         reqwest::Client::new()

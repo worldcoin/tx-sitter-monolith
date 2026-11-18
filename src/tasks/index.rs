@@ -31,9 +31,8 @@ const MAX_RECENT_BLOCKS_TO_CHECK: u64 = 60;
 /// Returns an error once connecting or subscribing takes longer than
 /// `rpc_timeout`, or the stream ends or goes quiet for
 /// `block_stream_timeout`, so that the task runner restarts indexing after a
-/// backoff. Every start reads the RPC URLs from the database, so a changed URL
-/// takes effect on the next reconnect. Once shutdown is requested it returns
-/// at once, also while connecting or subscribing.
+/// backoff. Once shutdown is requested it returns at once, also while
+/// connecting or subscribing.
 #[tracing::instrument(skip(app, ctx), level = "info")]
 pub async fn index_chain(
     app: Arc<App>,

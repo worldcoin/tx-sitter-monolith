@@ -445,13 +445,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl KeysSource for FlakyKeys {
-        async fn new_signer(
-            &self,
-            _meta_name: &str,
-        ) -> eyre::Result<(String, UniversalSigner)> {
-            eyre::bail!("Not supported")
-        }
-
         async fn load_signer(
             &self,
             id: String,

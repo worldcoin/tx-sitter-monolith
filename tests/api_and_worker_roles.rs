@@ -1,6 +1,5 @@
 mod common;
 
-use tx_sitter_client::apis::admin_v1_api::RelayerCreateApiKeyParams;
 use tx_sitter_client::apis::relayer_v1_api::CreateTransactionParams;
 
 use crate::common::prelude::*;
@@ -25,19 +24,12 @@ async fn worker_broadcasts_txs_sent_through_api() -> eyre::Result<()> {
         let (status, _) = http_get(worker.local_addr(), path).await?;
         assert_eq!(status, StatusCode::OK, "worker {path}");
     }
-    for path in ["/1/admin/networks", "/swagger", "/schema.json"] {
+    for path in ["/2/tx/tx-1", "/swagger", "/schema.json"] {
         let (status, _) = http_get(worker.local_addr(), path).await?;
         assert_eq!(status, StatusCode::NOT_FOUND, "worker {path}");
     }
 
-    let CreateApiKeyResponse { api_key } =
-        tx_sitter_client::apis::admin_v1_api::relayer_create_api_key(
-            &client,
-            RelayerCreateApiKeyParams {
-                relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            },
-        )
-        .await?;
+    let api_key = DEFAULT_API_KEY.to_string();
 
     let value: U256 = parse_units("1", "ether")?.into();
     tx_sitter_client::apis::relayer_v1_api::create_transaction(

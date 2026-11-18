@@ -178,8 +178,6 @@ impl ServiceBuilder {
                 )),
                 shutdown_timeout: self.shutdown_timeout,
                 max_event_waiters: self.max_event_waiters,
-                username: None,
-                password: None,
                 server_address: None,
             },
             database: DatabaseConfig::connection_string(db_url),
@@ -202,7 +200,6 @@ impl ServiceBuilder {
         let client_config =
             tx_sitter_client::apis::configuration::ConfigurationBuilder::new()
                 .base_path(format!("http://{}", service.local_addr()))
-                .basic_auth("".to_string(), Some("".to_string()))
                 .build();
 
         Ok((service, client_config))

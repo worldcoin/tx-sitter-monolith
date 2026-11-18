@@ -8,9 +8,8 @@ const EMIT_METRICS_INTERVAL: Duration = Duration::from_secs(1);
 
 pub async fn emit_metrics(app: Arc<App>, ctx: TaskContext) -> eyre::Result<()> {
     while !ctx.is_shutting_down() {
-        let chain_ids = app.db.get_network_chain_ids().await?;
-
-        for chain_id in chain_ids {
+        for network in &app.config.networks {
+            let chain_id = network.chain_id;
             let stats = app.db.get_stats(chain_id).await?;
 
             // TODO: Add labels for env, etc.

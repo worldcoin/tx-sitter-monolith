@@ -1,6 +1,5 @@
 mod common;
 
-use tx_sitter_client::apis::admin_v1_api::UpdateRelayerParams;
 use tx_sitter_client::apis::relayer_v1_api::CreateTransactionError;
 use tx_sitter_client::apis::Error;
 
@@ -17,27 +16,19 @@ async fn send_too_many_txs() -> eyre::Result<()> {
     let anvil = AnvilBuilder::default().spawn().await?;
 
     // Without a worker nothing leaves the queue
-    let (_api_1, client_1) = ServiceBuilder::default()
-        .role(ServiceRole::Api)
-        .build(&anvil, &db_url)
-        .await?;
-    let (_api_2, client_2) = ServiceBuilder::default()
-        .role(ServiceRole::Api)
-        .build(&anvil, &db_url)
-        .await?;
+    let api_service = || {
+        ServiceBuilder::default()
+            .role(ServiceRole::Api)
+            .without_defaults()
+            .network(anvil_network(&anvil))
+            .relayer(RelayerConfig {
+                max_queued_txs: MAX_QUEUED_TXS as u64,
+                ..default_relayer()
+            })
+    };
+    let (_api_1, client_1) = api_service().build(&anvil, &db_url).await?;
+    let (_api_2, client_2) = api_service().build(&anvil, &db_url).await?;
     let api_key = DEFAULT_API_KEY.to_string();
-
-    tx_sitter_client::apis::admin_v1_api::update_relayer(
-        &client_1,
-        UpdateRelayerParams {
-            relayer_id: DEFAULT_RELAYER_ID.to_string(),
-            relayer_update_request: RelayerUpdateRequest {
-                max_queued_txs: Some(MAX_QUEUED_TXS as i32),
-                ..Default::default()
-            },
-        },
-    )
-    .await?;
 
     let sends: FuturesUnordered<_> = [&client_1, &client_2]
         .into_iter()
