@@ -2811,11 +2811,11 @@ mod tests {
         Ok(())
     }
 
-    /// Relayers that synced or allocated nonces before nonce syncs were
-    /// recorded keep accepting transactions
+    /// The relayers that exist when nonce syncs start to be recorded were
+    /// synced by the previous binary, so they keep accepting transactions
+    /// without waiting for a worker, also ones that never sent one
     #[tokio::test]
-    async fn migration_marks_relayers_with_history_synced() -> eyre::Result<()>
-    {
+    async fn migration_marks_existing_relayers_synced() -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
         let migration = MIGRATOR
             .iter()
@@ -2828,41 +2828,36 @@ mod tests {
         sqlx::query("ALTER TABLE relayers DROP COLUMN nonce_synced_at")
             .execute(&db.pool)
             .await?;
-        sqlx::Executor::execute(
-            &db.pool,
+        let relayer = relayer_config(1, 1);
+        sqlx::query(
             r#"
-            INSERT INTO relayers (id, name, chain_id, key_id, address, nonce, current_nonce) VALUES
-                ('00000000-0000-4000-8000-000000000001', 'synced', 1, 'key', '\x01', 7, 5),
-                ('00000000-0000-4000-8000-000000000002', 'behind the chain', 1, 'key', '\x02', 3, 9),
-                ('00000000-0000-4000-8000-000000000003', 'allocated', 1, 'key', '\x03', 2, 0),
-                ('00000000-0000-4000-8000-000000000004', 'with a transaction', 1, 'key', '\x04', 0, 0),
-                ('00000000-0000-4000-8000-000000000005', 'new', 1, 'key', '\x05', 0, 0);
-            INSERT INTO transactions (id, tx_to, data, value, gas_limit, nonce, priority, relayer_id)
-            VALUES ('tx', '\x00', '', '\x00', '\x00', 0, 'regular', '00000000-0000-4000-8000-000000000004');
+            INSERT INTO relayers (id, name, chain_id, key_id, address, nonce, current_nonce, enabled)
+            VALUES ($1, 'new', 1, 'key', $2, 0, 0, TRUE),
+                   ($3, 'with history', 1, 'key', $4, 7, 5, TRUE),
+                   ($5, 'disabled', 1, 'key', $6, 0, 0, FALSE)
             "#,
         )
+        .bind(&relayer.id)
+        .bind(relayer.address.as_slice())
+        .bind(uuid())
+        .bind(Address::with_last_byte(2).as_slice())
+        .bind(uuid())
+        .bind(Address::with_last_byte(3).as_slice())
+        .execute(&db.pool)
         .await?;
 
         MIGRATOR.run(&db.pool).await?;
 
-        let relayers: Vec<(String, i64, bool)> = sqlx::query_as(
-            r#"
-            SELECT   name, nonce, nonce_synced_at IS NOT NULL
-            FROM     relayers
-            ORDER BY id
-            "#,
+        let unsynced: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM relayers WHERE nonce_synced_at IS NULL",
         )
         .fetch_all(&db.pool)
         .await?;
-        let expected = [
-            ("synced", 7, true),
-            ("behind the chain", 9, true),
-            ("allocated", 2, true),
-            ("with a transaction", 0, true),
-            ("new", 0, false),
-        ]
-        .map(|(name, nonce, is_synced)| (name.to_string(), nonce, is_synced));
-        assert_eq!(relayers, expected);
+        assert_eq!(unsynced, []);
+        assert_eq!(
+            create_tx(&db, &relayer.id, "tx-1").await?,
+            CreateResult::Created
+        );
 
         Ok(())
     }
