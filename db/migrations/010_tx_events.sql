@@ -26,6 +26,13 @@ CREATE INDEX IF NOT EXISTS tx_events_tx_xid ON tx_events (tx_xid);
 -- Pruning
 CREATE INDEX IF NOT EXISTS tx_events_created_at ON tx_events (created_at);
 
+-- The transaction that stored the latest event of a sent transaction. A
+-- status change that stores an event only applies while this is older than
+-- its own transaction, so that a change can't commit an event behind one a
+-- newer transaction committed first: a change that loses that race skips the
+-- transaction, and the next run applies it.
+ALTER TABLE sent_transactions ADD COLUMN IF NOT EXISTS last_event_xid xid8;
+
 -- The greatest (tx_xid, id) pruning deleted. A cursor below it may have missed
 -- events, so the feed refuses it.
 CREATE TABLE IF NOT EXISTS tx_events_pruned (

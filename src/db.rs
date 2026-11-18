@@ -580,8 +580,8 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT INTO sent_transactions (tx_id, initial_max_fee_per_gas, initial_max_priority_fee_per_gas, valid_tx_hash)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO sent_transactions (tx_id, initial_max_fee_per_gas, initial_max_priority_fee_per_gas, valid_tx_hash, last_event_xid)
+            VALUES ($1, $2, $3, $4, pg_current_xact_id())
             "#
         )
         .bind(tx_id)
@@ -812,18 +812,24 @@ impl Database {
     /// Points every mined transaction whose valid hash isn't the one in a
     /// block at the hash that is, with a `mined` event, and returns the ids of
     /// those it changed.
+    ///
+    /// Like every status change that stores an event, it skips a transaction
+    /// whose last event a newer database transaction stored, so that the feed
+    /// can't order its event before that one. The next call changes it.
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_soft_reorgs(&self) -> eyre::Result<Vec<String>> {
         let tx_ids: Vec<(String,)> = sqlx::query_as(
             r#"
             WITH reorged AS (
                 UPDATE    sent_transactions s
-                SET       valid_tx_hash = h.tx_hash
+                SET       valid_tx_hash = h.tx_hash,
+                          last_event_xid = pg_current_xact_id()
                 FROM      tx_hashes h
                 JOIN      block_txs bt ON h.tx_hash = bt.tx_hash
                 WHERE     h.tx_id = s.tx_id
                 AND       h.tx_hash <> s.valid_tx_hash
                 AND       s.status = $1
+                AND       (s.last_event_xid IS NULL OR s.last_event_xid < pg_current_xact_id())
                 RETURNING s.tx_id, s.valid_tx_hash
             ),
             events AS (
@@ -845,6 +851,9 @@ impl Database {
     /// Moves every mined transaction none of whose hashes is in a block back
     /// to pending, with its latest hash as the valid one and a `pending`
     /// event, and returns the ids of those it moved.
+    ///
+    /// Skips a transaction whose last event a newer database transaction
+    /// stored, see [`Database::handle_soft_reorgs`].
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn handle_hard_reorgs(&self) -> eyre::Result<Vec<String>> {
         let tx_ids: Vec<(String,)> = sqlx::query_as(
@@ -859,7 +868,8 @@ impl Database {
                               ORDER BY created_at DESC
                               LIMIT  1
                           ),
-                          mined_at = NULL
+                          mined_at = NULL,
+                          last_event_xid = pg_current_xact_id()
                 WHERE     s.status = $2
                 AND       NOT EXISTS (
                     SELECT 1
@@ -867,6 +877,7 @@ impl Database {
                     JOIN   block_txs bt ON h.tx_hash = bt.tx_hash
                     WHERE  h.tx_id = s.tx_id
                 )
+                AND       (s.last_event_xid IS NULL OR s.last_event_xid < pg_current_xact_id())
                 RETURNING s.tx_id, s.valid_tx_hash
             ),
             events AS (
@@ -888,6 +899,9 @@ impl Database {
 
     /// Marks the pending transactions of `chain_id` with a hash in a block as
     /// mined, with a `mined` event, and returns their ids and mined hashes.
+    ///
+    /// Skips a transaction whose last event a newer database transaction
+    /// stored, see [`Database::handle_soft_reorgs`].
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn mine_txs(
         &self,
@@ -908,14 +922,16 @@ impl Database {
                 AND    b.chain_id = $2
             ),
             mined AS (
-                UPDATE    sent_transactions
+                UPDATE    sent_transactions s
                 SET       status = $3,
                           valid_tx_hash = cte.tx_hash,
-                          mined_at = cte.timestamp
+                          mined_at = cte.timestamp,
+                          last_event_xid = pg_current_xact_id()
                 FROM      cte
-                WHERE     sent_transactions.tx_id = cte.id
-                AND       sent_transactions.status = $1
-                RETURNING sent_transactions.tx_id, sent_transactions.valid_tx_hash
+                WHERE     s.tx_id = cte.id
+                AND       s.status = $1
+                AND       (s.last_event_xid IS NULL OR s.last_event_xid < pg_current_xact_id())
+                RETURNING s.tx_id, s.valid_tx_hash
             ),
             events AS (
                 INSERT INTO tx_events (relayer_id, tx_id, status, tx_hash)
@@ -941,6 +957,9 @@ impl Database {
     /// Marks every mined transaction whose valid hash is in a block older
     /// than `finalization_timestamp` as finalized, with a `finalized` event,
     /// and returns the ids of those it marked.
+    ///
+    /// Skips a transaction whose last event a newer database transaction
+    /// stored, see [`Database::handle_soft_reorgs`].
     #[instrument(skip(self), level = "debug", ret)]
     pub async fn finalize_txs(
         &self,
@@ -950,12 +969,14 @@ impl Database {
             r#"
             WITH finalized AS (
                 UPDATE    sent_transactions s
-                SET       status = $1
+                SET       status = $1,
+                          last_event_xid = pg_current_xact_id()
                 FROM      block_txs bt
                 JOIN      blocks b ON bt.block_number = b.block_number AND bt.chain_id = b.chain_id
                 WHERE     bt.tx_hash = s.valid_tx_hash
                 AND       s.status = $2
                 AND       b.timestamp < $3
+                AND       (s.last_event_xid IS NULL OR s.last_event_xid < pg_current_xact_id())
                 RETURNING s.tx_id, s.valid_tx_hash
             ),
             events AS (
@@ -1045,8 +1066,9 @@ impl Database {
     /// bytes, which are never sent again.
     ///
     /// Returns `false`, and changes nothing, unless `tx_id` is still pending
-    /// with exactly `escalation_count` escalations. Then another escalation or
-    /// a status change won the race, and this replacement must not be sent.
+    /// with exactly `escalation_count` escalations, and no newer database
+    /// transaction stored its last event. Then another escalation or a status
+    /// change won the race, and this replacement must not be sent.
     #[instrument(skip(self, raw_signed_tx), level = "debug")]
     pub async fn escalate_tx(
         &self,
@@ -1065,10 +1087,12 @@ impl Database {
             r#"
             UPDATE sent_transactions
             SET    escalation_count = escalation_count + 1,
-                   updated_at = now()
+                   updated_at = now(),
+                   last_event_xid = pg_current_xact_id()
             WHERE  tx_id = $1
             AND    escalation_count = $2
             AND    status = $3
+            AND    (last_event_xid IS NULL OR last_event_xid < pg_current_xact_id())
             "#,
         )
         .bind(tx_id)
@@ -2813,6 +2837,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mining_leaves_a_tx_escalated_by_a_newer_transaction(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        let chain_id = 123;
+        let fee = U256::from(1);
+        for (tx_id, hash_byte) in [("a", 1), ("b", 2)] {
+            create_tx(&db, &relayer_id, tx_id).await?;
+            let tx_hash = B256::with_last_byte(hash_byte);
+            db.insert_tx_broadcast(tx_id, tx_hash, &[hash_byte], fee, fee)
+                .await?;
+        }
+        let mined_hashes = [B256::with_last_byte(1), B256::with_last_byte(2)];
+        db.save_block(1, chain_id, Utc::now(), &mined_hashes)
+            .await?;
+
+        // Mining takes its database transaction id at "a" and waits for its
+        // row, while a newer transaction escalates "b" and commits first
+        let mut a_lock = db.pool.begin().await?;
+        sqlx::query(
+            "SELECT 1 FROM sent_transactions WHERE tx_id = 'a' FOR UPDATE",
+        )
+        .execute(a_lock.as_mut())
+        .await?;
+        let (mined, escalated) = tokio::join!(db.mine_txs(chain_id), async {
+            await_lock_wait(&db).await?;
+            let escalation_hash = B256::with_last_byte(3);
+            let escalated = db
+                .escalate_tx("b", 0, escalation_hash, &[3], fee, fee)
+                .await?;
+            a_lock.rollback().await?;
+
+            Ok::<_, eyre::Report>(escalated)
+        });
+        assert!(escalated?);
+        let mined_tx_ids: Vec<_> =
+            mined?.into_iter().map(|(tx_id, _)| tx_id).collect();
+        assert_eq!(mined_tx_ids, ["a"]);
+
+        assert_eq!(
+            db.mine_txs(chain_id).await?,
+            [("b".to_string(), mined_hashes[1])]
+        );
+        assert_eq!(
+            tx_event_changes(&db, "b").await?,
+            [
+                (TxStatus::Pending, Some(B256::with_last_byte(2))),
+                (TxStatus::Pending, Some(B256::with_last_byte(3))),
+                (TxStatus::Mined, Some(B256::with_last_byte(2))),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn lag_shows_events_held_back_by_an_open_transaction(
     ) -> eyre::Result<()> {
         let (db, _db_container) = setup_db().await?;
@@ -3464,6 +3544,23 @@ mod tests {
             .into_iter()
             .map(|(status, tx_hash)| (status, tx_hash.map(|hash| hash.0)))
             .collect())
+    }
+
+    /// Returns once a statement waits for a lock
+    async fn await_lock_wait(db: &Database) -> eyre::Result<()> {
+        for _ in 0..50 {
+            let (is_waiting,): (bool,) = sqlx::query_as(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted)",
+            )
+            .fetch_one(&db.pool)
+            .await?;
+            if is_waiting {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        eyre::bail!("No statement waits for a lock")
     }
 
     async fn last_pruned(db: &Database) -> eyre::Result<(Xid8, i64)> {
