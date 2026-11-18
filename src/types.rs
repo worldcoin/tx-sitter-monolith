@@ -444,20 +444,22 @@ impl From<Option<TxStatus>> for TxStatusV2 {
 pub struct GetTxEventsResponse {
     /// The relayer's events after `after`, in the order they happened
     pub events: Vec<TxEvent>,
-    /// Pass as `after` to get the events after these. It is `after` when
-    /// there are none, and `null` when there are none and `after` was
-    /// left out.
-    pub next_cursor: Option<String>,
+    /// Pass as `after` to get the events after these. It only works in the
+    /// relayer's feed.
+    pub next_cursor: String,
 }
 
 impl GetTxEventsResponse {
-    /// Answers a request for the events after `after` with `events`
-    pub fn new(events: Vec<TxEventData>, after: Option<EventCursor>) -> Self {
-        let next_cursor = events.last().map(|event| event.cursor).or(after);
-
+    /// Answers a request of relayer `relayer_id` with `events`, which
+    /// `next_cursor` follows
+    pub fn new(
+        events: Vec<TxEventData>,
+        next_cursor: EventCursor,
+        relayer_id: &str,
+    ) -> Self {
         Self {
             events: events.into_iter().map(TxEvent::from).collect(),
-            next_cursor: next_cursor.map(|cursor| cursor.to_string()),
+            next_cursor: next_cursor.encode(relayer_id),
         }
     }
 }

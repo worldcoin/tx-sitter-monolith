@@ -6,10 +6,10 @@
 //! events.
 
 use std::fmt;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use alloy::primitives::keccak256;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use eyre::Context;
@@ -44,7 +44,7 @@ const WAKEUP_BUFFER: usize = 256;
 /// The feed orders events by the database transaction that stored them, then
 /// by their id, see
 /// [`Database::read_tx_events`](crate::db::Database::read_tx_events). The
-/// text form is opaque to clients.
+/// text form, see [`EventCursor::encode`], is opaque to clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, FromRow)]
 pub struct EventCursor {
     pub tx_xid: Xid8,
@@ -58,42 +58,81 @@ impl EventCursor {
         id: 0,
     };
 
-    /// The length of the text form: 16 bytes in unpadded base64
-    const TEXT_LEN: usize = 22;
-}
+    /// The length of the text form: 24 bytes in unpadded base64
+    const TEXT_LEN: usize = 32;
 
-impl fmt::Display for EventCursor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&self.tx_xid.0.to_be_bytes());
-        bytes[8..].copy_from_slice(&self.id.to_be_bytes());
-
-        f.write_str(&BASE64_URL_SAFE_NO_PAD.encode(bytes))
+    /// The position after every event of the database transactions older
+    /// than `tx_xid`
+    pub fn before_tx(tx_xid: Xid8) -> Self {
+        Self { tx_xid, id: 0 }
     }
-}
 
-impl FromStr for EventCursor {
-    type Err = eyre::Report;
+    /// Returns the text form of the cursor in the feed of relayer
+    /// `relayer_id`, which only [`EventCursor::decode`] with the same
+    /// relayer accepts.
+    pub fn encode(&self, relayer_id: &str) -> String {
+        let mut bytes = [0; 24];
+        bytes[..8].copy_from_slice(&self.tx_xid.0.to_be_bytes());
+        bytes[8..16].copy_from_slice(&self.id.to_be_bytes());
+        bytes[16..].copy_from_slice(&relayer_tag(relayer_id));
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        eyre::ensure!(
-            s.len() == Self::TEXT_LEN,
-            "A cursor is {} characters long",
-            Self::TEXT_LEN
-        );
+        BASE64_URL_SAFE_NO_PAD.encode(bytes)
+    }
 
-        let bytes: [u8; 16] = BASE64_URL_SAFE_NO_PAD
-            .decode(s)?
-            .try_into()
-            .map_err(|_| eyre::eyre!("A cursor is 16 bytes"))?;
-        let (tx_xid, id) = bytes.split_at(8);
+    /// Parses the text form of a cursor in the feed of relayer `relayer_id`.
+    ///
+    /// Fails with [`InvalidCursor::OtherRelayer`] for a cursor of another
+    /// relayer's feed, whose position means nothing in this one.
+    pub fn decode(text: &str, relayer_id: &str) -> Result<Self, InvalidCursor> {
+        if text.len() != Self::TEXT_LEN {
+            return Err(InvalidCursor::Malformed);
+        }
+        let bytes: [u8; 24] = BASE64_URL_SAFE_NO_PAD
+            .decode(text)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(InvalidCursor::Malformed)?;
+
+        let (position, tag) = bytes.split_at(16);
+        if tag != relayer_tag(relayer_id) {
+            return Err(InvalidCursor::OtherRelayer);
+        }
+        let (tx_xid, id) = position.split_at(8);
 
         Ok(Self {
-            tx_xid: Xid8(u64::from_be_bytes(tx_xid.try_into()?)),
-            id: i64::from_be_bytes(id.try_into()?),
+            tx_xid: Xid8(u64::from_be_bytes(
+                tx_xid.try_into().expect("Split at 8 bytes"),
+            )),
+            id: i64::from_be_bytes(id.try_into().expect("Split at 8 bytes")),
         })
     }
 }
+
+/// Identifies relayer `relayer_id` in its cursors
+fn relayer_tag(relayer_id: &str) -> [u8; 8] {
+    keccak256(relayer_id)[..8]
+        .try_into()
+        .expect("A hash is longer than 8 bytes")
+}
+
+/// Text that isn't a cursor of the relayer's feed, see
+/// [`EventCursor::decode`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidCursor {
+    Malformed,
+    OtherRelayer,
+}
+
+impl fmt::Display for InvalidCursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Malformed => "after isn't a cursor of the event feed",
+            Self::OtherRelayer => "after is a cursor of another relayer's feed",
+        })
+    }
+}
+
+impl std::error::Error for InvalidCursor {}
 
 /// Passes notifications of stored events on to the requests waiting for
 /// them, see [`EventNotifier::long_poll`].
@@ -276,6 +315,8 @@ mod tests {
 
     use super::*;
 
+    const RELAYER_ID: &str = "1b908a34-5dc1-4d2d-a146-5eb46e975830";
+
     #[test]
     fn cursor_text_round_trips() {
         let cursors = [
@@ -291,21 +332,34 @@ mod tests {
         ];
 
         for cursor in cursors {
-            let text = cursor.to_string();
+            let text = cursor.encode(RELAYER_ID);
 
             assert_eq!(text.len(), EventCursor::TEXT_LEN, "{text}");
-            assert_eq!(text.parse::<EventCursor>().unwrap(), cursor);
+            assert_eq!(EventCursor::decode(&text, RELAYER_ID), Ok(cursor));
         }
     }
 
+    #[test]
+    fn cursor_belongs_to_its_relayers_feed() {
+        let text = EventCursor::START.encode(RELAYER_ID);
+
+        assert_eq!(
+            EventCursor::decode(&text, "other relayer"),
+            Err(InvalidCursor::OtherRelayer)
+        );
+    }
+
     #[test_case("" ; "empty")]
-    #[test_case("AAAAAAAS1ocAAAAAAAAAWQ=" ; "padded")]
-    #[test_case("AAAAAAAS1ocAAAAAAAAAW" ; "short")]
-    #[test_case("AAAAAAAS1ocAAAAAAAAAWQA" ; "long")]
-    #[test_case("AAAAAAAS1ocAAAAAAAAA+Q" ; "not url safe")]
-    #[test_case("AAAAAAAS1ocAAAAAAAAAW!" ; "not base64")]
+    #[test_case("AAAAAAAS1ocAAAAAAAAAWQAAAAAAAAA=" ; "padded")]
+    #[test_case("AAAAAAAS1ocAAAAAAAAAWQAAAAAAAAA" ; "short")]
+    #[test_case("AAAAAAAS1ocAAAAAAAAAWQAAAAAAAAAAA" ; "long")]
+    #[test_case("AAAAAAAS1ocAAAAAAAAAWQAAAAAAAA+Q" ; "not url safe")]
+    #[test_case("AAAAAAAS1ocAAAAAAAAAWQAAAAAAAAW!" ; "not base64")]
     fn cursor_rejects_invalid_text(text: &str) {
-        assert!(text.parse::<EventCursor>().is_err());
+        assert_eq!(
+            EventCursor::decode(text, RELAYER_ID),
+            Err(InvalidCursor::Malformed)
+        );
     }
 
     #[tokio::test(start_paused = true)]

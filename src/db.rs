@@ -4,10 +4,13 @@ use std::time::Duration;
 
 use alloy::primitives::{Address, B256, U256};
 use chrono::{DateTime, Utc};
+use eyre::ContextCompat;
 use sqlx::migrate::{MigrateDatabase, Migrator};
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
 use sqlx::types::{BigDecimal, Json};
-use sqlx::{Connection, PgConnection, PgExecutor, Pool, Postgres, Row};
+use sqlx::{
+    Connection, FromRow, PgConnection, PgExecutor, Pool, Postgres, Row,
+};
 use tracing::instrument;
 
 use crate::broadcast_utils::gas_estimation::FeesEstimate;
@@ -15,6 +18,7 @@ use crate::config::DatabaseConfig;
 use crate::db::data::{NetworkInfo, RelayerInfo};
 use crate::db::wrappers::h256::H256Wrapper;
 use crate::db::wrappers::hex_u256::HexU256Wrapper;
+use crate::db::wrappers::xid8::Xid8;
 use crate::tx_events::EventCursor;
 use crate::types::{
     RelayerUpdateRequest, TransactionPriority, TxMetadata, TxStatus,
@@ -104,10 +108,18 @@ pub enum CreateResult {
 /// The outcome of [`Database::read_tx_events`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TxEventsPage {
-    Events(Vec<TxEventData>),
+    Events {
+        events: Vec<TxEventData>,
+        /// The cursor the events after these follow
+        next_cursor: EventCursor,
+    },
     /// Pruning deleted events after the cursor, which the reader may not
     /// have seen
     CursorExpired,
+    /// The cursor is ahead of every database transaction that ran. It is
+    /// from another database, or from before a restore to an earlier point,
+    /// and the reader may miss the events stored since.
+    CursorAhead,
 }
 
 /// How a send request relates to the transaction stored under its id
@@ -1288,7 +1300,7 @@ impl Database {
 
     /// Returns up to `limit` of the events of relayer `relayer_id` that follow
     /// `after`, or that follow [`EventCursor::START`] without a cursor, in
-    /// feed order.
+    /// feed order, and the cursor to read on from.
     ///
     /// The feed orders events by the database transaction that stored them,
     /// then by their id. It holds back the events of a transaction while an
@@ -1297,6 +1309,11 @@ impl Database {
     /// and holding back keeps it from landing before an event the feed
     /// already served. A transaction that stays open stalls the feed, which
     /// [`Database::get_tx_events_lag`] shows.
+    ///
+    /// The next cursor follows the last event returned. When there are no
+    /// more events to return, it follows every event the feed holds back none
+    /// of, so that a relayer's cursor keeps up with the feed while it has no
+    /// events and outlives the pruning of other relayers' events.
     ///
     /// An event's metadata is `None` once its transaction was pruned.
     #[instrument(skip(self), level = "debug")]
@@ -1308,18 +1325,37 @@ impl Database {
     ) -> eyre::Result<TxEventsPage> {
         let start = after.unwrap_or(EventCursor::START);
 
-        let events: Vec<TxEventData> = sqlx::query_as(
+        // Always one row, with NULL event columns when there are no events,
+        // so that the snapshot the events were read in comes back too
+        let rows = sqlx::query(
             r#"
-            SELECT    e.tx_xid, e.id, e.tx_id, e.relayer_id, r.chain_id, e.status,
-                      e.tx_hash, t.metadata, e.created_at
-            FROM      tx_events e
-            JOIN      relayers r ON r.id = e.relayer_id
-            LEFT JOIN transactions t ON t.id = e.tx_id
-            WHERE     e.relayer_id = $1
-            AND       (e.tx_xid, e.id) > ($2, $3)
-            AND       e.tx_xid < (SELECT pg_snapshot_xmin(pg_current_snapshot()))
+            WITH snapshot AS (
+                SELECT pg_snapshot_xmin(pg_current_snapshot()) AS xmin,
+                       pg_snapshot_xmax(pg_current_snapshot()) AS xmax
+            )
+            SELECT    s.xmin AS snapshot_xmin,
+                      s.xmax AS snapshot_xmax,
+                      EXISTS (
+                          SELECT 1
+                          FROM   tx_events_pruned p
+                          WHERE  (p.tx_xid, p.id) > ($2, $3)
+                      ) AS is_pruned_after_start,
+                      e.*
+            FROM      snapshot s
+            LEFT JOIN LATERAL (
+                SELECT    e.tx_xid, e.id, e.tx_id, e.relayer_id, r.chain_id,
+                          e.status, e.tx_hash, t.metadata, e.created_at
+                FROM      tx_events e
+                JOIN      relayers r ON r.id = e.relayer_id
+                LEFT JOIN transactions t
+                          ON t.id = e.tx_id AND t.relayer_id = e.relayer_id
+                WHERE     e.relayer_id = $1
+                AND       (e.tx_xid, e.id) > ($2, $3)
+                AND       e.tx_xid < s.xmin
+                ORDER BY  e.tx_xid, e.id
+                LIMIT     $4
+            ) e ON true
             ORDER BY  e.tx_xid, e.id
-            LIMIT     $4
             "#,
         )
         .bind(relayer_id)
@@ -1329,29 +1365,37 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
 
-        // Checked after the read, so that pruning which deleted events before
-        // the read shows here too
-        if let Some(after) = after {
-            let (is_expired,): (bool,) = sqlx::query_as(
-                r#"
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM   tx_events_pruned
-                    WHERE  (tx_xid, id) > ($1, $2)
-                )
-                "#,
-            )
-            .bind(after.tx_xid)
-            .bind(after.id)
-            .fetch_one(&self.pool)
-            .await?;
+        let snapshot = rows.first().context("The feed returned no row")?;
+        let xmin: Xid8 = snapshot.try_get("snapshot_xmin")?;
+        let xmax: Xid8 = snapshot.try_get("snapshot_xmax")?;
+        let is_pruned_after_start: bool =
+            snapshot.try_get("is_pruned_after_start")?;
 
-            if is_expired {
-                return Ok(TxEventsPage::CursorExpired);
+        if after.is_some_and(|after| after.tx_xid > xmax) {
+            return Ok(TxEventsPage::CursorAhead);
+        }
+        if after.is_some() && is_pruned_after_start {
+            return Ok(TxEventsPage::CursorExpired);
+        }
+
+        let mut events = vec![];
+        for row in &rows {
+            if row.try_get::<Option<i64>, _>("id")?.is_some() {
+                events.push(TxEventData::from_row(row)?);
             }
         }
 
-        Ok(TxEventsPage::Events(events))
+        let last_read = events.last().map_or(start, |event| event.cursor);
+        let next_cursor = if events.len() < limit as usize {
+            last_read.max(EventCursor::before_tx(xmin))
+        } else {
+            last_read
+        };
+
+        Ok(TxEventsPage::Events {
+            events,
+            next_cursor,
+        })
     }
 
     /// Connects a listener for the notifications that storing events of a
@@ -2002,7 +2046,6 @@ async fn count_queued_txs(
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use eyre::ContextCompat;
     use hex_literal::hex;
     use postgres_docker_utils::DockerContainerGuard;
     use serde_json::json;
@@ -2011,7 +2054,6 @@ mod tests {
     use crate::db::data::RelayerGasPriceLimit;
     use crate::db::wrappers::address::AddressWrapper;
     use crate::db::wrappers::decimal_u256::DecimalU256Wrapper;
-    use crate::db::wrappers::xid8::Xid8;
     use crate::types::{RelayerGasPriceLimitResponse, RelayerUpdateRequest};
 
     const ADDRESS: [u8; 20] = hex!("1ed53d680b8890dae2a63f673a85ffde1fd5c7a2");
@@ -3095,11 +3137,11 @@ mod tests {
             .await?;
         insert_pending_tx_event(&db.pool, "b", B256::with_last_byte(2)).await?;
 
-        assert_eq!(read_events(&db, &relayer_id, None).await?, []);
+        assert_eq!(read_events(&db, &relayer_id, None, 100).await?.0, []);
 
         a.commit().await?;
 
-        let events = read_events(&db, &relayer_id, None).await?;
+        let (events, _) = read_events(&db, &relayer_id, None, 100).await?;
         let tx_ids: Vec<_> = events.iter().map(|e| e.tx_id.as_str()).collect();
         assert_eq!(tx_ids, ["a", "b"]);
         assert!(events[0].cursor < events[1].cursor);
@@ -3150,17 +3192,18 @@ mod tests {
         )
         .await?;
 
-        let first_page = read_events_page(&db, &relayer_id, None, 1).await?;
+        let (first_page, first_cursor) =
+            read_events(&db, &relayer_id, None, 1).await?;
         let [first] = &first_page[..] else {
             panic!("Expected one event, got {first_page:?}");
         };
-        let second_page =
-            read_events_page(&db, &relayer_id, Some(first.cursor), 10).await?;
+        let (second_page, second_cursor) =
+            read_events(&db, &relayer_id, Some(first_cursor), 10).await?;
         let [second] = &second_page[..] else {
             panic!("Expected one event, got {second_page:?}");
         };
-        let last_page =
-            read_events_page(&db, &relayer_id, Some(second.cursor), 10).await?;
+        let (last_page, last_cursor) =
+            read_events(&db, &relayer_id, Some(second_cursor), 10).await?;
 
         assert_eq!(first.tx_id, "with_metadata");
         assert_eq!(first.relayer_id, relayer_id);
@@ -3172,8 +3215,15 @@ mod tests {
             second.metadata.as_ref().map(TxMetadata::as_str),
             Some(metadata.as_str())
         );
+        // A full page may be followed by more events, the others by none of
+        // a transaction older than the feed holds back
+        assert_eq!(first_cursor, first.cursor);
+        assert!(second_cursor > second.cursor, "{second_cursor:?}");
+        assert_eq!(second_cursor.id, 0);
         assert_eq!(last_page, []);
-        let other_events = read_events(&db, &other_relayer_id, None).await?;
+        assert_eq!(last_cursor, second_cursor);
+        let (other_events, _) =
+            read_events(&db, &other_relayer_id, None, 100).await?;
         assert_eq!(other_events.len(), 1);
         assert_eq!(other_events[0].tx_id, "other");
 
@@ -3190,7 +3240,7 @@ mod tests {
             insert_pending_tx_event(&db.pool, &tx_id, B256::with_last_byte(i))
                 .await?;
         }
-        let events = read_events(&db, &relayer_id, None).await?;
+        let (events, _) = read_events(&db, &relayer_id, None, 100).await?;
         sqlx::query("UPDATE tx_events SET created_at = now() - interval '2 days' WHERE tx_id <> 'tx_2'")
             .execute(&db.pool)
             .await?;
@@ -3209,14 +3259,124 @@ mod tests {
         }
         // Nothing after the last pruned event is missing
         assert_eq!(
-            read_events(&db, &relayer_id, Some(events[1].cursor)).await?,
+            read_events(&db, &relayer_id, Some(events[1].cursor), 100)
+                .await?
+                .0,
             events[2..]
         );
-        assert_eq!(read_events(&db, &relayer_id, None).await?, events[2..]);
         assert_eq!(
-            read_events(&db, &relayer_id, Some(events[2].cursor)).await?,
+            read_events(&db, &relayer_id, None, 100).await?.0,
+            events[2..]
+        );
+        assert_eq!(
+            read_events(&db, &relayer_id, Some(events[2].cursor), 100)
+                .await?
+                .0,
             []
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn idle_relayers_cursor_outlives_other_relayers_pruned_events(
+    ) -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let idle_relayer_id = create_relayer(&db).await?;
+        let busy_relayer_id = create_relayer(&db).await?;
+        create_tx(&db, &idle_relayer_id, "idle").await?;
+        insert_pending_tx_event(&db.pool, "idle", B256::with_last_byte(1))
+            .await?;
+        let (_, read_cursor) =
+            read_events(&db, &idle_relayer_id, None, 100).await?;
+
+        for i in 0..3 {
+            let tx_id = format!("busy_{i}");
+            create_tx(&db, &busy_relayer_id, &tx_id).await?;
+            insert_pending_tx_event(&db.pool, &tx_id, B256::with_last_byte(i))
+                .await?;
+        }
+        let (events, polled_cursor) =
+            read_events(&db, &idle_relayer_id, Some(read_cursor), 100).await?;
+        assert_eq!(events, []);
+        assert!(polled_cursor > read_cursor, "{polled_cursor:?}");
+
+        sqlx::query(
+            "UPDATE tx_events SET created_at = now() - interval '2 days'",
+        )
+        .execute(&db.pool)
+        .await?;
+        let prune_timestamp = Utc::now() - chrono::Duration::days(1);
+        assert_eq!(db.prune_tx_events(prune_timestamp, 100).await?, 4);
+
+        assert_eq!(
+            read_events(&db, &idle_relayer_id, Some(polled_cursor), 100)
+                .await?
+                .0,
+            []
+        );
+        // It may have missed the other relayer's events
+        assert_eq!(
+            db.read_tx_events(&idle_relayer_id, Some(read_cursor), 100)
+                .await?,
+            TxEventsPage::CursorExpired
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn feed_refuses_cursors_ahead_of_the_database() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+
+        // No transaction runs, so the cursor is at the newest one
+        let (_, cursor) = read_events(&db, &relayer_id, None, 100).await?;
+        assert_eq!(
+            read_events(&db, &relayer_id, Some(cursor), 100).await?.1,
+            cursor
+        );
+
+        let ahead = EventCursor::before_tx(Xid8(cursor.tx_xid.0 + 1_000));
+        assert_eq!(
+            db.read_tx_events(&relayer_id, Some(ahead), 100).await?,
+            TxEventsPage::CursorAhead
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn events_of_a_pruned_tx_lose_its_metadata() -> eyre::Result<()> {
+        let (db, _db_container) = setup_db().await?;
+        let relayer_id = create_relayer(&db).await?;
+        let other_relayer_id = create_relayer(&db).await?;
+        create_tx(&db, &relayer_id, "tx").await?;
+        insert_pending_tx_event(&db.pool, "tx", B256::with_last_byte(1))
+            .await?;
+
+        // Pruning the transaction frees its id for another relayer's
+        sqlx::query("DELETE FROM transactions WHERE id = 'tx'")
+            .execute(&db.pool)
+            .await?;
+        let metadata: TxMetadata = serde_json::from_str(r#"{ "a": 1 }"#)?;
+        db.create_transaction(
+            "tx",
+            Address::with_last_byte(1),
+            &[],
+            U256::ZERO,
+            U256::from(21_000),
+            TransactionPriority::Regular,
+            None,
+            &other_relayer_id,
+            Some(&metadata),
+            None,
+        )
+        .await?;
+
+        let (events, _) = read_events(&db, &relayer_id, None, 100).await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].metadata, None);
 
         Ok(())
     }
@@ -3821,24 +3981,20 @@ mod tests {
         Ok(tx_id)
     }
 
-    /// Returns up to 100 events of `relayer_id` after `after`.
+    /// Returns up to `limit` events of `relayer_id` after `after`, and the
+    /// cursor after them.
     async fn read_events(
         db: &Database,
         relayer_id: &str,
         after: Option<EventCursor>,
-    ) -> eyre::Result<Vec<TxEventData>> {
-        read_events_page(db, relayer_id, after, 100).await
-    }
-
-    async fn read_events_page(
-        db: &Database,
-        relayer_id: &str,
-        after: Option<EventCursor>,
         limit: u32,
-    ) -> eyre::Result<Vec<TxEventData>> {
+    ) -> eyre::Result<(Vec<TxEventData>, EventCursor)> {
         match db.read_tx_events(relayer_id, after, limit).await? {
-            TxEventsPage::Events(events) => Ok(events),
-            TxEventsPage::CursorExpired => eyre::bail!("Cursor expired"),
+            TxEventsPage::Events {
+                events,
+                next_cursor,
+            } => Ok((events, next_cursor)),
+            page => eyre::bail!("Expected events, got {page:?}"),
         }
     }
 

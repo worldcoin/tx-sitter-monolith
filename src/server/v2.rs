@@ -162,7 +162,8 @@ impl RelayerApiV2 {
     /// none.
     ///
     /// Events are kept for `service.event_retention` (7 days by default). A
-    /// cursor older than that gets 410, because events after it may be gone.
+    /// cursor older than that gets 410, because events after it may be gone,
+    /// and so does a cursor from before a restore of the database.
     #[oai(
         path = "/events",
         method = "get",
@@ -175,8 +176,8 @@ impl RelayerApiV2 {
         api_key: BearerApiKey,
         Data(app): Data<&Arc<App>>,
         Data(notifier): Data<&Arc<EventNotifier>>,
-        /// The `nextCursor` of an earlier response. Without it the feed
-        /// starts at the oldest event kept.
+        /// The `nextCursor` of an earlier response of the relayer's feed.
+        /// Without it the feed starts at the oldest event kept.
         Query(after): Query<Option<String>>,
         /// The most events to return
         #[oai(
@@ -191,13 +192,13 @@ impl RelayerApiV2 {
         let api_key = api_key.authorize(app).await?;
         let relayer_id = api_key.relayer_id();
         let after = after
-            .map(|after| after.parse::<EventCursor>())
+            .map(|after| EventCursor::decode(&after, relayer_id))
             .transpose()
-            .map_err(|_| {
+            .map_err(|err| {
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "invalid_request",
-                    "after isn't a cursor of this feed",
+                    err.to_string(),
                 )
             })?;
 
@@ -212,19 +213,34 @@ impl RelayerApiV2 {
             .await
             .context("Reading tx events timed out")??;
 
-            let events = match page {
-                TxEventsPage::Events(events) => events,
+            let (events, next_cursor) = match page {
+                TxEventsPage::Events {
+                    events,
+                    next_cursor,
+                } => (events, next_cursor),
                 TxEventsPage::CursorExpired => {
-                    return Err(ApiError::new(
-                        StatusCode::GONE,
-                        "cursor_expired",
-                        "Events after the cursor were deleted, restart without a cursor",
+                    return Err(cursor_expired(
+                        "Events after the cursor were deleted",
                     ))
+                }
+                TxEventsPage::CursorAhead => {
+                    tracing::warn!(
+                        relayer_id,
+                        ?after,
+                        "Refused a cursor ahead of the database"
+                    );
+                    return Err(cursor_expired(
+                        "The cursor is ahead of the database, which was restored or replaced since",
+                    ));
                 }
             };
 
             if !events.is_empty() || !poll.wait().await {
-                return Ok(ExactJson(GetTxEventsResponse::new(events, after)));
+                return Ok(ExactJson(GetTxEventsResponse::new(
+                    events,
+                    next_cursor,
+                    relayer_id,
+                )));
             }
         }
     }
@@ -232,6 +248,14 @@ impl RelayerApiV2 {
 
 fn default_events_limit() -> u32 {
     100
+}
+
+fn cursor_expired(reason: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::GONE,
+        "cursor_expired",
+        format!("{reason}. Reconcile from the transactions and restart without a cursor"),
+    )
 }
 
 fn repeated_send(tx_id: String) -> ExactJson<SendTxResponse> {

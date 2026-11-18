@@ -566,15 +566,16 @@ paths:
         none.
 
         Events are kept for `service.event_retention` (7 days by default). A
-        cursor older than that gets 410, because events after it may be gone.
+        cursor older than that gets 410, because events after it may be gone,
+        and so does a cursor from before a restore of the database.
       parameters:
       - name: after
         schema:
           type: string
         in: query
         description: |-
-          The `nextCursor` of an earlier response. Without it the feed
-          starts at the oldest event kept.
+          The `nextCursor` of an earlier response of the relayer's feed.
+          Without it the feed starts at the oldest event kept.
         required: false
         deprecated: false
         explode: true
@@ -806,6 +807,7 @@ components:
       type: object
       required:
       - events
+      - nextCursor
       properties:
         events:
           type: array
@@ -815,9 +817,8 @@ components:
         nextCursor:
           type: string
           description: |-
-            Pass as `after` to get the events after these. It is `after` when
-            there are none, and `null` when there are none and `after` was
-            left out.
+            Pass as `after` to get the events after these. It only works in the
+            relayer's feed.
     GetTxResponse:
       type: object
       required:
