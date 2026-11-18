@@ -99,6 +99,10 @@ async fn escalate_relayer_txs(
         tracing::info!("No transactions to escalate");
     }
 
+    if !should_send_relayer_transactions(app, &relayer).await? {
+        return Ok(());
+    }
+
     for tx in txs {
         if ctx.is_shutting_down() {
             break;
@@ -133,10 +137,6 @@ async fn escalate_relayer_tx(
     relayer: &RelayerInfo,
     tx: TxForEscalation,
 ) -> eyre::Result<()> {
-    if !should_send_relayer_transactions(app, relayer).await? {
-        return Ok(());
-    }
-
     let provider = app.http_provider(tx.chain_id).await?;
 
     let resent = match &tx.raw_signed_tx {
