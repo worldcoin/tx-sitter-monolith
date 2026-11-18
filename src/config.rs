@@ -45,6 +45,25 @@ pub struct Config {
     pub keys: KeysConfig,
 }
 
+impl Config {
+    /// Checks the settings that depend on each other.
+    pub fn validate(&self) -> eyre::Result<()> {
+        let TxSitterConfig {
+            tx_retention,
+            event_retention,
+            ..
+        } = &self.service;
+        eyre::ensure!(
+            event_retention <= tx_retention,
+            "service.event_retention ({}) must not exceed service.tx_retention ({})",
+            humantime::format_duration(*event_retention),
+            humantime::format_duration(*tx_retention),
+        );
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TxSitterConfig {
@@ -94,6 +113,17 @@ pub struct TxSitterConfig {
     /// repeat creates a new transaction.
     #[serde(with = "humantime_serde", default = "default::tx_retention")]
     pub tx_retention: Duration,
+
+    /// How long the status changes of transactions are kept for the event
+    /// feed.
+    ///
+    /// At most `tx_retention`, so that an event's transaction and its
+    /// metadata are kept about as long as the event, and its id can't be
+    /// reused by another transaction while the event exists. Its `finalized`
+    /// event, stored about an hour after the transaction is mined, can outlive
+    /// it by that hour.
+    #[serde(with = "humantime_serde", default = "default::event_retention")]
+    pub event_retention: Duration,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predefined: Option<Predefined>,
@@ -315,6 +345,10 @@ mod default {
         Duration::from_secs(30 * 24 * 60 * 60)
     }
 
+    pub fn event_retention() -> Duration {
+        Duration::from_secs(7 * 24 * 60 * 60)
+    }
+
     pub fn max_escalations() -> usize {
         100
     }
@@ -355,6 +389,7 @@ mod tests {
         rpc_timeout = "10s"
         task_stall_timeout = "5m"
         tx_retention = "30days"
+        event_retention = "7days"
 
         [server]
         host = "127.0.0.1:3000"
@@ -379,6 +414,7 @@ mod tests {
         rpc_timeout = "10s"
         task_stall_timeout = "5m"
         tx_retention = "30days"
+        event_retention = "7days"
 
         [server]
         host = "127.0.0.1:3000"
@@ -409,6 +445,7 @@ mod tests {
                 rpc_timeout: default::rpc_timeout(),
                 task_stall_timeout: default::task_stall_timeout(),
                 tx_retention: default::tx_retention(),
+                event_retention: default::event_retention(),
                 predefined: None,
                 telemetry: None,
             },
@@ -444,6 +481,7 @@ mod tests {
                 rpc_timeout: default::rpc_timeout(),
                 task_stall_timeout: default::task_stall_timeout(),
                 tx_retention: default::tx_retention(),
+                event_retention: default::event_retention(),
                 predefined: None,
                 telemetry: None,
             },
@@ -467,6 +505,23 @@ mod tests {
         let toml = toml::to_string_pretty(&config).unwrap();
 
         assert_eq!(toml, WITH_DB_PARTS);
+    }
+
+    #[test]
+    fn events_must_not_outlive_their_transactions() {
+        let mut config: Config =
+            toml::from_str(WITH_DB_CONNECTION_STRING).unwrap();
+        config.validate().unwrap();
+
+        config.service.event_retention = config.service.tx_retention;
+        config.validate().unwrap();
+
+        config.service.event_retention += Duration::from_secs(1);
+        let err = config.validate().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "service.event_retention (30days 1s) must not exceed service.tx_retention (30days)"
+        );
     }
 
     #[test]
@@ -497,6 +552,7 @@ mod tests {
         assert_eq!(config.service.escalation_interval, Duration::from_secs(60));
         assert_eq!(config.service.rpc_timeout, default::rpc_timeout());
         assert_eq!(config.service.tx_retention, default::tx_retention());
+        assert_eq!(config.service.event_retention, default::event_retention());
         let KeysConfig::Kms(kms_config) = &config.keys else {
             panic!("Expected KMS keys config");
         };
